@@ -33,7 +33,7 @@ public final class AuditRecorder {
       String decisionId) {
     var event =
         AuditEvent.builder()
-            .timestamp(clock.instant())
+            .timestamp(clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
             .principalId(principal.id())
             .tenantId(principal.tenantId().orElse(null))
             .tool(tool)

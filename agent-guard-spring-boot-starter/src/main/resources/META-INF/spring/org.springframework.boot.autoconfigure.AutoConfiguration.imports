@@ -1,0 +1,4 @@
+com.housedevinci.agentguard.autoconfigure.AgentGuardAutoConfiguration
+com.housedevinci.agentguard.ai.AgentGuardSpringAiAutoConfiguration
+com.housedevinci.agentguard.mcp.AgentGuardMcpAutoConfiguration
+com.housedevinci.agentguard.web.AgentGuardWebAutoConfiguration

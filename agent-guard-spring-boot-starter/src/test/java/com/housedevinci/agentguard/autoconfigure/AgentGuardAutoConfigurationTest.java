@@ -68,7 +68,9 @@ class AgentGuardAutoConfigurationTest {
               assertThat(ctx).hasFailed();
               assertThat(ctx.getStartupFailure())
                   .rootCause()
-                  .hasMessageContaining("agentguard.store=JDBC requires a DataSource");
+                  .hasMessageContaining("no DataSource found")
+                  .hasMessageContaining("agentguard.store=memory")
+                  .hasMessageContaining("not for production");
             });
   }
 

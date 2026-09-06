@@ -171,8 +171,9 @@ public class AgentGuardAutoConfiguration {
     DataSource ds = dataSources.getIfAvailable();
     if (ds == null) {
       throw new AgentGuardConfigurationException(
-          "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true "
-              + "(add spring-boot-starter-jdbc + spring.datasource.*, or set agentguard.store=MEMORY for development)");
+          "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true, but no"
+              + " DataSource found (add spring-boot-starter-jdbc + spring.datasource.*). For a local"
+              + " trial set agentguard.store=memory - not for production.");
     }
     if (props.getJdbc().isInitializeSchema()) {
       JdbcSupport.initializeSchema(ds);

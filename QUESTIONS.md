@@ -32,9 +32,9 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
    bean", it is a one-line change.
 
 ## Product / behaviour
-7. **[ruling?]** Default for `agentguard.store` is `JDBC` and startup fails without a DataSource (message names the
-   property and the `MEMORY` escape hatch). Fail-closed matches the conventions; it does make "try it in 30 seconds"
-   need `agentguard.store=MEMORY`. OK?
+7. **[decided — coordinator ruling]** `agentguard.store=JDBC` stays the fail-closed default. The startup error names
+   the trial setting explicitly: "no DataSource found; for a local trial set agentguard.store=memory - not for
+   production." Implemented in `AgentGuardAutoConfiguration`, asserted in `AgentGuardAutoConfigurationTest`.
 8. **[ruling?]** Token budgets (`kind: TOKENS`) are enforced before dispatch and recorded through
    `BudgetEnforcer.recordTokens(...)`, but nothing calls `recordTokens` automatically yet: Spring AI usage metadata lives
    on the `ChatResponse`, not on the tool call, so it needs a `ChatClient` advisor or a `ChatModel` decorator. Proposed:
@@ -44,9 +44,9 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
 10. **[decided]** Approved calls also consume budget at execution time (Peekflo "cap before dispatch" discipline).
 11. **[decided]** A REJECTED decision re-requested with identical arguments returns a structured rejection
     (`AG-APPROVAL-005`); an EXPIRED one is parked again. Different arguments always park a new decision.
-12. **[ruling?]** The approval endpoints are in the starter behind `agentguard.endpoints.enabled` (default false),
-    not only in the sample, because "approval via endpoint" is the free acceptance check. They are plain JSON, no UI.
-    The pro inbox UI stays pro. Confirm this does not cross the free/paid line.
+12. **[decided — coordinator ruling]** The JSON approve / reject / audit-query endpoints stay in the free starter
+    (behind `agentguard.endpoints.enabled`): a developer must be able to try the loop. The Pro line is the inbox UI,
+    search/filters, exports, retention, per-tenant views.
 
 ## Build
 13. **[decided]** Error Prone 2.50 on JDK 21 needs `.mvn/jvm.config` (add-exports) and

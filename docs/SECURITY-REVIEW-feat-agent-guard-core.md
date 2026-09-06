@@ -463,3 +463,83 @@ setup, default unchanged), I1–I9. The original LOW probes still pass, as the b
 Real OpenAI/Anthropic `ChatModel` end to end (the provider artifacts were inspected by bytecode only; no API key, no
 network in tests). The `-Ppinning-probe` child-JVM test was not re-run (the code it exercises, `JedisBudgetStore`
 over a raw pool, is unchanged; the fix lives in the factory, which `CipherProbeJedisFactoryTest` covers).
+
+---
+
+# Final verdict — commit `258bdf3` (R1, R2, R5 applied)
+
+Reviewer: `cipher`, 2026-09-06 (third pass). New standing rule from Souhaile: **no allowance — every LOW and INFO
+must be fixed before merge.** This section therefore (a) closes the items this pass verified and (b) lists every
+remaining open item with its exact fix so the builder can close them in one round. Probes added this pass:
+`adapter/jdbc/CipherProbeFinalJdbcTest` (concurrent first starts), `ai/CipherProbeFinalSpringAiTest` (Spring AI's
+real `ToolCallingAutoConfiguration`, run-as forgeability). `./mvnw -B clean verify` is green.
+
+## Verdict: MERGE WITH FIXES
+
+Nothing found on this pass is exploitable from outside; the design holds. Under the no-allowance rule the branch is
+not mergeable until every row of the "Open items" table is closed. None of them needs a design change; the largest
+is L5 (JSON-aware redactor). One new LOW (R11, schema-at-startup races) was found while checking the anchor seeding.
+
+## Verified this pass
+
+- **R1 — fixed.** The guarded default manager is now `@ConditionalOnMissingClass(ToolCallingAutoConfiguration)` and
+  `beforeName` is gone. Verified against Spring AI's **real** `ToolCallingAutoConfiguration` (jar
+  `spring-ai-autoconfigure-model-tool:2.0.1` put on the test classpath with `-Dmaven.test.additionalClasspath`;
+  the probe self-skips without it): with `spring.ai.tools.limits.max-total-tool-calls=1` there is exactly one
+  `ToolCallingManager` bean, it is a `GuardedToolCallingManager` whose delegate is Spring AI's `toolCallingManager`
+  bean (`agentGuardToolCallingManager` is absent), the first of two calls is parked by the guard and the second gets
+  Spring AI's own "Total tool call limit (1) exceeded for this turn". The builder's `LimitedManagerConfig` test mimics
+  the same bean and exercises the real `ToolCallLimits` code inside `DefaultToolCallingManager`; it is a fair
+  stand-in, and the real-autoconfig probe removes the remaining doubt.
+- **R2 — fixed.** My unchanged probe from the second pass now fails (an append after an anchor-less trail links to
+  the real head, `INTACT`); the seed `INSERT … SELECT … ON CONFLICT (id) DO NOTHING` was exercised with eight
+  concurrent `initializeSchema` calls plus four concurrent appends on a pre-anchor trail: in every run the anchor
+  equals the verified head and row count (`INTACT`, `rowCount == verified`). Seeding is correct under concurrency;
+  what is **not** is the rest of the startup script (R11 below).
+- **R5 — fixed.** `SecurityContextPrincipalResolver.from` and `NoTenantResolver` short-circuit on
+  `RunAsAuthentication`; the builder's test with a host `TenantResolver` that only knows its own tokens shows
+  `tenant=acme` inside the resumed call and the approver's context restored afterwards.
+- **Run-as forgeability.** `RunAsAuthentication` cannot arrive from outside the JVM: no authentication provider
+  produces it, and it is **not serializable** (`Principal` is a record without `Serializable`; verified
+  `NotSerializableException`), so a session store (Spring Session with JDK serialization) cannot carry a forged one.
+  It is publicly constructible by application code and then trusted verbatim (`resolve()` returns roles, scopes and
+  tenant as given); application code is trusted, so this is hardening, not a hole: R10 below.
+
+## Open items — exact fixes (all required before merge)
+
+Each row: what to change, where, and which probe flips. "Flip" means rename and invert the named probe so it asserts
+the fixed behaviour, as done for the H/M items.
+
+| Id | Sev | Exact fix | Probe to flip |
+|---|---|---|---|
+| L1 self-approval | LOW | `ApprovalService.approve`/`reject`: if `approver.equals(decision.principal().id())` and `!allowSelfApproval` throw `SelfApprovalException` (`AG-APPROVAL-011`); endpoints map it to 403; property `agentguard.approval.allow-self-approval=false` (metadata + docs). | `probe_self_approval_is_accepted` |
+| L2 tamper not audited | LOW | `DecisionResumer.executeOnce`: when `!argumentsIntact()`, first `audit.record(…, AuditDecision.TAMPERED, …, actor)` (new enum value), `store.storeResult(id, Denied(AG-APPROVAL-004).toModelText())`, `markExecutedOnce(id)` so the decision is terminal, then throw. Endpoint still 422. | `probe_tamper_detection_leaves_no_audit_row` |
+| L3 policy not re-evaluated at resume | LOW | Inject `PolicyLookup` + `ToolPolicyEvaluator` into `DecisionResumer`; before running: `principal = refresher.refresh(decision.principal()).orElse(stored)` (new SPI `PrincipalRefresher`, default identity), `evaluator.evaluate(rule, principal, tool)`; `Deny` → store `Denied(code)`, audit `DENIED` with actor, return; `Allow`/`RequireApproval` → run; no rule any more → `AG-POLICY-004`. | `probe_policy_tightened_after_parking_is_not_rechecked_at_resume` |
+| L4 dedup has no time bound | LOW | `DecisionStore.findLatest(principal, tenant, tool, argsHash, Instant createdAfter)`; `ToolGuard.gate` passes `now - agentguard.approval.replay-window` (new property, default = `approval.ttl`); JDBC adds `AND created_at > ?` (existing index covers it); an executed/rejected decision older than the window parks a new one. | `probe_an_approved_decision_answers_identical_calls_with_the_stale_result_forever` |
+| L5 regex redactor | LOW | Replace the regex key match with a JSON walk: a small tolerant JSON parser in `domain` (no Jackson in core; objects, arrays, strings with escapes, numbers, literals) or a `JsonRedaction` port implemented in the starter with `tools.jackson`. Rules: a sensitive key masks its **whole value** whatever its shape; keys are compared after JSON unescaping; unparseable input returns `"***"` (full mask, DEBUG log); the control filter becomes `[\p{Cc}\p{Cf}  ]`; keep the `Bearer` regex on string values; `preview` = `redact` + cap. | `probe_array_and_object_values…`, `probe_unicode_escaped_keys…`, `probe_line_and_direction_control…` in `CipherProbeRedactorTest` (keep `probe_what_is_fine`) |
+| L6 webhook secret / no signature | LOW | `WebhookNotifier`: refuse a non-`https` URL unless the host is loopback or `agentguard.approval.notifier.webhook-allow-insecure=true` (fail at startup naming the property); when a secret is set send `X-AgentGuard-Timestamp: <epochSeconds>` and `X-AgentGuard-Signature: v1=<hex HMAC-SHA256(secret, timestamp + "." + body)>`; keep `X-AgentGuard-Token` only behind `webhook-legacy-token=true` for one release. Test with the already-declared WireMock (`NotifiersTest`), which also settles I9's unused-dependency point. Document the verification snippet. | new test in `NotifiersTest` |
+| L7 validation messages / silent empties | LOW | Hibernate Validator `@DurationMin(nanos = 1)` (or a custom `@PositiveDuration`) with `message = "agentguard.approval.ttl must be positive"` on `approval.ttl`, `approval.notifier.webhook-timeout`, `budgets.limits[].window`, `redis.pool.max-wait`. `AgentGuardStartupCheck`: WARN when `policy.approval-required-for` is empty ("no side effect requires approval; DESTRUCTIVE tools run without a human") and when `redaction.sensitive-keys` is empty. | `probe_non_positive_durations_fail_without_naming_the_property` (assert the property name is present); `probe_empty_approval_set_and_empty_sensitive_keys_are_accepted_silently` (assert the WARN with `OutputCaptureExtension`) |
+| L8 budget rows never purged; long key fails | LOW | `JdbcBudgetStore.incrementAndGet`: every 1000th call (`AtomicLong`) run `DELETE FROM agentguard_budget WHERE expires_at < ? - interval '1 day'`; column `key` `varchar(512)` → `text`; `BudgetLimit.key` uses `sha256(subject)` hex when `subject.length() > 128`. | `probe_expired_budget_rows_are_never_purged`, `probe_key_longer_than_the_column_fails_the_call_closed` |
+| L9 sample CSRF / noop passwords | LOW | `SecurityConfig`: `csrf(c -> c.ignoringRequestMatchers("/mcp/**"))` instead of `disable()` so the approval POSTs need the token; `SampleEndToEndTest` adds `.with(csrf())`; README: one line that `{noop}` users and Basic are for the demo only. | `SampleEndToEndTest` |
+| L10 DDL at every start, three times | LOW | `AgentGuardAutoConfiguration`: run `initializeSchema` once per `DataSource` (a marker bean or a set of `System.identityHashCode(ds)`); INFO log "agentguard schema step ran"; WARN when `initialize-schema=true` and `SELECT tableowner FROM pg_tables WHERE tablename = 'agentguard_audit'` equals `current_user` ("the runtime role owns the audit table and can disable its triggers; see Database roles"). Default stays `true`. Combine with R11. | new test in `AgentGuardAutoConfigurationTest` (schema runs once) |
+| I1 args hash over raw text | INFO | Hash a canonical form: with the parser from L5, re-serialise with sorted keys and no whitespace before `Hashes.sha256Hex` in `PendingDecision.park`, `ToolGuard.gate` and `argumentsIntact()`; unparseable → raw text as today; document. | `ToolGuardTest`: `{"a":1,"b":2}` and `{ "b":2, "a":1 }` share one decision |
+| I2 `isError` after approval is final | INFO | Docs FAQ line: "A tool that returns an error after approval is final (single execution); the agent must ask again and a human must approve again." `GuardResult.Failed` for that case carries `retryable:false`. | docs |
+| I3 anonymous token in `AuthorizationManager` | INFO | `SecurityContextPrincipalResolver.of(Authentication)` applies the same anonymous check as `resolve()` (`AnonymousAuthenticationToken`, unauthenticated, `"anonymousUser"` → `Principal.anonymous()`); `ToolPolicyAuthorizationManager` uses it. | new case in the AuthorizationManager test |
+| I4 endpoints not tenant-scoped | INFO | `AgentGuardEndpoints`: resolve the approver's tenant via `PrincipalResolver`; when present, `pending`/`audit` filter on it and `get`/`arguments`/`approve`/`reject` return 404 for another tenant's decision; `agentguard.endpoints.tenant-scoped=true` (default). Pro keeps the UI. | new test in `AgentGuardEndpointsTest` |
+| I5 tool exception message forwarded | INFO | `Errors.describe`: return `<SimpleClassName> (correlationId=…)`; log the message at WARN server-side; `agentguard.errors.include-tool-message=false` to opt back in. Update `ToolGuardTest.tool_failure_becomes_structured_error…` ("db down" no longer reaches the model by default). | `ToolGuardTest` |
+| I6 duplicate tool policy last-wins | INFO | `ToolPolicyRegistry.register`: identical rule → no-op; different rule for an existing name → `IllegalStateException("tool 'x' already has a different @ToolPolicy")` (startup failure). | `ToolPolicyAnnotationScannerTest` |
+| I7 chain has no secret | INFO | Optional keyed chain: `agentguard.audit.hmac-secret` (env var; at least 32 bytes, validated); when set `AuditChain` hashes with `HMAC-SHA256(secret, canonical + prev)` and `CANONICAL_VERSION = "ag2h"`; `AuditChainVerifier` takes the same key; documented as "detects rewrites by anyone without the key". | `AuditChainVerifierTest` |
+| I8 STEPS same as TOOL_CALLS; TOKENS overshoot; no auto-recording | INFO | (a) startup validation: `kind=STEPS` only with `scope=CONVERSATION`, `kind=TOOL_CALLS` only with `PRINCIPAL`/`TENANT` (fail fast naming `agentguard.budgets.limits[i]`); (b) ship `AgentGuardUsageAdvisor` (`CallAdvisor` + `StreamAdvisor` bean, `@ConditionalOnClass(ChatClient)`) that calls `budgets.recordTokens(principal, conversationId, usage.getTotalTokens())` after each response (closes QUESTIONS #8); (c) docs: a TOKENS check admits one more call, overshoot at most that call's tokens. | new advisor test with the fake `ChatModel` |
+| I9 supply chain | INFO | Both workflows: top-level `permissions: { contents: read }`; pin `actions/checkout`, `actions/setup-java`, `actions/upload-artifact` to full commit SHAs (resolve with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`, keep the tag in a comment; Dependabot updates SHAs); `.mvn/wrapper/maven-wrapper.properties`: add `distributionSha256Sum` from `https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.zip.sha256`; pin `postgres:16-alpine` and `redis:7-alpine` by digest in the four test files and the sample compose (`docker inspect --format '{{index .RepoDigests 0}}'`); keep `wiremock-standalone` only if L6 uses it, else remove. | CI config review |
+| R3 hand-built manager bypass | LOW | Docs sentence already added in `258bdf3`; remaining: `AgentGuardStartupCheck` logs the delegate class of the guarded manager; SECURITY-NOTES sentence "a manager built by hand and passed to a ChatModel builder is outside the guard; use the bean or `AgentGuard.guard(manager)`". | keep `probe_hand_built_manager_outside_the_context_bypasses_the_chokepoint` as documentation (rename without `probe_`) |
+| R4 anchor rewritable by UPDATE holders | LOW | Trigger `agentguard_audit_anchor_monotonic` `BEFORE UPDATE` on `agentguard_audit_anchor`: `RAISE EXCEPTION` unless `NEW.row_count = OLD.row_count + 1 AND NEW.head_hash <> OLD.head_hash`; the runtime role (UPDATE only) can then not reset it; the owner still can (documented residual in SECURITY-NOTES). | `probe_owner_can_rewrite_the_anchor_to_hide_a_tail_deletion` (assert the UPDATE is refused) |
+| R6 Redis regrowth after connection loss | LOW | `JedisBudgetStore`: run every Jedis call on a bounded daemon platform-thread executor (`Executors.newFixedThreadPool(maxTotal)`) with `Future.get(maxWait)` when `Runtime.version().feature() < 24` and `agentguard.redis.pool.platform-threads=true` (default); timeout → `AgentGuardException` → `AG-GUARD-001`. Removes the pin regardless of pool growth; keep the pre-fill. | `CipherProbeJedisFactoryTest` (add a `prepare-pool=false` variant, must still complete) |
+| R7 MCP conversation budget per session | INFO | Startup WARN when a `CONVERSATION` limit exists without a `PRINCIPAL` limit; docs sentence "a conversation is an MCP session; a client can open a new one; pair with a PRINCIPAL limit". | `AgentGuardAutoConfigurationTest` (log) |
+| R8 pending-cap lockout, tenant-less count | INFO | `DecisionStore.countPending(principalId, tenantId)` (`IS NOT DISTINCT FROM`); docs: the cap plus `approval.ttl` bound a prompt-injected model's lockout; approvers `reject` to free slots. | `parking_is_budgeted_and_capped_per_principal` (add the tenant case) |
+| R9 `AgentGuardException` from the tool leaves no audit row | INFO | `ToolGuard.dispatch`: in the `catch (AgentGuardException e)` branch record a `FAILED` row (`Errors.describe(e)`) before rethrowing; budget stays charged (document). | `ToolGuardTest` |
+| R10 run-as token hardening | LOW | `RunAsAuthentication`: constructor package-private (only `SecurityContextResumeContextProvider` builds it); `writeObject`/`readObject` throw `NotSerializableException` (stays non-serializable even if `Principal` becomes Serializable); override `setAuthenticated(true)` to throw `IllegalArgumentException` for external callers, as Spring's own tokens do. | `run_as_token_is_publicly_constructible_and_fully_trusted_but_not_serializable` (assert the constructor is not public) |
+| R11 schema-at-startup races (new) | LOW | Reproduced in `CipherProbeFinalJdbcTest`: a schema run on one instance while another appends → PostgreSQL **deadlock detected** (aborting either the append, i.e. a refused tool call, or the startup); eight instances starting on an **empty** database → `duplicate key value violates unique constraint "pg_type_typname_nsp_index"` (the `CREATE TABLE IF NOT EXISTS` race). Fix: first statement of `schema-postgresql.sql` = `SELECT pg_advisory_xact_lock(0x41474741554449)` (the sink's key, so schema runs serialise against appends; the script runs as one implicit transaction through `Statement.execute`); create triggers only when absent (`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = '…') THEN CREATE TRIGGER … END IF; END $$`) instead of `DROP TRIGGER` + `CREATE TRIGGER` on every start; run the script once per `DataSource` (L10). | the two tests in `CipherProbeFinalJdbcTest` (assert every outcome is `ok`) |
+
+## Not covered
+Real OpenAI/Anthropic `ChatModel` end to end (provider artifacts inspected by bytecode only). The `-Ppinning-probe`
+child-JVM test was not re-run (unchanged code path).

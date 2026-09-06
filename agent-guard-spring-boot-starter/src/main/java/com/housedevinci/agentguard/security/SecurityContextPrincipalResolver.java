@@ -30,6 +30,9 @@ public final class SecurityContextPrincipalResolver implements PrincipalResolver
   }
 
   public Principal from(Authentication auth) {
+    if (auth instanceof RunAsAuthentication runAs) {
+      return runAs.agentGuardPrincipal(); // a resumed call: roles, scopes and tenant as stored
+    }
     Set<String> roles = new HashSet<>();
     Set<String> scopes = new HashSet<>();
     for (GrantedAuthority a : auth.getAuthorities()) {

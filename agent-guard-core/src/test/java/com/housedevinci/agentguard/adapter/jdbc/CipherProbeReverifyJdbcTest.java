@@ -84,20 +84,29 @@ class CipherProbeReverifyJdbcTest {
         .isEqualTo(AuditChainVerifier.Status.INTACT);
   }
 
-  @Test
+  @Test // R2 flipped: rows without an anchor re-anchor from the head, and the schema seeds the row
   @Order(2)
-  void probe_trail_without_anchor_row_breaks_on_the_next_append() throws SQLException {
-    // an installation that had rows before the anchor existed (or lost the anchor row)
+  void trail_without_anchor_row_continues_from_the_real_head() throws SQLException {
     var sink = new JdbcAuditSink(ds);
     sql("DELETE FROM agentguard_audit_anchor");
-    var before = new AuditChainVerifier(sink).verify();
-    assertThat(before.status())
-        .isEqualTo(AuditChainVerifier.Status.INTACT); // rows, no anchor: fine
+    var head = sink.latest(1).get(0);
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.INTACT);
     var appended = sink.append(event(Instant.parse("2026-09-06T11:00:00Z")));
+    assertThat(appended.prevHash()).isEqualTo(head.hash());
     var after = new AuditChainVerifier(sink).verify();
-    // the new row links to GENESIS instead of the real head: the whole trail reads as tampered
-    assertThat(appended.prevHash()).isEqualTo("0".repeat(64));
-    assertThat(after.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
-    assertThat(after.brokenAtSequence()).isEqualTo(appended.sequence());
+    assertThat(after.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
+    assertThat(sink.anchor()).isPresent();
+    assertThat(sink.anchor().get().rowCount()).isEqualTo(after.verified());
+
+    // and the idempotent schema step seeds a missing anchor from the existing rows
+    sql("DELETE FROM agentguard_audit_anchor");
+    JdbcSupport.initializeSchema(ds);
+    assertThat(sink.anchor())
+        .contains(
+            new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(
+                appended.hash(), after.verified()));
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.INTACT);
   }
 }

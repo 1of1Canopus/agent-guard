@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   updated_at timestamptz NOT NULL
 );
 
+-- Seed the anchor from an existing trail (installations that predate the anchor, or a lost row).
+INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at)
+SELECT 1, a.hash, (SELECT count(*) FROM agentguard_audit), a.ts
+FROM agentguard_audit a ORDER BY a.seq DESC LIMIT 1
+ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS agentguard_budget (
   key        varchar(512) PRIMARY KEY,
   used       bigint NOT NULL,

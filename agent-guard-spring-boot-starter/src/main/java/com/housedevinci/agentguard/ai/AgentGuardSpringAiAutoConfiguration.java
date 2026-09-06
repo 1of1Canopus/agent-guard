@@ -15,6 +15,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 
@@ -23,9 +24,7 @@ import org.springframework.context.annotation.Bean;
  * wrapped, and the {@link ToolCallingManager} bean (the one ChatModels execute tools through) is
  * wrapped too, so inline tools ({@code .tools(obj)}, {@code ToolCallbacks.from}) are guarded.
  */
-@AutoConfiguration(
-    after = AgentGuardAutoConfiguration.class,
-    beforeName = "org.springframework.ai.model.tool.autoconfigure.ToolCallingAutoConfiguration")
+@AutoConfiguration(after = AgentGuardAutoConfiguration.class)
 @ConditionalOnClass(ToolCallback.class)
 @ConditionalOnProperty(prefix = "agentguard", name = "enabled", havingValue = "true")
 public class AgentGuardSpringAiAutoConfiguration {
@@ -38,11 +37,14 @@ public class AgentGuardSpringAiAutoConfiguration {
   }
 
   /**
-   * A {@code ToolCallingManager} exists in every application that executes tools; when Spring AI's
-   * own auto-configuration does not provide one, this guarded default does. Either way the bean
-   * post-processor wraps whichever instance ends up in the context.
+   * Spring AI's own {@code ToolCallingAutoConfiguration} builds the manager with the {@code
+   * spring.ai.tools.limits.*} and {@code resolution.fallback} settings; the bean post-processor
+   * wraps that bean, so those settings survive. Only when that auto-configuration is not on the
+   * classpath does this guarded default step in.
    */
   @Bean
+  @ConditionalOnMissingClass(
+      "org.springframework.ai.model.tool.autoconfigure.ToolCallingAutoConfiguration")
   @ConditionalOnMissingBean(ToolCallingManager.class)
   public ToolCallingManager agentGuardToolCallingManager(
       AgentGuard agentGuard,

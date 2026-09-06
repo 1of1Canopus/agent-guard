@@ -29,6 +29,10 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   private static final String COLUMNS =
       "seq, ts, principal_id, tenant_id, tool, args_hash, result_hash, latency_ms, decision, "
           + "correlation_id, decision_id, actor_id, prev_hash, hash";
+  private static final org.slf4j.Logger log =
+      org.slf4j.LoggerFactory.getLogger(JdbcAuditSink.class);
+  private static final java.util.concurrent.atomic.AtomicBoolean WARNED_MISSING_ANCHOR =
+      new java.util.concurrent.atomic.AtomicBoolean();
   private static final long LOCK_KEY = 0x41474741554449L; // "AGGAUDI"
 
   private final DataSource dataSource;
@@ -48,6 +52,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
           }
           String prev = AuditChain.GENESIS;
           long count = 0;
+          boolean anchored = false;
           try (PreparedStatement last =
                   c.prepareStatement(
                       "SELECT head_hash, row_count FROM agentguard_audit_anchor WHERE id = 1");
@@ -55,6 +60,27 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
             if (rs.next()) {
               prev = rs.getString(1);
               count = rs.getLong(2);
+              anchored = true;
+            }
+          }
+          if (!anchored) {
+            // no anchor row (trail older than the anchor, or the row was removed): continue from
+            // the table's actual head rather than restarting the chain at GENESIS
+            try (PreparedStatement head =
+                    c.prepareStatement(
+                        "SELECT hash, (SELECT count(*) FROM agentguard_audit) FROM agentguard_audit"
+                            + " ORDER BY seq DESC LIMIT 1");
+                ResultSet rs = head.executeQuery()) {
+              if (rs.next()) {
+                prev = rs.getString(1);
+                count = rs.getLong(2);
+                if (WARNED_MISSING_ANCHOR.compareAndSet(false, true)) {
+                  log.warn(
+                      "agentguard_audit_anchor row missing; re-anchoring from the trail head"
+                          + " (seq count {}). Run the schema step to seed it.",
+                      count);
+                }
+              }
             }
           }
           var linked = AuditChain.link(event, prev);

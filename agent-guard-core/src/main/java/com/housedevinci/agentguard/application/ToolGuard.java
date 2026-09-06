@@ -1,6 +1,7 @@
 package com.housedevinci.agentguard.application;
 
 import com.housedevinci.agentguard.domain.AgentGuardException;
+import com.housedevinci.agentguard.domain.ArgumentCanonicalizer;
 import com.housedevinci.agentguard.domain.ArgumentRedactor;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.BudgetExceededException;
@@ -8,7 +9,6 @@ import com.housedevinci.agentguard.domain.BudgetSubjectMissingException;
 import com.housedevinci.agentguard.domain.DecisionState;
 import com.housedevinci.agentguard.domain.DecisionStore;
 import com.housedevinci.agentguard.domain.ErrorCodes;
-import com.housedevinci.agentguard.domain.Hashes;
 import com.housedevinci.agentguard.domain.PendingDecision;
 import com.housedevinci.agentguard.domain.PolicyDecision;
 import com.housedevinci.agentguard.domain.PolicyRule;
@@ -42,7 +42,7 @@ public final class ToolGuard {
   private final ToolExecutorRegistry executors;
   private final AuditRecorder audit;
   private final ArgumentRedactor redactor;
-  private final ApprovalLimits limits;
+  private final GuardOptions options;
   private final Clock clock;
 
   public ToolGuard(
@@ -55,7 +55,7 @@ public final class ToolGuard {
       ToolExecutorRegistry executors,
       AuditRecorder audit,
       ArgumentRedactor redactor,
-      ApprovalLimits limits,
+      GuardOptions options,
       Clock clock) {
     this.policies = Objects.requireNonNull(policies);
     this.evaluator = Objects.requireNonNull(evaluator);
@@ -66,7 +66,7 @@ public final class ToolGuard {
     this.executors = Objects.requireNonNull(executors);
     this.audit = Objects.requireNonNull(audit);
     this.redactor = Objects.requireNonNull(redactor);
-    this.limits = Objects.requireNonNull(limits);
+    this.options = Objects.requireNonNull(options);
     this.clock = Objects.requireNonNull(clock);
   }
 
@@ -134,10 +134,12 @@ public final class ToolGuard {
 
   private GuardResult gate(ToolInvocation invocation, ToolRef tool, ToolExecutor executor) {
     var principal = invocation.principal();
-    var argsHash = Hashes.sha256Hex(invocation.argumentsJson());
+    var argsHash = ArgumentCanonicalizer.hash(invocation.argumentsJson());
+    var since = clock.instant().minus(options.replayWindow());
     Optional<PendingDecision> existing =
         decisions
-            .findLatest(principal.id(), principal.tenantId().orElse(null), tool.name(), argsHash)
+            .findLatest(
+                principal.id(), principal.tenantId().orElse(null), tool.name(), argsHash, since)
             .flatMap(d -> approvals.find(d.id()));
     if (existing.isPresent()) {
       var d = existing.get();
@@ -159,7 +161,7 @@ public final class ToolGuard {
       // EXPIRED: fall through and park again
     }
     if (invocation.argumentsJson().getBytes(StandardCharsets.UTF_8).length
-        > limits.maxArgumentBytes()) {
+        > options.maxArgumentBytes()) {
       audit.record(
           principal,
           tool.name(),
@@ -172,9 +174,10 @@ public final class ToolGuard {
       return new GuardResult.Denied(
           ErrorCodes.APPROVAL_ARGS_TOO_LARGE,
           tool.name(),
-          "arguments exceed " + limits.maxArgumentBytes() + " bytes and cannot be parked");
+          "arguments exceed " + options.maxArgumentBytes() + " bytes and cannot be parked");
     }
-    if (decisions.countPending(principal.id()) >= limits.maxPendingPerPrincipal()) {
+    if (decisions.countPending(principal.id(), principal.tenantId().orElse(null))
+        >= options.maxPendingPerPrincipal()) {
       audit.record(
           principal,
           tool.name(),
@@ -187,7 +190,7 @@ public final class ToolGuard {
       return new GuardResult.Denied(
           ErrorCodes.APPROVAL_TOO_MANY_PENDING,
           tool.name(),
-          "principal already has " + limits.maxPendingPerPrincipal() + " calls awaiting approval");
+          "principal already has " + options.maxPendingPerPrincipal() + " calls awaiting approval");
     }
     // a parked call is a call: reserve the budget now, never again at resume
     Optional<GuardResult> refused = reserve(invocation);
@@ -228,7 +231,18 @@ public final class ToolGuard {
           null);
       return new GuardResult.Executed(output);
     } catch (AgentGuardException e) {
-      throw e; // guard infrastructure failing inside the executor path: not the tool's fault
+      // guard infrastructure failing inside the executor path: leave a row, then fail closed;
+      // the budget reservation stays charged
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          null,
+          clock.millis() - start,
+          AuditDecision.FAILED,
+          invocation.correlationId(),
+          null);
+      throw e;
     } catch (Exception e) {
       audit.record(
           invocation.principal(),
@@ -239,7 +253,8 @@ public final class ToolGuard {
           AuditDecision.FAILED,
           invocation.correlationId(),
           null);
-      return new GuardResult.Failed(tool, Errors.describe(e));
+      return new GuardResult.Failed(
+          tool, Errors.describe(e, invocation.correlationId(), options.includeToolMessage()), true);
     }
   }
 

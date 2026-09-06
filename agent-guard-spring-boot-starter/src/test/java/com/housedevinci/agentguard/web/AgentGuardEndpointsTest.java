@@ -32,8 +32,10 @@ import org.springframework.test.web.servlet.MockMvc;
       "spring.ai.mcp.server.enabled=false",
       "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration"
     },
-    classes = AgentGuardEndpointsTest.App.class)
+    classes = {AgentGuardEndpointsTest.App.class, AgentGuardEndpointsTest.Tenants.class})
 @AutoConfigureMockMvc
+@org.springframework.test.annotation.DirtiesContext(
+    classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD)
 class AgentGuardEndpointsTest {
 
   @SpringBootConfiguration
@@ -42,6 +44,8 @@ class AgentGuardEndpointsTest {
 
   @Autowired MockMvc mvc;
   @Autowired ApprovalService approvals;
+  @Autowired com.housedevinci.agentguard.security.TenantResolver tenantResolver;
+  @Autowired com.housedevinci.agentguard.security.PrincipalResolver principals;
 
   @AfterEach
   void clear() {
@@ -52,6 +56,73 @@ class AgentGuardEndpointsTest {
     var auth = new TestingAuthenticationToken(name, "n/a", "ROLE_APPROVER");
     auth.setAuthenticated(true);
     SecurityContextHolder.getContext().setAuthentication(auth);
+  }
+
+  @org.springframework.boot.test.context.TestConfiguration
+  static class Tenants {
+    @org.springframework.context.annotation.Bean
+    com.housedevinci.agentguard.security.TenantResolver tenantResolver() {
+      return auth -> {
+        String name = auth.getName();
+        return name.startsWith("t1-")
+            ? java.util.Optional.of("t1")
+            : name.startsWith("t2-") ? java.util.Optional.of("t2") : java.util.Optional.empty();
+      };
+    }
+  }
+
+  @Test
+  void approvers_only_see_their_own_tenant_and_cannot_approve_their_own_call() throws Exception {
+    var t1Agent = new Principal("t1-agent", Set.of("AGENT"), Set.of(), "t1");
+    var t2Agent = new Principal("t2-agent", Set.of("AGENT"), Set.of(), "t2");
+    var d1 =
+        approvals.park(
+            new ToolInvocation(t1Agent, "refund", "{\"a\":1}", null, null),
+            new ToolRef("refund", SideEffect.WRITE),
+            "p");
+    var d2 =
+        approvals.park(
+            new ToolInvocation(t2Agent, "refund", "{\"a\":2}", null, null),
+            new ToolRef("refund", SideEffect.WRITE),
+            "p");
+
+    loginAs("t1-alice");
+    mvc.perform(get("/agentguard/decisions").with(user("t1-alice")))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.length()").value(1))
+        .andExpect(jsonPath("$[0].id").value(d1.id().toString()));
+    mvc.perform(get("/agentguard/decisions/" + d2.id()).with(user("t1-alice")))
+        .andExpect(status().isNotFound());
+    mvc.perform(get("/agentguard/decisions/" + d2.id() + "/arguments").with(user("t1-alice")))
+        .andExpect(status().isNotFound());
+    mvc.perform(
+            post("/agentguard/decisions/" + d2.id() + "/approve")
+                .param("argsHash", d2.argsHash())
+                .with(user("t1-alice")))
+        .andExpect(status().isNotFound());
+    mvc.perform(post("/agentguard/decisions/" + d2.id() + "/reject").with(user("t1-alice")))
+        .andExpect(status().isNotFound());
+    assertThat(approvals.find(d2.id()).orElseThrow().state().name()).isEqualTo("PENDING");
+
+    // the parking principal may not decide its own call
+    loginAs("t1-agent");
+    mvc.perform(
+            post("/agentguard/decisions/" + d1.id() + "/approve")
+                .param("argsHash", d1.argsHash())
+                .with(user("t1-agent")))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AG-APPROVAL-011"));
+    mvc.perform(post("/agentguard/decisions/" + d1.id() + "/reject").with(user("t1-agent")))
+        .andExpect(status().isForbidden());
+
+    loginAs("t2-bob");
+    mvc.perform(post("/agentguard/decisions/" + d2.id() + "/reject").with(user("t2-bob")))
+        .andExpect(status().isOk());
+    mvc.perform(get("/agentguard/audit").with(user("t2-bob")))
+        .andExpect(status().isOk())
+        .andExpect(
+            jsonPath("$[*].tenantId")
+                .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("t2"))));
   }
 
   @Test

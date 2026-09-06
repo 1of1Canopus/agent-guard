@@ -69,13 +69,27 @@ public final class JdbcSupport {
     } catch (IOException e) {
       throw new IllegalStateException("cannot read schema", e);
     }
-    withConnection(
+    inTransaction(
         ds,
         c -> {
           try (Statement st = c.createStatement()) {
             st.execute(sql);
           }
           return null;
+        });
+  }
+
+  /** True when the current database role owns the audit table (and could disable its triggers). */
+  public static boolean runtimeRoleOwnsAuditTable(DataSource ds) {
+    return withConnection(
+        ds,
+        c -> {
+          try (Statement st = c.createStatement();
+              var rs =
+                  st.executeQuery(
+                      "SELECT tableowner = current_user FROM pg_tables WHERE tablename = 'agentguard_audit'")) {
+            return rs.next() && rs.getBoolean(1);
+          }
         });
   }
 

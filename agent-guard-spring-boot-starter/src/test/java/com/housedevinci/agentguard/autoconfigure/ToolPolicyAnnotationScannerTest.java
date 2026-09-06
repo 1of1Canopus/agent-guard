@@ -48,4 +48,24 @@ class ToolPolicyAnnotationScannerTest {
     assertThat(registry.find("plain")).isEmpty();
     assertThat(registry.find("lookup")).isEmpty();
   }
+
+  static class OtherTools {
+    @McpTool(name = "lookup_order", description = "same name, other policy")
+    @ToolPolicy(roles = "ADMIN")
+    public String lookup2(String id) {
+      return id;
+    }
+  }
+
+  @Test
+  void conflicting_policies_for_one_tool_name_fail_and_identical_ones_are_ignored() {
+    var registry = new ToolPolicyRegistry();
+    var scanner = new ToolPolicyAnnotationScanner(registry);
+    scanner.postProcessAfterInitialization(new Tools(), "tools");
+    scanner.postProcessAfterInitialization(new Tools(), "tools-again");
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> scanner.postProcessAfterInitialization(new OtherTools(), "other"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("lookup_order");
+  }
 }

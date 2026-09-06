@@ -20,13 +20,18 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 /** Cipher final-pass probe: anchor seeding when several instances start (and append) at once. */
 @Testcontainers
 class CipherProbeFinalJdbcTest {
 
   @Container
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+  static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+          DockerImageName.parse(
+                  "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
+              .asCompatibleSubstituteFor("postgres"));
 
   static HikariDataSource ds;
 
@@ -112,9 +117,9 @@ class CipherProbeFinalJdbcTest {
       // invariant: whatever the race did, trail and anchor agree and the chain verifies
       assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
       assertThat(sink.anchor().orElseThrow().rowCount()).isEqualTo(report.verified());
-      // documented race (R11): the trigger DDL of a concurrent schema run deadlocks with appends;
-      // Postgres aborts one side (a lost audit row = a refused tool call, or a failed startup)
-      assertThat(outcomes).allMatch(o -> o.equals("ok") || o.contains("deadlock detected"));
+      // R11 flipped: schema runs take the sink's advisory lock first and only create what is
+      // absent, so neither a startup nor an append is ever aborted
+      assertThat(outcomes).containsOnly("ok");
     } finally {
       pool.shutdownNow();
     }
@@ -148,14 +153,8 @@ class CipherProbeFinalJdbcTest {
         outcomes.add(f.get());
       }
       System.out.println("empty-db outcomes: " + outcomes);
-      // documented race (R11): CREATE TABLE IF NOT EXISTS is not concurrency-safe in PostgreSQL
-      assertThat(outcomes)
-          .allMatch(
-              o ->
-                  o.equals("ok")
-                      || o.contains("pg_type_typname_nsp_index")
-                      || o.contains("deadlock detected")
-                      || o.contains("already exists"));
+      // R11 flipped: eight first starts on an empty database all succeed
+      assertThat(outcomes).containsOnly("ok");
       // whatever the race printed, the schema must be usable afterwards
       JdbcSupport.initializeSchema(ds);
       var sink = new JdbcAuditSink(ds);

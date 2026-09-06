@@ -34,6 +34,42 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - R5 (re-verification): `RunAsAuthentication` keeps the tenant during a resumed call (`SecurityContextPrincipalResolver`
   short-circuits on it, `NoTenantResolver` understands it).
 
+### Security (no-allowance round: every LOW / INFO of the review closed)
+- L1 four-eyes: the parking principal cannot approve/reject its own call (`AG-APPROVAL-011`, 403;
+  `agentguard.approval.allow-self-approval=false`).
+- L2 tamper detection is audited (`AuditDecision.TAMPERED`, with actor) and closes the decision.
+- L3 policy re-evaluated at resume with a refreshed principal (`PrincipalRefresher` SPI); a revoked role or a
+  tightened rule denies, audited with the approver as actor.
+- L4 dedup bounded by `agentguard.approval.replay-window` (default = ttl).
+- L5 JSON-aware redactor: dependency-free parser in the domain, sensitive keys mask their whole value whatever its
+  shape, keys compared after unescaping, `\p{Cc}\p{Cf}` + U+0085/2028/2029 stripped, unparseable input fully masked.
+- L6 webhook: https required (loopback or `webhook-allow-insecure` excepted), `X-AgentGuard-Timestamp` +
+  `X-AgentGuard-Signature: v1=HMAC-SHA256(secret, ts.body)`; static token only with `webhook-legacy-token`.
+- L7 duration properties fail naming the property; empty `approval-required-for` / `sensitive-keys` warn.
+- L8 expired budget rows purged every 1000 increments, `key` column `text`, long subjects hashed.
+- L9 sample keeps CSRF on for the approval endpoints; README says the demo credentials are demo-only.
+- L10/R11 schema step runs once per DataSource, under the sink's advisory lock, creating triggers only when absent
+  (no deadlock with appends, eight concurrent first starts succeed); WARN when the runtime role owns the audit table.
+- I1 arguments hashed in canonical form (sorted keys, no whitespace): key order and spacing share one decision.
+- I2 `Failed.retryable=false` after an approval; documented.
+- I3 anonymous tokens map to the anonymous principal in the `AuthorizationManager` too.
+- I4 endpoints are tenant-scoped (`agentguard.endpoints.tenant-scoped=true`): other tenants' decisions are 404.
+- I5 tool exception messages stay server-side (`agentguard.errors.include-tool-message=false`); the model gets the
+  class name and the correlation id.
+- I6 two different policies for one tool name fail at startup.
+- I7 optional keyed chain (`agentguard.audit.hmac-secret`, >= 32 bytes, version `ag2h`).
+- I8 `STEPS` only with `CONVERSATION`, `TOOL_CALLS` only with `PRINCIPAL`/`TENANT` (fail fast);
+  `AgentGuardUsageAdvisor` records model tokens for `TOKENS` budgets (closes QUESTIONS #8).
+- I9 workflows: `permissions: contents: read`, actions pinned by SHA, wrapper `distributionSha256Sum`, container
+  images pinned by digest.
+- R3 startup log names the wrapped manager and the hand-built-manager caveat.
+- R4 `agentguard_audit_anchor` only advances by one row (trigger).
+- R6 Redis calls run on a bounded platform-thread pool on JDK 21-23 (`agentguard.redis.pool.platform-threads`).
+- R7 WARN when a CONVERSATION limit has no PRINCIPAL limit.
+- R8 pending cap counted per principal and tenant.
+- R9 an `AgentGuardException` from the tool path leaves a FAILED row before failing closed.
+- R10 `RunAsAuthentication`: package-private constructor, never serializable, cannot be re-authenticated.
+
 ### Added
 - `agent-guard-core` (Apache-2.0, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable
@@ -46,7 +82,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
     enforced before dispatch, `BudgetStore` port.
   - Adapters: PostgreSQL (JDBC, append-only trigger, advisory-lock chain), Redis (Jedis, atomic Lua counter),
     in-memory.
-  - Error codes `AG-POLICY-00x`, `AG-APPROVAL-001..010`, `AG-BUDGET-001/002`, `AG-TOOL-001`, `AG-GUARD-001`.
+  - Error codes `AG-POLICY-00x`, `AG-APPROVAL-001..011`, `AG-BUDGET-001/002`, `AG-TOOL-001`, `AG-GUARD-001`.
 - `agent-guard-spring-boot-starter`:
   - `agentguard.*` properties (validated, documented metadata, fail-fast messages naming the property).
   - Spring AI 2.0.x: every `ToolCallback` / `ToolCallbackProvider` bean is decorated; `AgentGuard.guard(...)` for

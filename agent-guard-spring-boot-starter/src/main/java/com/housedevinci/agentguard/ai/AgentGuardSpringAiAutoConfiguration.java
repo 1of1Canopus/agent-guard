@@ -58,6 +58,9 @@ public class AgentGuardSpringAiAutoConfiguration {
     return agentGuard.guard(builder.build());
   }
 
+  /**
+   * Token accounting for {@code kind: TOKENS} budgets; picked up by ChatClient auto-configuration.
+   */
   @Bean
   public static ToolCallbackGuardBeanPostProcessor toolCallbackGuardBeanPostProcessor(
       BeanFactory beanFactory) {

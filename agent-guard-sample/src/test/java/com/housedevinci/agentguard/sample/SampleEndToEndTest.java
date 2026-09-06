@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 /** The SPEC acceptance check, end to end, through a real MCP client over streamable HTTP. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -35,7 +36,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class SampleEndToEndTest {
 
   @Container @ServiceConnection
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+  static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+          DockerImageName.parse(
+                  "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
+              .asCompatibleSubstituteFor("postgres"));
 
   @LocalServerPort int port;
   @Autowired MockMvc mvc;
@@ -88,7 +93,10 @@ class SampleEndToEndTest {
       // 3. approval via endpoint resumes and executes once; second approval is a no-op
       var alice = SecurityMockMvcRequestPostProcessors.httpBasic("alice", "alice");
       var list =
-          mvc.perform(get("/agentguard/decisions").with(alice))
+          mvc.perform(
+                  get("/agentguard/decisions")
+                      .with(alice)
+                      .with(SecurityMockMvcRequestPostProcessors.csrf()))
               .andExpect(status().isOk())
               .andExpect(jsonPath("$[0].tool").value("refund_order"))
               .andExpect(jsonPath("$[0].state").value("PENDING"))
@@ -98,19 +106,24 @@ class SampleEndToEndTest {
       var id = list.replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
       var argsHash = list.replaceAll(".*\"argsHash\":\"([0-9a-f]{64})\".*", "$1");
       // the approver reads the full redacted arguments, then attests their hash
-      mvc.perform(get("/agentguard/decisions/" + id + "/arguments").with(alice))
+      mvc.perform(
+              get("/agentguard/decisions/" + id + "/arguments")
+                  .with(alice)
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
           .andExpect(status().isOk())
           .andExpect(jsonPath("$.arguments").value("{\"orderId\":\"42\"}"))
           .andExpect(jsonPath("$.argsHash").value(argsHash));
       mvc.perform(
               post("/agentguard/decisions/" + id + "/approve")
                   .param("argsHash", "f".repeat(64))
-                  .with(alice))
+                  .with(alice)
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
           .andExpect(status().isConflict());
       mvc.perform(
               post("/agentguard/decisions/" + id + "/approve")
                   .param("argsHash", argsHash)
-                  .with(alice))
+                  .with(alice)
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
           .andExpect(status().isOk())
           .andExpect(jsonPath("$.decision.state").value("APPROVED"))
           .andExpect(jsonPath("$.decision.decidedBy").value("alice"))
@@ -119,14 +132,20 @@ class SampleEndToEndTest {
       mvc.perform(
               post("/agentguard/decisions/" + id + "/approve")
                   .param("argsHash", argsHash)
-                  .with(alice))
+                  .with(alice)
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
           .andExpect(status().isOk())
           .andExpect(jsonPath("$.decision.executed").value(true));
-      mvc.perform(get("/agentguard/decisions").with(alice)).andExpect(jsonPath("$").isEmpty());
+      mvc.perform(
+              get("/agentguard/decisions")
+                  .with(alice)
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
+          .andExpect(jsonPath("$").isEmpty());
       // the agent is not allowed to approve
       mvc.perform(
               post("/agentguard/decisions/" + id + "/reject")
-                  .with(SecurityMockMvcRequestPostProcessors.httpBasic("agent", "agent")))
+                  .with(SecurityMockMvcRequestPostProcessors.httpBasic("agent", "agent"))
+                  .with(SecurityMockMvcRequestPostProcessors.csrf()))
           .andExpect(status().isForbidden());
 
       // 4. budget of 3 calls: read, parked write, read = 3; the approved execution is not charged
@@ -138,7 +157,10 @@ class SampleEndToEndTest {
 
       // 5. audit shows the chain, intact
       var audit =
-          mvc.perform(get("/agentguard/audit").with(alice))
+          mvc.perform(
+                  get("/agentguard/audit")
+                      .with(alice)
+                      .with(SecurityMockMvcRequestPostProcessors.csrf()))
               .andExpect(status().isOk())
               .andExpect(jsonPath("$[0].decision").value("BUDGET_EXCEEDED"))
               .andExpect(jsonPath("$[0].hash").isString())

@@ -19,5 +19,9 @@ What happens:
 | 4th tool call within a minute | `{"status":"DENIED","error":"BUDGET_EXCEEDED","code":"AG-BUDGET-001",...}` |
 | `GET /agentguard/audit` as `alice` | the hash-chained trail (`prevHash` / `hash` on every row) |
 
+Demo only: the `{noop}` passwords and HTTP Basic are there to keep the sample to 60 lines; put real
+authentication (OIDC, an API gateway) in front of a production deployment. CSRF stays on for the approval
+endpoints (`csrf.ignoringRequestMatchers("/mcp/**")` exempts only the MCP transport).
+
 `SampleEndToEndTest` drives all of that through a real MCP streamable-HTTP client and MockMvc
 against a Testcontainers PostgreSQL.

@@ -28,8 +28,9 @@ public final class InMemoryDecisionStore implements DecisionStore {
 
   @Override
   public Optional<PendingDecision> findLatest(
-      String principalId, String tenantId, String tool, String argsHash) {
+      String principalId, String tenantId, String tool, String argsHash, Instant createdAfter) {
     return byId.values().stream()
+        .filter(d -> d.createdAt().isAfter(createdAfter))
         .filter(d -> d.principal().id().equals(principalId))
         .filter(d -> java.util.Objects.equals(d.principal().tenantId().orElse(null), tenantId))
         .filter(d -> d.tool().name().equals(tool))
@@ -38,9 +39,10 @@ public final class InMemoryDecisionStore implements DecisionStore {
   }
 
   @Override
-  public long countPending(String principalId) {
+  public long countPending(String principalId, String tenantId) {
     return byId.values().stream()
         .filter(d -> d.state() == DecisionState.PENDING && d.principal().id().equals(principalId))
+        .filter(d -> java.util.Objects.equals(d.principal().tenantId().orElse(null), tenantId))
         .count();
   }
 

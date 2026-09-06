@@ -36,9 +36,15 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   private static final long LOCK_KEY = 0x41474741554449L; // "AGGAUDI"
 
   private final DataSource dataSource;
+  private final AuditChain chain;
 
   public JdbcAuditSink(DataSource dataSource) {
+    this(dataSource, AuditChain.unkeyed());
+  }
+
+  public JdbcAuditSink(DataSource dataSource, AuditChain chain) {
     this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
+    this.chain = Objects.requireNonNull(chain, "chain");
   }
 
   @Override
@@ -83,7 +89,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
               }
             }
           }
-          var linked = AuditChain.link(event, prev);
+          var linked = chain.linkEvent(event, prev);
           try (PreparedStatement anchor =
               c.prepareStatement(
                   "INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at) "

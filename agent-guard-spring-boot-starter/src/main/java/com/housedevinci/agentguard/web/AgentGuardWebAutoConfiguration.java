@@ -30,6 +30,11 @@ public class AgentGuardWebAutoConfiguration {
       ArgumentRedactor redactor,
       AgentGuardProperties props) {
     return new AgentGuardEndpoints(
-        approvals, audit, principals, redactor, props.getEndpoints().isAllowAnonymous());
+        approvals,
+        audit,
+        principals,
+        redactor,
+        props.getEndpoints().isAllowAnonymous(),
+        props.getEndpoints().isTenantScoped());
   }
 }

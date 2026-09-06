@@ -36,7 +36,7 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
 7. **[decided — coordinator ruling]** `agentguard.store=JDBC` stays the fail-closed default. The startup error names
    the trial setting explicitly: "no DataSource found; for a local trial set agentguard.store=memory - not for
    production." Implemented in `AgentGuardAutoConfiguration`, asserted in `AgentGuardAutoConfigurationTest`.
-8. **[ruling?, still open]** Token budgets (`kind: TOKENS`) are enforced before dispatch and recorded through
+8. **[closed by the no-allowance round]** `AgentGuardUsageAdvisor` (CallAdvisor + StreamAdvisor bean) records model tokens after every response. Original note: Token budgets (`kind: TOKENS`) are enforced before dispatch and recorded through
    `BudgetEnforcer.recordTokens(...)`, but nothing calls `recordTokens` automatically yet: Spring AI usage metadata lives
    on the `ChatResponse`, not on the tool call, so it needs a `ChatClient` advisor or a `ChatModel` decorator. Proposed:
    an `AgentGuardUsageAdvisor` (CallAdvisor) in the starter next run.

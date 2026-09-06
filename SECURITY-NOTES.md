@@ -35,12 +35,13 @@ does about it, and what still needs a reviewer's eye.
   `GuardedToolCallbackTest`, `SampleEndToEndTest`.
 
 ## Threat 4 — Log injection
-- **Mitigation:** `ArgumentRedactor` masks sensitive keys, masks bearer-like tokens anywhere, strips control characters
-  and U+2028/2029, caps the preview at 512 chars. Only the preview reaches logs, webhooks and the endpoints; the raw
+- **Mitigation:** `ArgumentRedactor` parses the JSON (dependency-free parser in the domain) and masks the whole
+  value of a sensitive key whatever its shape; keys are compared after unescaping; bearer-like tokens are masked in
+  any string; `\p{Cc}\p{Cf}` and U+0085/2028/2029 are stripped; unparseable input is masked whole; the preview is
+  capped at 512 chars, the approver's view is not. Only the preview reaches logs, webhooks and the endpoints; the raw
   arguments never do. Exceptions reach the model as `class: message` (300 chars), never a stack trace.
 - **Test:** `ArgumentRedactorTest`, `NotifiersTest`.
-- **Open:** key matching is regex-based on JSON text, not a JSON parser; nested arrays of objects are handled, but a
-  value that itself contains `"password":` inside a string would also be masked (harmless). Reviewer: fuzz it.
+- Tool exception messages stay server-side by default (`agentguard.errors.include-tool-message=false`).
 
 ## Threat 5 — Privilege escalation via tool chaining, budget evasion
 - **Mitigation:** every call is evaluated on its own with the caller's principal; budgets have a `CONVERSATION`
@@ -100,15 +101,17 @@ does about it, and what still needs a reviewer's eye.
   (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
 ## Review status
-Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`): H1–H3 and M1–M7 fixed on the branch,
-each probe flipped to assert the fixed behaviour. Still open, tracked as LOW with their probes left in place:
-L1 self-approval, L2 tamper detection not audited, L3 policy not re-evaluated at resume, L4 dedup has no time bound,
-L5 redactor gaps (array/object values, `\u`-escaped keys, U+0085/U+202E), L6 webhook signature, L7 property
-messages, L8 budget table hygiene, L9 sample CSRF note, L10 `initialize-schema` default; INFO I1–I9.
+Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, four passes): H1–H3, M1–M7, R1, R2, R5
+fixed and re-verified; under the no-allowance rule every LOW and INFO (L1–L10, I1–I9, R3, R4, R6–R11) is fixed on
+the branch with its probe flipped. Documented residuals that remain by design: a role that *owns* the tables can
+drop the append-only and anchor triggers (split roles, see docs "Database roles"; external anchoring and the
+keyed chain reduce what such a role can do silently); a `ToolCallingManager` built by hand and handed to a
+`ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23 Redis calls run
+on platform threads so the pool's growth lock is never touched by a virtual thread.
 
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.
-- [x] Fuzz `ArgumentRedactor` with adversarial JSON (done by Cipher; gaps tracked as L5).
+- [x] Fuzz `ArgumentRedactor` with adversarial JSON (done by Cipher; L5 closed with the JSON-aware redactor).
 - [ ] Confirm no secret / PII reaches logs in the sample run (grep the log for `hunter2`, `Bearer `, IBAN-like patterns).
 - [ ] Two-role database setup documented and used by the sample compose file.
-- [x] Threat model the webhook (done by Cipher; signature tracked as L6).
+- [x] Threat model the webhook (done by Cipher; L6 closed: https, HMAC signature, timestamp).

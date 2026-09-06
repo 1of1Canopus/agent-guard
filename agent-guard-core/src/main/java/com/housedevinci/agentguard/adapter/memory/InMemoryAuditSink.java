@@ -12,11 +12,20 @@ import java.util.List;
 public final class InMemoryAuditSink implements AuditSink, AuditReader, AuditAnchor {
 
   private final List<AuditEvent> events = new ArrayList<>();
+  private final AuditChain chain;
+
+  public InMemoryAuditSink() {
+    this(AuditChain.unkeyed());
+  }
+
+  public InMemoryAuditSink(AuditChain chain) {
+    this.chain = chain;
+  }
 
   @Override
   public synchronized AuditEvent append(AuditEvent event) {
     String prev = events.isEmpty() ? AuditChain.GENESIS : events.get(events.size() - 1).hash();
-    var linked = AuditChain.link(event.withSequence(events.size() + 1L), prev);
+    var linked = chain.linkEvent(event.withSequence(events.size() + 1L), prev);
     events.add(linked);
     return linked;
   }

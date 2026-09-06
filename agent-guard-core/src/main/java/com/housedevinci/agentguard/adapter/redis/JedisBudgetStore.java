@@ -1,14 +1,24 @@
 package com.housedevinci.agentguard.adapter.redis;
 
+import com.housedevinci.agentguard.domain.AgentGuardException;
 import com.housedevinci.agentguard.domain.BudgetStore;
+import com.housedevinci.agentguard.domain.ErrorCodes;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import redis.clients.jedis.UnifiedJedis;
 
 /**
  * Redis counters through Jedis: {@code INCRBY} plus a {@code PEXPIRE} on first write, in one Lua
- * script so the pair is atomic.
+ * script so the pair is atomic. On JDK 21-23 every Jedis call can run on a bounded pool of daemon
+ * platform threads ({@link #onPlatformThreads}), so a virtual-thread caller never reaches the
+ * connection pool's growth lock whatever happens to the connections (Cipher R6).
  */
 public final class JedisBudgetStore implements BudgetStore {
 
@@ -18,22 +28,79 @@ public final class JedisBudgetStore implements BudgetStore {
           + "return v";
 
   private final UnifiedJedis jedis;
+  private final ExecutorService executor;
+  private final Duration maxWait;
 
   public JedisBudgetStore(UnifiedJedis jedis) {
+    this(jedis, null, Duration.ofSeconds(2));
+  }
+
+  private JedisBudgetStore(UnifiedJedis jedis, ExecutorService executor, Duration maxWait) {
     this.jedis = Objects.requireNonNull(jedis, "jedis");
+    this.executor = executor;
+    this.maxWait = Objects.requireNonNull(maxWait, "maxWait");
+  }
+
+  /** Runs every call on {@code threads} daemon platform threads, bounded by {@code maxWait}. */
+  public static JedisBudgetStore onPlatformThreads(
+      UnifiedJedis jedis, int threads, Duration maxWait) {
+    var pool =
+        Executors.newFixedThreadPool(
+            Math.max(1, threads),
+            r -> {
+              var t = new Thread(r, "agentguard-redis");
+              t.setDaemon(true);
+              return t;
+            });
+    return new JedisBudgetStore(jedis, pool, maxWait);
+  }
+
+  public boolean isOnPlatformThreads() {
+    return executor != null;
   }
 
   @Override
   public long incrementAndGet(String key, long amount, Duration ttl) {
-    Object result =
-        jedis.eval(
-            SCRIPT, List.of(key), List.of(Long.toString(amount), Long.toString(ttl.toMillis())));
-    return ((Number) result).longValue();
+    return run(
+        () -> {
+          Object result =
+              jedis.eval(
+                  SCRIPT,
+                  List.of(key),
+                  List.of(Long.toString(amount), Long.toString(ttl.toMillis())));
+          return ((Number) result).longValue();
+        });
   }
 
   @Override
   public long current(String key) {
-    String v = jedis.get(key);
-    return v == null ? 0L : Long.parseLong(v);
+    return run(
+        () -> {
+          String v = jedis.get(key);
+          return v == null ? 0L : Long.parseLong(v);
+        });
+  }
+
+  private long run(Callable<Long> call) {
+    if (executor == null) {
+      try {
+        return call.call();
+      } catch (Exception e) {
+        throw new AgentGuardException(ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store failed", e);
+      }
+    }
+    try {
+      return executor.submit(call).get(maxWait.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      throw new AgentGuardException(
+          ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store did not answer within " + maxWait, e);
+    } catch (ExecutionException e) {
+      throw new AgentGuardException(
+          ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store failed", e.getCause());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AgentGuardException(
+          ErrorCodes.GUARD_UNAVAILABLE, "interrupted waiting for Redis", e);
+    }
   }
 }

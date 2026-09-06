@@ -140,7 +140,7 @@ class CipherProbeApprovalGateTest {
 
     // and without any budget, the pending cap holds
     var capped = new GuardFixture();
-    capped.approvalLimits = new ApprovalLimits(5, 1024);
+    capped.options = new GuardOptions(5, 1024, Duration.ofHours(1), false);
     capped.build();
     capped.registry.register("write", PolicyRule.unrestricted(SideEffect.WRITE));
     for (int i = 0; i < 5; i++) {
@@ -249,18 +249,32 @@ class CipherProbeApprovalGateTest {
     assertThat(last).isInstanceOf(GuardResult.BudgetExceeded.class);
   }
 
-  // ---- LOW items, still open: these document the current behaviour -------------------------
+  // ---- LOW items, flipped ------------------------------------------------------------------
 
-  @Test
-  void probe_self_approval_is_accepted() {
+  @Test // L1 flipped
+  void self_approval_is_refused_unless_allowed() {
     var parked = (GuardResult.AwaitingApproval) exec(AGENT, "write", "{\"a\":2}", a -> "ok");
-    var outcome = f.approvals.approve(parked.decision().id(), AGENT.id());
-    assertThat(outcome.result()).isInstanceOf(GuardResult.Executed.class);
-    assertThat(outcome.decision().decidedBy()).isEqualTo(parked.decision().principal().id());
+    assertThatThrownBy(() -> f.approvals.approve(parked.decision().id(), AGENT.id()))
+        .isInstanceOf(com.housedevinci.agentguard.domain.SelfApprovalException.class)
+        .hasMessageContaining(AGENT.id());
+    assertThatThrownBy(() -> f.approvals.reject(parked.decision().id(), AGENT.id()))
+        .isInstanceOf(com.housedevinci.agentguard.domain.SelfApprovalException.class);
+    assertThat(f.decisions.findById(parked.decision().id()).orElseThrow().state())
+        .isEqualTo(DecisionState.PENDING);
+    var lenient = new GuardFixture();
+    lenient.allowSelfApproval = true;
+    lenient.build();
+    lenient.registry.register("write", PolicyRule.unrestricted(SideEffect.WRITE));
+    var p2 =
+        (GuardResult.AwaitingApproval)
+            lenient.guard.execute(
+                ToolInvocation.of(AGENT, "write", "{}"), Optional.empty(), a -> "ok");
+    assertThat(lenient.approvals.approve(p2.decision().id(), AGENT.id()).result())
+        .isInstanceOf(GuardResult.Executed.class);
   }
 
-  @Test
-  void probe_tamper_detection_leaves_no_audit_row() {
+  @Test // L2 flipped
+  void tamper_detection_is_audited_and_closes_the_decision() {
     var parked = (GuardResult.AwaitingApproval) exec(AGENT, "write", "{\"a\":5}", a -> "ok");
     var d = parked.decision();
     f.decisions.save(
@@ -283,22 +297,45 @@ class CipherProbeApprovalGateTest {
     int before = f.auditSink.latest(100).size();
     assertThatThrownBy(() -> f.approvals.approve(d.id(), "alice"))
         .isInstanceOf(ArgumentsTamperedException.class);
-    assertThat(f.auditSink.latest(100)).hasSize(before);
-    assertThat(f.decisions.findById(d.id()).orElseThrow().state())
-        .isEqualTo(DecisionState.APPROVED);
+    assertThat(f.auditSink.latest(100)).hasSize(before + 1);
+    var row = f.auditSink.latest(1).get(0);
+    assertThat(row.decision()).isEqualTo(AuditDecision.TAMPERED);
+    assertThat(row.actorId()).isEqualTo("alice");
+    var closed = f.decisions.findById(d.id()).orElseThrow();
+    assertThat(closed.executed()).isTrue();
+    assertThat(closed.result().orElseThrow()).contains("AG-APPROVAL-004");
+    // nobody can run it later
+    assertThatThrownBy(() -> f.approvals.approve(d.id(), "bob"))
+        .isInstanceOf(ArgumentsTamperedException.class);
   }
 
-  @Test
-  void probe_policy_tightened_after_parking_is_not_rechecked_at_resume() {
+  @Test // L3 flipped
+  void policy_is_re_evaluated_at_resume_with_a_refreshed_principal() {
     var parked = (GuardResult.AwaitingApproval) exec(AGENT, "write", "{\"a\":3}", a -> "ok");
-    f.registry.register(
+    f.registry.override(
         "write", new PolicyRule(Set.of("ADMIN"), Set.of(), Set.of(), SideEffect.WRITE));
     var outcome = f.approvals.approve(parked.decision().id(), "alice");
-    assertThat(outcome.result()).isInstanceOf(GuardResult.Executed.class);
+    assertThat(outcome.result()).isInstanceOf(GuardResult.Denied.class);
+    assertThat(outcome.result().toModelText()).contains("AG-POLICY-001").contains("re-evaluated");
+    assertThat(f.auditSink.latest(1).get(0).decision()).isEqualTo(AuditDecision.DENIED);
+    assertThat(f.auditSink.latest(1).get(0).actorId()).isEqualTo("alice");
+
+    // a refresher that reports the role as revoked denies even with the original rule
+    var fx = new GuardFixture();
+    fx.refresher =
+        stored -> Optional.of(new Principal(stored.id(), Set.of(), Set.of(), stored.tenant()));
+    fx.build();
+    fx.registry.register(
+        "write", new PolicyRule(Set.of("AGENT"), Set.of(), Set.of(), SideEffect.WRITE));
+    var p2 =
+        (GuardResult.AwaitingApproval)
+            fx.guard.execute(ToolInvocation.of(AGENT, "write", "{}"), Optional.empty(), a -> "ok");
+    assertThat(fx.approvals.approve(p2.decision().id(), "alice").result())
+        .isInstanceOf(GuardResult.Denied.class);
   }
 
-  @Test
-  void probe_an_approved_decision_answers_identical_calls_with_the_stale_result_forever() {
+  @Test // L4 flipped
+  void dedup_is_bounded_by_the_replay_window() {
     var executions = new AtomicInteger();
     ToolExecutor ex =
         a -> {
@@ -307,11 +344,14 @@ class CipherProbeApprovalGateTest {
         };
     var parked = (GuardResult.AwaitingApproval) exec(AGENT, "write", "{\"order\":42}", ex);
     f.approvals.approve(parked.decision().id(), "alice");
+    assertThat(exec(AGENT, "write", "{\"order\":42}", ex))
+        .isInstanceOf(GuardResult.Executed.class); // within the window
     f.clock.advance(Duration.ofDays(30));
     var r = exec(AGENT, "write", "{\"order\":42}", ex);
-    assertThat(r).isInstanceOf(GuardResult.Executed.class);
-    assertThat(r.toModelText()).contains("2026-09-06T10:00:00Z");
+    assertThat(r).isInstanceOf(GuardResult.AwaitingApproval.class);
+    assertThat(((GuardResult.AwaitingApproval) r).decision().id())
+        .isNotEqualTo(parked.decision().id());
     assertThat(executions).hasValue(1);
-    assertThat(f.notified).hasSize(1);
+    assertThat(f.notified).hasSize(2);
   }
 }

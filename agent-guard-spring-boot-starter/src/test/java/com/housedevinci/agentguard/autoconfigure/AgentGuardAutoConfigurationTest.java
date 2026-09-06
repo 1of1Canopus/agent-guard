@@ -16,6 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+@org.junit.jupiter.api.extension.ExtendWith(
+    org.springframework.boot.test.system.OutputCaptureExtension.class)
 class AgentGuardAutoConfigurationTest {
 
   private final ApplicationContextRunner runner =
@@ -133,5 +135,97 @@ class AgentGuardAutoConfigurationTest {
             ctx ->
                 assertThat(ctx.getBean(BudgetEnforcer.class).missingSubjectPolicy())
                     .isEqualTo(com.housedevinci.agentguard.application.MissingSubjectPolicy.SKIP));
+  }
+
+  @Test
+  void limit_kind_and_scope_combinations_are_validated() {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.limits[0].scope=PRINCIPAL",
+            "agentguard.budgets.limits[0].kind=STEPS")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.budgets.limits[0]")
+                  .hasMessageContaining("STEPS");
+            });
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.limits[0].scope=CONVERSATION",
+            "agentguard.budgets.limits[0].kind=TOOL_CALLS")
+        .run(ctx -> assertThat(ctx).hasFailed());
+  }
+
+  @Test
+  void conversation_limit_without_principal_limit_warns(
+      org.springframework.boot.test.system.CapturedOutput output) {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.limits[0].scope=CONVERSATION",
+            "agentguard.budgets.limits[0].kind=STEPS")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasNotFailed();
+              assertThat(output).contains("CONVERSATION limit but no PRINCIPAL limit");
+            });
+  }
+
+  @Test
+  void hmac_secret_must_be_long_enough_and_keys_the_chain() {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=short")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.audit.hmac-secret");
+            });
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=0123456789abcdef0123456789abcdef")
+        .run(
+            ctx ->
+                assertThat(
+                        ctx.getBean(com.housedevinci.agentguard.domain.AuditChain.class).isKeyed())
+                    .isTrue());
+  }
+
+  @Test
+  void insecure_webhook_url_fails_startup_unless_allowed() {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.approval.notifier.webhook-url=http://hooks.example.com/x")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              var sb = new StringBuilder();
+              for (Throwable t = ctx.getStartupFailure(); t != null; t = t.getCause()) {
+                sb.append(t.getMessage()).append(' ');
+              }
+              assertThat(sb.toString()).contains("webhook-allow-insecure");
+            });
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.approval.notifier.webhook-url=http://hooks.example.com/x",
+            "agentguard.approval.notifier.webhook-allow-insecure=true")
+        .run(ctx -> assertThat(ctx).hasNotFailed());
   }
 }

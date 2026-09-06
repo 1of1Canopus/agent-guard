@@ -73,7 +73,7 @@ public record PendingDecision(
         principal,
         tool,
         argumentsJson,
-        Hashes.sha256Hex(argumentsJson),
+        ArgumentCanonicalizer.hash(argumentsJson),
         argsPreview,
         conversationId,
         correlationId,
@@ -136,6 +136,6 @@ public record PendingDecision(
 
   /** True when the stored arguments still hash to the approved hash. */
   public boolean argumentsIntact() {
-    return Hashes.sha256Hex(argumentsJson).equals(argsHash);
+    return ArgumentCanonicalizer.hash(argumentsJson).equals(argsHash);
   }
 }

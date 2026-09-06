@@ -104,7 +104,15 @@ public sealed interface GuardResult {
     }
   }
 
-  record Failed(String tool, String message) implements GuardResult {
+  /**
+   * The tool itself failed. {@code retryable=false} after an approval: the single execution is
+   * spent, the agent must ask again and a human must approve again.
+   */
+  record Failed(String tool, String message, boolean retryable) implements GuardResult {
+    public Failed(String tool, String message) {
+      this(tool, message, true);
+    }
+
     @Override
     public String toModelText() {
       return Json.object()
@@ -112,6 +120,7 @@ public sealed interface GuardResult {
           .put("error", "TOOL_FAILED")
           .put("code", ErrorCodes.TOOL_FAILED)
           .put("tool", tool)
+          .put("retryable", retryable)
           .put("message", message)
           .toString();
     }

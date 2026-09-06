@@ -23,7 +23,9 @@ class HexagonalArchitectureTest {
           .resideInAnyPackage(
               "org.springframework..",
               "jakarta..",
-              "javax..",
+              "javax.sql..",
+              "javax.inject..",
+              "javax.annotation..",
               "java.sql..",
               "redis.clients..",
               "org.slf4j..",

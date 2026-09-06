@@ -18,6 +18,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 /** Cipher re-verification probes for the anchor row introduced by the M2 fix. */
 @Testcontainers
@@ -25,7 +26,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class CipherProbeReverifyJdbcTest {
 
   @Container
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+  static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+          DockerImageName.parse(
+                  "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
+              .asCompatibleSubstituteFor("postgres"));
 
   static HikariDataSource ds;
 
@@ -62,9 +67,10 @@ class CipherProbeReverifyJdbcTest {
     }
   }
 
-  @Test
+  @Test // R4 flipped: the anchor only advances; a reset is refused (the owner can still drop the
+  // trigger)
   @Order(1)
-  void probe_owner_can_rewrite_the_anchor_to_hide_a_tail_deletion() throws SQLException {
+  void anchor_cannot_be_reset_to_hide_a_tail_deletion() throws SQLException {
     var sink = new JdbcAuditSink(ds);
     var t0 = Instant.parse("2026-09-06T10:00:00Z");
     var first = sink.append(event(t0));
@@ -74,12 +80,27 @@ class CipherProbeReverifyJdbcTest {
     sql("ALTER TABLE agentguard_audit ENABLE TRIGGER ALL");
     assertThat(new AuditChainVerifier(sink).verify().status())
         .isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
-    // the anchor table has no trigger: the same owner (or a runtime role with UPDATE on it) resets
-    // it
-    sql(
-        "UPDATE agentguard_audit_anchor SET head_hash = '"
-            + first.hash()
-            + "', row_count = 1 WHERE id = 1");
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () ->
+                sql(
+                    "UPDATE agentguard_audit_anchor SET head_hash = '"
+                        + first.hash()
+                        + "', row_count = 1 WHERE id = 1"))
+        .hasMessageContaining("only advances");
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
+    // an append after the deletion chains to the anchor's head, which is gone: BROKEN, still
+    // detected
+    sink.append(event(t0.plusSeconds(2)));
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.BROKEN);
+    // repair for the following test (owner powers): trim to the first row, reset the anchor
+    sql("ALTER TABLE agentguard_audit DISABLE TRIGGER ALL");
+    sql("ALTER TABLE agentguard_audit_anchor DISABLE TRIGGER ALL");
+    sql("DELETE FROM agentguard_audit WHERE seq > " + first.sequence());
+    sql("UPDATE agentguard_audit_anchor SET head_hash = '" + first.hash() + "', row_count = 1");
+    sql("ALTER TABLE agentguard_audit ENABLE TRIGGER ALL");
+    sql("ALTER TABLE agentguard_audit_anchor ENABLE TRIGGER ALL");
     assertThat(new AuditChainVerifier(sink).verify().status())
         .isEqualTo(AuditChainVerifier.Status.INTACT);
   }

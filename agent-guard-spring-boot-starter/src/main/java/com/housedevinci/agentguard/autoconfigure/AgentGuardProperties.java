@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import org.hibernate.validator.constraints.time.DurationMin;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -41,6 +42,38 @@ public class AgentGuardProperties {
   @Valid private final Budgets budgets = new Budgets();
   @Valid private final Redaction redaction = new Redaction();
   @Valid private final Endpoints endpoints = new Endpoints();
+  @Valid private final Audit audit = new Audit();
+  @Valid private final Errors errors = new Errors();
+
+  public static class Audit {
+    /**
+     * Optional HMAC-SHA256 key (at least 32 bytes) for the audit chain: rewrites by anyone without
+     * the key become detectable. Provide it from an environment variable; changing it breaks
+     * verification of older rows.
+     */
+    private String hmacSecret;
+
+    public String getHmacSecret() {
+      return hmacSecret;
+    }
+
+    public void setHmacSecret(String v) {
+      this.hmacSecret = v;
+    }
+  }
+
+  public static class Errors {
+    /** Forward the tool's own exception message to the model (default: class name only). */
+    private boolean includeToolMessage = false;
+
+    public boolean isIncludeToolMessage() {
+      return includeToolMessage;
+    }
+
+    public void setIncludeToolMessage(boolean v) {
+      this.includeToolMessage = v;
+    }
+  }
 
   public enum StoreType {
     JDBC,
@@ -91,7 +124,36 @@ public class AgentGuardProperties {
 
   public static class Approval {
     /** How long a parked call waits before it expires. */
-    @NotNull private Duration ttl = Duration.ofHours(1);
+    @NotNull
+    @DurationMin(nanos = 1, message = "agentguard.approval.ttl must be positive")
+    private Duration ttl = Duration.ofHours(1);
+
+    /** How far back an identical call is matched to an existing decision. Null = same as ttl. */
+    @DurationMin(nanos = 1, message = "agentguard.approval.replay-window must be positive")
+    private Duration replayWindow;
+
+    /** Let the principal that parked a call approve or reject it (four-eyes off). */
+    private boolean allowSelfApproval = false;
+
+    public Duration getReplayWindow() {
+      return replayWindow;
+    }
+
+    public void setReplayWindow(Duration v) {
+      this.replayWindow = v;
+    }
+
+    public Duration effectiveReplayWindow() {
+      return replayWindow == null ? ttl : replayWindow;
+    }
+
+    public boolean isAllowSelfApproval() {
+      return allowSelfApproval;
+    }
+
+    public void setAllowSelfApproval(boolean v) {
+      this.allowSelfApproval = v;
+    }
 
     /** Decisions one principal may have waiting at once; further WRITE calls are refused. */
     @Min(1)
@@ -142,7 +204,33 @@ public class AgentGuardProperties {
     /** Sent as {@code X-AgentGuard-Token} so the receiver can authenticate the webhook. */
     private String webhookSecret;
 
-    @NotNull private Duration webhookTimeout = Duration.ofSeconds(5);
+    @NotNull
+    @DurationMin(
+        nanos = 1,
+        message = "agentguard.approval.notifier.webhook-timeout must be positive")
+    private Duration webhookTimeout = Duration.ofSeconds(5);
+
+    /** Allow a plain http webhook URL (trial only); https or a loopback host otherwise. */
+    private boolean webhookAllowInsecure = false;
+
+    /** Also send the static X-AgentGuard-Token header (one release, for old receivers). */
+    private boolean webhookLegacyToken = false;
+
+    public boolean isWebhookAllowInsecure() {
+      return webhookAllowInsecure;
+    }
+
+    public void setWebhookAllowInsecure(boolean v) {
+      this.webhookAllowInsecure = v;
+    }
+
+    public boolean isWebhookLegacyToken() {
+      return webhookLegacyToken;
+    }
+
+    public void setWebhookLegacyToken(boolean v) {
+      this.webhookLegacyToken = v;
+    }
 
     public boolean isLogEnabled() {
       return logEnabled;
@@ -223,10 +311,26 @@ public class AgentGuardProperties {
     @Min(0)
     private Integer minIdle;
 
-    @NotNull private Duration maxWait = Duration.ofSeconds(2);
+    @NotNull
+    @DurationMin(nanos = 1, message = "agentguard.redis.pool.max-wait must be positive")
+    private Duration maxWait = Duration.ofSeconds(2);
 
     /** Open all min-idle connections at startup, from a platform thread. */
     private boolean preparePool = true;
+
+    /**
+     * On JDK 21-23 run every Redis call on a bounded pool of platform threads (size max-total), so
+     * a virtual-thread caller never reaches the connection pool's growth lock. Ignored on JDK 24+.
+     */
+    private boolean platformThreads = true;
+
+    public boolean isPlatformThreads() {
+      return platformThreads;
+    }
+
+    public void setPlatformThreads(boolean v) {
+      this.platformThreads = v;
+    }
 
     public int getMaxTotal() {
       return maxTotal;
@@ -303,7 +407,10 @@ public class AgentGuardProperties {
   public static class Limit {
     @NotNull private BudgetScope scope = BudgetScope.PRINCIPAL;
     @NotNull private BudgetKind kind = BudgetKind.TOOL_CALLS;
-    @NotNull private Duration window = Duration.ofHours(1);
+
+    @NotNull
+    @DurationMin(nanos = 1, message = "agentguard.budgets.limits[].window must be positive")
+    private Duration window = Duration.ofHours(1);
 
     @Min(1)
     private long limit = 100;
@@ -376,6 +483,17 @@ public class AgentGuardProperties {
      * front of the endpoints anyone who can reach them approves DESTRUCTIVE calls.
      */
     private boolean allowAnonymous = false;
+
+    /** Approvers only see and decide decisions of their own tenant (when they have one). */
+    private boolean tenantScoped = true;
+
+    public boolean isTenantScoped() {
+      return tenantScoped;
+    }
+
+    public void setTenantScoped(boolean v) {
+      this.tenantScoped = v;
+    }
 
     public boolean isAllowAnonymous() {
       return allowAnonymous;
@@ -452,5 +570,13 @@ public class AgentGuardProperties {
 
   public Endpoints getEndpoints() {
     return endpoints;
+  }
+
+  public Audit getAudit() {
+    return audit;
+  }
+
+  public Errors getErrors() {
+    return errors;
   }
 }

@@ -10,18 +10,20 @@ import com.housedevinci.agentguard.adapter.memory.InMemoryDecisionStore;
 import com.housedevinci.agentguard.adapter.notify.CompositeNotifier;
 import com.housedevinci.agentguard.adapter.notify.LoggingNotifier;
 import com.housedevinci.agentguard.adapter.notify.WebhookNotifier;
-import com.housedevinci.agentguard.application.ApprovalLimits;
 import com.housedevinci.agentguard.application.ApprovalService;
 import com.housedevinci.agentguard.application.AuditChainVerifier;
 import com.housedevinci.agentguard.application.AuditRecorder;
 import com.housedevinci.agentguard.application.BudgetEnforcer;
 import com.housedevinci.agentguard.application.DecisionResumer;
+import com.housedevinci.agentguard.application.GuardOptions;
 import com.housedevinci.agentguard.application.MissingSubjectPolicy;
 import com.housedevinci.agentguard.application.PolicyLookup;
+import com.housedevinci.agentguard.application.PrincipalRefresher;
 import com.housedevinci.agentguard.application.ResumeContextProvider;
 import com.housedevinci.agentguard.application.ToolExecutorRegistry;
 import com.housedevinci.agentguard.application.ToolGuard;
 import com.housedevinci.agentguard.domain.ArgumentRedactor;
+import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.AuditSink;
 import com.housedevinci.agentguard.domain.BudgetLimit;
@@ -38,6 +40,8 @@ import com.housedevinci.agentguard.security.ToolPolicyAuthorizationManager;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,7 +92,28 @@ public class AgentGuardAutoConfiguration {
   @Bean
   public AgentGuardStartupCheck agentGuardStartupCheck(
       GuardCoverage coverage, AgentGuardProperties props) {
-    return new AgentGuardStartupCheck(coverage, props.isStrict());
+    return new AgentGuardStartupCheck(coverage, props);
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  public PrincipalRefresher principalRefresher() {
+    return PrincipalRefresher.identity();
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  public AuditChain auditChain(AgentGuardProperties props) {
+    String secret = props.getAudit().getHmacSecret();
+    if (secret == null || secret.isBlank()) {
+      return AuditChain.unkeyed();
+    }
+    byte[] key = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    if (key.length < AuditChain.MIN_KEY_BYTES) {
+      throw new AgentGuardConfigurationException(
+          "agentguard.audit.hmac-secret must be at least " + AuditChain.MIN_KEY_BYTES + " bytes");
+    }
+    return AuditChain.keyed(key);
   }
 
   @Bean
@@ -145,8 +170,8 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean(AuditSink.class)
   @ConditionalOnProperty(prefix = "agentguard", name = "store", havingValue = "MEMORY")
-  public InMemoryAuditSink inMemoryAuditSink() {
-    return new InMemoryAuditSink();
+  public InMemoryAuditSink inMemoryAuditSink(AuditChain chain) {
+    return new InMemoryAuditSink(chain);
   }
 
   @Bean
@@ -191,6 +216,9 @@ public class AgentGuardAutoConfiguration {
     };
   }
 
+  /** DataSources whose schema step already ran in this JVM (L10: once, not per bean). */
+  private static final Set<Integer> SCHEMA_DONE = ConcurrentHashMap.newKeySet();
+
   private static DataSource jdbc(
       AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
     DataSource ds = dataSources.getIfAvailable();
@@ -200,8 +228,19 @@ public class AgentGuardAutoConfiguration {
               + " DataSource found (add spring-boot-starter-jdbc + spring.datasource.*). For a local"
               + " trial set agentguard.store=memory - not for production.");
     }
-    if (props.getJdbc().isInitializeSchema()) {
+    if (props.getJdbc().isInitializeSchema() && SCHEMA_DONE.add(System.identityHashCode(ds))) {
       JdbcSupport.initializeSchema(ds);
+      log.info("agentguard: schema step ran (agentguard.jdbc.initialize-schema=true)");
+      try {
+        if (JdbcSupport.runtimeRoleOwnsAuditTable(ds)) {
+          log.warn(
+              "agentguard: the runtime database role owns agentguard_audit and can disable its"
+                  + " append-only triggers; use a separate owner role for the schema and a runtime role"
+                  + " with INSERT/SELECT only (docs, \"Database roles\")");
+        }
+      } catch (RuntimeException e) {
+        log.debug("agentguard: could not determine the audit table owner: {}", e.toString());
+      }
     }
     return ds;
   }
@@ -217,8 +256,17 @@ public class AgentGuardAutoConfiguration {
       delegates.add(new LoggingNotifier());
     }
     if (n.getWebhookUrl() != null) {
-      delegates.add(
-          new WebhookNotifier(n.getWebhookUrl(), n.getWebhookSecret(), n.getWebhookTimeout()));
+      try {
+        delegates.add(
+            new WebhookNotifier(
+                n.getWebhookUrl(),
+                n.getWebhookSecret(),
+                n.getWebhookTimeout(),
+                n.isWebhookAllowInsecure(),
+                n.isWebhookLegacyToken()));
+      } catch (IllegalArgumentException e) {
+        throw new AgentGuardConfigurationException(e.getMessage());
+      }
     }
     if (delegates.isEmpty()) {
       log.warn(
@@ -237,8 +285,8 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean
-  public AuditChainVerifier auditChainVerifier(AuditReader reader) {
-    return new AuditChainVerifier(reader);
+  public AuditChainVerifier auditChainVerifier(AuditReader reader, AuditChain chain) {
+    return AuditChainVerifier.of(reader, chain);
   }
 
   @Bean
@@ -252,6 +300,38 @@ public class AgentGuardAutoConfiguration {
         props.getBudgets().getLimits().stream()
             .map(l -> new BudgetLimit(l.getScope(), l.getKind(), l.getWindow(), l.getLimit()))
             .toList();
+    for (int i = 0; i < limits.size(); i++) {
+      var l = limits.get(i);
+      boolean ok =
+          switch (l.kind()) {
+            case STEPS -> l.scope() == com.housedevinci.agentguard.domain.BudgetScope.CONVERSATION;
+            case TOOL_CALLS ->
+                l.scope() != com.housedevinci.agentguard.domain.BudgetScope.CONVERSATION;
+            case TOKENS -> true;
+          };
+      if (!ok) {
+        throw new AgentGuardConfigurationException(
+            "agentguard.budgets.limits["
+                + i
+                + "]: kind="
+                + l.kind()
+                + " is not valid with scope="
+                + l.scope()
+                + " (STEPS needs CONVERSATION; TOOL_CALLS needs PRINCIPAL or TENANT)");
+      }
+    }
+    boolean conversationLimit =
+        limits.stream()
+            .anyMatch(
+                l -> l.scope() == com.housedevinci.agentguard.domain.BudgetScope.CONVERSATION);
+    boolean principalLimit =
+        limits.stream()
+            .anyMatch(l -> l.scope() == com.housedevinci.agentguard.domain.BudgetScope.PRINCIPAL);
+    if (conversationLimit && !principalLimit) {
+      log.warn(
+          "agentguard.budgets.limits has a CONVERSATION limit but no PRINCIPAL limit: a conversation is"
+              + " an MCP session and a client can open a new one; pair it with a PRINCIPAL limit");
+    }
     boolean tenantLimits =
         limits.stream()
             .anyMatch(l -> l.scope() == com.housedevinci.agentguard.domain.BudgetScope.TENANT);
@@ -279,8 +359,21 @@ public class AgentGuardAutoConfiguration {
       ToolExecutorRegistry executors,
       AuditRecorder audit,
       ResumeContextProvider resumeContext,
+      PolicyLookup policies,
+      ToolPolicyEvaluator evaluator,
+      PrincipalRefresher refresher,
+      AgentGuardProperties props,
       Clock agentGuardClock) {
-    return new DecisionResumer(store, executors, audit, resumeContext, agentGuardClock);
+    return new DecisionResumer(
+        store,
+        executors,
+        audit,
+        resumeContext,
+        policies,
+        evaluator,
+        refresher,
+        props.getErrors().isIncludeToolMessage(),
+        agentGuardClock);
   }
 
   @Bean
@@ -293,7 +386,13 @@ public class AgentGuardAutoConfiguration {
       Clock agentGuardClock,
       AgentGuardProperties props) {
     return new ApprovalService(
-        store, notifier, resumer, audit, agentGuardClock, props.getApproval().getTtl());
+        store,
+        notifier,
+        resumer,
+        audit,
+        agentGuardClock,
+        props.getApproval().getTtl(),
+        props.getApproval().isAllowSelfApproval());
   }
 
   @Bean
@@ -311,9 +410,11 @@ public class AgentGuardAutoConfiguration {
       AgentGuardProperties props,
       Clock agentGuardClock) {
     var limits =
-        new ApprovalLimits(
+        new GuardOptions(
             props.getApproval().getMaxPendingPerPrincipal(),
-            props.getApproval().getMaxArgumentBytes());
+            props.getApproval().getMaxArgumentBytes(),
+            props.getApproval().effectiveReplayWindow(),
+            props.getErrors().isIncludeToolMessage());
     return new ToolGuard(
         policies,
         evaluator,

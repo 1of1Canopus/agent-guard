@@ -22,8 +22,18 @@ public final class SecurityContextPrincipalResolver implements PrincipalResolver
 
   @Override
   public Principal resolve() {
-    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-    if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+    return of(SecurityContextHolder.getContext().getAuthentication());
+  }
+
+  /**
+   * The same mapping for any authentication; null, unauthenticated and anonymous tokens map to
+   * anonymous.
+   */
+  public Principal of(Authentication auth) {
+    if (auth == null
+        || !auth.isAuthenticated()
+        || auth instanceof org.springframework.security.authentication.AnonymousAuthenticationToken
+        || "anonymousUser".equals(auth.getPrincipal())) {
       return Principal.anonymous();
     }
     return from(auth);

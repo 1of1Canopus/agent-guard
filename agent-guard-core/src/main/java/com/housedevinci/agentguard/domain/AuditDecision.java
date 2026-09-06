@@ -9,5 +9,7 @@ public enum AuditDecision {
   REJECTED,
   EXPIRED,
   BUDGET_EXCEEDED,
+  /** Stored arguments no longer match the approved hash; the decision is closed. */
+  TAMPERED,
   FAILED
 }

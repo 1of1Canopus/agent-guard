@@ -46,6 +46,9 @@ public final class ErrorCodes {
   /** The approver attested a different arguments hash than the decision carries. */
   public static final String APPROVAL_HASH_MISMATCH = "AG-APPROVAL-010";
 
+  /** The parking principal tried to approve its own call. */
+  public static final String APPROVAL_SELF = "AG-APPROVAL-011";
+
   /** A budget window is exhausted. */
   public static final String BUDGET_EXCEEDED = "AG-BUDGET-001";
 

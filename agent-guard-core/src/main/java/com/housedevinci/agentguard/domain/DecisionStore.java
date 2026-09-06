@@ -16,10 +16,10 @@ public interface DecisionStore {
    * null (single-tenant); a null tenant never matches a decision that has one.
    */
   Optional<PendingDecision> findLatest(
-      String principalId, String tenantId, String tool, String argsHash);
+      String principalId, String tenantId, String tool, String argsHash, Instant createdAfter);
 
-  /** Number of PENDING decisions parked by this principal (any tenant). */
-  long countPending(String principalId);
+  /** Number of PENDING decisions parked by this principal in this tenant (null = no tenant). */
+  long countPending(String principalId, String tenantId);
 
   List<PendingDecision> findByState(DecisionState state, int limit);
 

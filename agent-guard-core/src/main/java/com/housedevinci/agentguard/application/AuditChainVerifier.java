@@ -18,14 +18,26 @@ public final class AuditChainVerifier {
 
   private final AuditReader reader;
   private final AuditAnchor anchor;
+  private final AuditChain chain;
 
   public AuditChainVerifier(AuditReader reader) {
-    this(reader, reader instanceof AuditAnchor a ? a : Optional::empty);
+    this(reader, reader instanceof AuditAnchor a ? a : Optional::empty, AuditChain.unkeyed());
   }
 
   public AuditChainVerifier(AuditReader reader, AuditAnchor anchor) {
+    this(reader, anchor, AuditChain.unkeyed());
+  }
+
+  /** With the same (possibly keyed) chain the sink used. */
+  public AuditChainVerifier(AuditReader reader, AuditAnchor anchor, AuditChain chain) {
     this.reader = Objects.requireNonNull(reader, "reader");
     this.anchor = Objects.requireNonNull(anchor, "anchor");
+    this.chain = Objects.requireNonNull(chain, "chain");
+  }
+
+  public static AuditChainVerifier of(AuditReader reader, AuditChain chain) {
+    return new AuditChainVerifier(
+        reader, reader instanceof AuditAnchor a ? a : Optional::empty, chain);
   }
 
   public enum Status {
@@ -61,7 +73,7 @@ public final class AuditChainVerifier {
         break;
       }
       for (AuditEvent e : page) {
-        if (!AuditChain.verify(e, prev)) {
+        if (!chain.verifyEvent(e, prev)) {
           return new Report(Status.BROKEN, count, e.sequence(), prev);
         }
         prev = e.hash();

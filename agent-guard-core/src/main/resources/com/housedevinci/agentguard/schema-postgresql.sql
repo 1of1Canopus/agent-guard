@@ -1,4 +1,7 @@
--- Agent Guard schema (PostgreSQL). Idempotent: safe to run at every startup.
+-- Agent Guard schema (PostgreSQL). Idempotent, and serialised against the audit sink's appends and
+-- against other instances starting at the same time: the whole script runs in one transaction under
+-- the sink's advisory lock (see JdbcSupport.initializeSchema).
+SELECT pg_advisory_xact_lock(18374244850549833);
 
 CREATE TABLE IF NOT EXISTS agentguard_decision (
   id               uuid PRIMARY KEY,
@@ -58,15 +61,21 @@ BEGIN
   RAISE EXCEPTION 'agentguard_audit is append-only (attempted %)', TG_OP;
 END;
 $$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS agentguard_audit_append_only ON agentguard_audit;
-CREATE TRIGGER agentguard_audit_append_only
-  BEFORE UPDATE OR DELETE ON agentguard_audit
-  FOR EACH ROW EXECUTE FUNCTION agentguard_audit_append_only();
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_append_only') THEN
+    CREATE TRIGGER agentguard_audit_append_only
+      BEFORE UPDATE OR DELETE ON agentguard_audit
+      FOR EACH ROW EXECUTE FUNCTION agentguard_audit_append_only();
+  END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS agentguard_audit_no_truncate ON agentguard_audit;
-CREATE TRIGGER agentguard_audit_no_truncate
-  BEFORE TRUNCATE ON agentguard_audit
-  FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_append_only();
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_no_truncate') THEN
+    CREATE TRIGGER agentguard_audit_no_truncate
+      BEFORE TRUNCATE ON agentguard_audit
+      FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_append_only();
+  END IF;
+END $$;
 
 -- Chain anchor: head hash + row count, written in the same transaction as every append.
 CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
@@ -76,14 +85,35 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   updated_at timestamptz NOT NULL
 );
 
+-- The anchor only moves forward, one row at a time: a runtime role with UPDATE on it cannot reset
+-- it after trimming the trail (the owner can drop the trigger; documented residual).
+CREATE OR REPLACE FUNCTION agentguard_audit_anchor_monotonic() RETURNS trigger AS $$
+BEGIN
+  IF NEW.row_count <> OLD.row_count + 1 OR NEW.head_hash = OLD.head_hash THEN
+    RAISE EXCEPTION 'agentguard_audit_anchor only advances by one row (attempted % -> %)',
+      OLD.row_count, NEW.row_count;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_monotonic') THEN
+    CREATE TRIGGER agentguard_audit_anchor_monotonic
+      BEFORE UPDATE ON agentguard_audit_anchor
+      FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_monotonic();
+  END IF;
+END $$;
+
 -- Seed the anchor from an existing trail (installations that predate the anchor, or a lost row).
 INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at)
 SELECT 1, a.hash, (SELECT count(*) FROM agentguard_audit), a.ts
 FROM agentguard_audit a ORDER BY a.seq DESC LIMIT 1
 ON CONFLICT (id) DO NOTHING;
 
+ALTER TABLE IF EXISTS agentguard_budget ALTER COLUMN key TYPE text;
+
 CREATE TABLE IF NOT EXISTS agentguard_budget (
-  key        varchar(512) PRIMARY KEY,
+  key        text PRIMARY KEY,
   used       bigint NOT NULL,
   expires_at timestamptz NOT NULL
 );

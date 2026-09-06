@@ -26,6 +26,13 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   attested `argsHash` (409 `AG-APPROVAL-010` on mismatch).
 - M6: every guard-infrastructure failure becomes a structured `AG-GUARD-001` error with a correlation id.
 - M7: endpoints refuse anonymous approvers (401) unless `agentguard.endpoints.allow-anonymous=true`.
+- R1 (re-verification): the guarded default `ToolCallingManager` no longer competes with Spring AI's
+  `ToolCallingAutoConfiguration` (`@ConditionalOnMissingClass`); Spring AI's manager, with
+  `spring.ai.tools.limits.*` and `resolution.fallback`, is wrapped by the bean post-processor instead.
+- R2 (re-verification): the schema seeds `agentguard_audit_anchor` from an existing trail, and `JdbcAuditSink`
+  re-anchors from the table head (WARN once) when the anchor row is missing, so upgraded installations stay INTACT.
+- R5 (re-verification): `RunAsAuthentication` keeps the tenant during a resumed call (`SecurityContextPrincipalResolver`
+  short-circuits on it, `NoTenantResolver` understands it).
 
 ### Added
 - `agent-guard-core` (Apache-2.0, no framework dependencies):

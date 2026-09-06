@@ -67,7 +67,9 @@ does about it, and what still needs a reviewer's eye.
   UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash + row count) is
   written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `BROKEN` /
   `ANCHOR_MISMATCH` — tail deletion or truncation by a role that can disable triggers is detected.
-- **Residual:** a role that owns the tables can rewrite chain **and** anchor consistently. Run the application with a
+- **Residual (Cipher R4):** the runtime role needs UPDATE on the anchor row, so anyone with that grant (or the
+  owner) can reset the anchor after trimming the tail; the anchor raises the bar only when roles are split as
+  described below. A role that owns the tables can rewrite chain **and** anchor consistently. Run the application with a
   least-privilege role (INSERT + SELECT on `agentguard_audit`, UPDATE on the anchor row only, no DDL, not the table
   owner) and keep `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the
   head hash periodically. An HMAC-keyed chain and external anchoring stay pro items.
@@ -84,7 +86,12 @@ does about it, and what still needs a reviewer's eye.
   shipped:** the pool is pre-filled at startup from the platform startup thread (`min-idle = max-total`,
   `prepare-pool=true`, `agentguard.redis.pool.*`) so it never grows under load; size `max-total` at or above peak
   concurrent tool calls. Proven: 200 virtual threads on 8 pre-filled connections finish in 76 ms. JDK 24 (JEP 491)
-  removes the pinning.
+  removes the pinning. Residual (Cipher R6): after a Redis restart or failover the destroyed connections are
+  re-created on the next borrow, so the growth path (and the pin) is possible for that window; running
+  `JedisBudgetStore` calls on a small platform-thread executor is the belt-and-braces option.
+- **Hand-built managers (Cipher R3):** a `DefaultToolCallingManager` built in code and handed to a `ChatModel`
+  builder never passes through the context, so it is not guarded and strict mode cannot see it. Use the
+  `ToolCallingManager` bean or wrap yours with `AgentGuard.guard(manager)`.
 - **Guard failures are structured (Cipher M6):** any failure of the guard's own infrastructure (store, audit sink,
   notifier, JSON, security context) becomes `{"error":"GUARD_UNAVAILABLE","code":"AG-GUARD-001","correlationId":…}`
   on both paths; the cause is logged server-side at ERROR with that correlation id, and the tool is not run. Tool

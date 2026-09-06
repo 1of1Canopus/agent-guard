@@ -1,4 +1,4 @@
-# STATUS.md — Module B · Agent Guard, free core (run 2: Cipher fix list)
+# STATUS.md — Module B · Agent Guard, free core (run 3: Cipher re-verification follow-ups)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/` (own git repo, never pushed). Pro edition out of scope.
 
@@ -6,7 +6,7 @@ Branch `feat/agent-guard-core` in `modules/B-agent-guard/` (own git repo, never 
 **Done.** Cipher's review (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, verdict NOT MERGEABLE: 3 HIGH, 7 MEDIUM)
 is addressed on the same branch: every HIGH and MEDIUM is fixed and its `CipherProbe*` test flipped to assert the
 fixed behaviour; the LOW probes (L1–L4, L5, L7, L8) stay in place as documentation of open items.
-`./mvnw -B clean verify` is green: **129 tests** (core 103, starter 25, sample 1 end-to-end through a real MCP
+`./mvnw -B clean verify` is green: **136 tests** (core 105, starter 30, sample 1 end-to-end through a real MCP
 client), core line coverage 90.8% / branch 82.1% (gate 80%), spotless, Error Prone, enforcer, JaCoCo gate,
 THIRD-PARTY-NOTICES. The 25 s child-JVM pinning probe runs only with `-Ppinning-probe`.
 
@@ -23,6 +23,18 @@ THIRD-PARTY-NOTICES. The 25 s child-JVM pinning probe runs only with `-Ppinning-
 | M6 raw guard failures | `ToolGuard.execute`, `GuardedToolCallback`, `McpToolGuard` catch everything → `GuardResult.GuardUnavailable` (`AG-GUARD-001` + correlation id), cause logged at ERROR | `CipherProbeSpringAiTest.guard_infrastructure_failure_is_a_structured_error_without_internal_details`, `CipherProbeMcpTest.guard_infrastructure_failure_is_a_structured_error_result` |
 | M7 anonymous approver | endpoints refuse `anonymous` with 401 unless `agentguard.endpoints.allow-anonymous=true` | `CipherProbeEndpointsTest.anonymous_approver_is_refused_with_401_and_nothing_runs` |
 
+**Re-verification (commit `f92a4e3`): mergeable after R1, R2, R5 — applied.**
+
+| Follow-up | Fix | Proof |
+|---|---|---|
+| R1 guarded default manager dropped Spring AI's tool-call limits | `beforeName` removed; guarded default only `@ConditionalOnMissingClass(ToolCallingAutoConfiguration)`; Spring AI's own manager is wrapped by the post-processor | `CipherProbeReverifySpringAiTest.spring_ai_tool_call_limits_survive_the_guard` (`maxTotalToolCalls(1)` + `RETURN_ERROR_RESPONSE` honoured behind the guard), `…spring_ai_registering_its_manager_first_still_yields_one_guarded_bean` |
+| R2 trails predating the anchor read BROKEN | schema seeds the anchor from existing rows (`ON CONFLICT DO NOTHING`); `append` falls back to the table head when the anchor is absent (WARN once) | `CipherProbeReverifyJdbcTest.trail_without_anchor_row_continues_from_the_real_head` |
+| R5 nested principal lost the tenant | `SecurityContextPrincipalResolver` returns the stored principal for `RunAsAuthentication`; `NoTenantResolver` understands it | `CipherProbeReverifySpringAiTest.nested_principal_during_resume_keeps_roles_and_tenant` |
+
+Still documented, not fixed (LOW): R3 hand-built managers outside the context bypass the chokepoint (use the bean
+or `AgentGuard.guard(manager)`), R4 the anchor row is rewritable by a role with UPDATE on it, R6 the Redis pool can
+grow again after connection loss.
+
 Versions unchanged: Spring Boot 4.0.8, Spring Framework 7.0.9, Spring Security 7.0.7, Spring AI 2.0.1, MCP Java
 SDK 2.0.0, Jedis 7.5.2, Testcontainers 2.0.5, Java 21.
 
@@ -36,9 +48,9 @@ SDK 2.0.0, Jedis 7.5.2, Testcontainers 2.0.5, Java 21.
 
 ## Proof commands
 ```bash
-./mvnw -B clean verify                                       # 129 tests, all gates
+./mvnw -B clean verify                                       # 136 tests, all gates
 ./mvnw -B -pl agent-guard-core -Ppinning-probe test          # + the 2 child-JVM pinning probes (~25 s)
-./mvnw -B -pl agent-guard-spring-boot-starter test           # 25 (incl. 11 flipped Cipher probes)
+./mvnw -B -pl agent-guard-spring-boot-starter test           # 30 (incl. the flipped Cipher probes)
 ./mvnw -B -pl agent-guard-sample test                        # 1 end-to-end through a real MCP client
 ```
 

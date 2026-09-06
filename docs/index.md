@@ -60,8 +60,9 @@ identity of the principal that asked (never the approver's), the result is store
 result and runs nothing. When the agent re-asks with the same arguments it gets the stored result. See
 `agent-guard-sample/` for the runnable version (`docker compose up -d && ../mvnw spring-boot:run`).
 
-Every Spring AI tool is guarded at the `ToolCallingManager` chokepoint, so `ChatClient.prompt().tools(obj)` and
-callbacks built inline are covered too; every `@McpTool` specification bean (single or list) is wrapped. With
+Every Spring AI tool is guarded at the `ToolCallingManager` chokepoint (Spring AI's own manager bean is wrapped, so
+`spring.ai.tools.limits.*` still apply), so `ChatClient.prompt().tools(obj)` and callbacks built inline are covered
+too — a manager you build by hand and pass to a `ChatModel` builder is not: use the bean or `AgentGuard.guard(manager)`; every `@McpTool` specification bean (single or list) is wrapped. With
 `agentguard.strict=true` (default) the application refuses to start if a tool that carries `@ToolPolicy` is not
 reachable through a guarded path, and the startup log lists the guarded tools.
 

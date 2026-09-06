@@ -158,31 +158,111 @@ class CipherProbeReverifySpringAiTest {
         });
   }
 
-  @Test
-  void probe_nested_principal_during_resume_keeps_roles_but_loses_the_tenant() {
-    runner.run(
-        ctx -> {
-          REFUNDS.set(0);
-          RESOLVER = ctx.getBean(PrincipalResolver.class);
-          var manager = ctx.getBean(ToolCallingManager.class);
-          loginAs("bob", "SUPPORT");
-          assertThat(
-                  runToolCall(
-                      manager,
-                      ToolCallbacks.from(new OrderTools()),
-                      "refundOrder",
-                      "{\"orderId\":\"7\"}"))
-              .contains("AWAITING_APPROVAL");
-          var approvals = ctx.getBean(ApprovalService.class);
-          var d = approvals.pending(10).get(0);
-          loginAs("alice", "APPROVER");
-          var outcome = approvals.approve(d.id(), "alice", d.argsHash());
-          assertThat(outcome.result().toModelText())
-              .contains("as bob")
-              .contains("roles=[SUPPORT]")
-              .contains("tenant=none");
-          assertThat(SecurityContextHolder.getContext().getAuthentication().getName())
-              .isEqualTo("alice");
-        });
+  /** A host TenantResolver that only knows its own tokens (as real ones do). */
+  @Configuration(proxyBeanMethods = false)
+  static class TenantConfig {
+    @Bean
+    com.housedevinci.agentguard.security.TenantResolver tenantResolver() {
+      return auth ->
+          auth instanceof TestingAuthenticationToken && "bob".equals(auth.getName())
+              ? java.util.Optional.of("acme")
+              : java.util.Optional.empty();
+    }
+  }
+
+  @Test // R5 flipped: the nested principal during a resumed call keeps roles, scopes and tenant
+  void nested_principal_during_resume_keeps_roles_and_tenant() {
+    runner
+        .withUserConfiguration(TenantConfig.class)
+        .run(
+            ctx -> {
+              REFUNDS.set(0);
+              RESOLVER = ctx.getBean(PrincipalResolver.class);
+              var manager = ctx.getBean(ToolCallingManager.class);
+              loginAs("bob", "SUPPORT");
+              assertThat(
+                      runToolCall(
+                          manager,
+                          ToolCallbacks.from(new OrderTools()),
+                          "refundOrder",
+                          "{\"orderId\":\"7\"}"))
+                  .contains("AWAITING_APPROVAL");
+              var approvals = ctx.getBean(ApprovalService.class);
+              var d = approvals.pending(10).get(0);
+              assertThat(d.principal().tenantId()).contains("acme");
+              loginAs("alice", "APPROVER");
+              var outcome = approvals.approve(d.id(), "alice", d.argsHash());
+              assertThat(outcome.result().toModelText())
+                  .contains("as bob")
+                  .contains("roles=[SUPPORT]")
+                  .contains("tenant=acme");
+              assertThat(SecurityContextHolder.getContext().getAuthentication().getName())
+                  .isEqualTo("alice");
+            });
+    // the default resolver understands the run-as token as well
+    var runAs =
+        new com.housedevinci.agentguard.security.RunAsAuthentication(
+            new com.housedevinci.agentguard.domain.Principal(
+                "bob", java.util.Set.of("SUPPORT"), java.util.Set.of(), "acme"));
+    assertThat(new com.housedevinci.agentguard.security.NoTenantResolver().tenantOf(runAs))
+        .contains("acme");
+  }
+
+  /** Mimics Spring AI's ToolCallingAutoConfiguration with spring.ai.tools.limits.* applied. */
+  @Configuration(proxyBeanMethods = false)
+  static class LimitedManagerConfig {
+    @Bean
+    @ConditionalOnMissingBean
+    ToolCallingManager toolCallingManager() {
+      return DefaultToolCallingManager.builder()
+          .maxTotalToolCalls(1)
+          .onLimitExceeded(
+              org.springframework.ai.model.tool.ToolCallLimitBehavior.RETURN_ERROR_RESPONSE)
+          .build();
+    }
+  }
+
+  @Test // R1 flipped: Spring AI's own manager (with its limits) is the one that gets wrapped
+  void spring_ai_tool_call_limits_survive_the_guard() {
+    runner
+        .withUserConfiguration(LimitedManagerConfig.class)
+        .run(
+            ctx -> {
+              REFUNDS.set(0);
+              var manager = ctx.getBean(ToolCallingManager.class);
+              assertThat(manager).isInstanceOf(GuardedToolCallingManager.class);
+              assertThat(((GuardedToolCallingManager) manager).delegate())
+                  .isInstanceOf(DefaultToolCallingManager.class);
+              assertThat(ctx.getBeansOfType(ToolCallingManager.class)).hasSize(1);
+              loginAs("bob", "SUPPORT");
+              var callbacks = ToolCallbacks.from(new OrderTools());
+              var options =
+                  ToolCallingChatOptions.builder()
+                      .toolCallbacks(callbacks)
+                      .toolContext(Map.of())
+                      .build();
+              var prompt = new Prompt(new UserMessage("do it twice"), options);
+              var assistant =
+                  AssistantMessage.builder()
+                      .content("")
+                      .toolCalls(
+                          List.of(
+                              new AssistantMessage.ToolCall(
+                                  "c1", "function", "refundOrder", "{\"orderId\":\"1\"}"),
+                              new AssistantMessage.ToolCall(
+                                  "c2", "function", "refundOrder", "{\"orderId\":\"2\"}")))
+                      .build();
+              var result =
+                  manager.executeToolCalls(
+                      prompt, new ChatResponse(List.of(new Generation(assistant))));
+              var last =
+                  (ToolResponseMessage)
+                      result.conversationHistory().get(result.conversationHistory().size() - 1);
+              var texts = last.getResponses().stream().map(r -> r.responseData()).toList();
+              // first call went through the guard (parked), the second hit Spring AI's own limit
+              assertThat(texts.get(0)).contains("AWAITING_APPROVAL");
+              assertThat(String.join(" ", texts)).containsIgnoringCase("limit");
+              assertThat(REFUNDS).hasValue(0);
+            });
   }
 }

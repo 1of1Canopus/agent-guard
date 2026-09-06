@@ -22,7 +22,9 @@ public final class AgentGuard {
   }
 
   public ToolCallback guard(ToolCallback callback) {
-    return callback instanceof GuardedToolCallback ? callback : new GuardedToolCallback(callback, guard, principals);
+    return callback instanceof GuardedToolCallback
+        ? callback
+        : new GuardedToolCallback(callback, guard, principals);
   }
 
   public List<ToolCallback> guard(List<? extends ToolCallback> callbacks) {
@@ -34,7 +36,9 @@ public final class AgentGuard {
   }
 
   public ToolCallbackProvider guard(ToolCallbackProvider provider) {
-    return provider instanceof GuardedToolCallbackProvider ? provider : new GuardedToolCallbackProvider(provider, this);
+    return provider instanceof GuardedToolCallbackProvider
+        ? provider
+        : new GuardedToolCallbackProvider(provider, this);
   }
 
   /** Wraps every callback a provider returns. */

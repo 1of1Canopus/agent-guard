@@ -13,8 +13,8 @@ import org.springframework.security.authorization.AuthorizationResult;
 import org.springframework.security.core.Authentication;
 
 /**
- * Spring Security view of the tool policy, so it composes with {@code @PreAuthorize} and
- * {@code AuthorizationManager} chains. The result carries the domain {@link PolicyDecision}.
+ * Spring Security view of the tool policy, so it composes with {@code @PreAuthorize} and {@code
+ * AuthorizationManager} chains. The result carries the domain {@link PolicyDecision}.
  */
 public final class ToolPolicyAuthorizationManager implements AuthorizationManager<ToolInvocation> {
 
@@ -44,8 +44,7 @@ public final class ToolPolicyAuthorizationManager implements AuthorizationManage
     var principal = auth == null ? invocation.principal() : resolver.from(auth);
     var rule = policies.resolve(invocation.toolName(), Optional.empty());
     if (rule.isEmpty()) {
-      return new Result(
-          PolicyDecision.deny(ErrorCodes.POLICY_UNREGISTERED, "tool has no policy"));
+      return new Result(PolicyDecision.deny(ErrorCodes.POLICY_UNREGISTERED, "tool has no policy"));
     }
     return new Result(
         evaluator.evaluate(

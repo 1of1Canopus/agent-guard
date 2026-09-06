@@ -5,8 +5,8 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Pure policy evaluation: roles, scopes and tenants are checked in that order (first failure
- * wins); then the side effect decides between {@code ALLOW} and {@code REQUIRE_APPROVAL}.
+ * Pure policy evaluation: roles, scopes and tenants are checked in that order (first failure wins);
+ * then the side effect decides between {@code ALLOW} and {@code REQUIRE_APPROVAL}.
  *
  * <p>Evaluated on the actual call, never on model intent.
  */

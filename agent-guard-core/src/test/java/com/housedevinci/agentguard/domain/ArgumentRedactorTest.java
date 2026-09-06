@@ -29,8 +29,7 @@ class ArgumentRedactorTest {
 
   @Test
   void strips_control_characters_and_newlines_against_log_injection() {
-    var preview =
-        redactor.preview("{\"a\":\"line1\\nline2\"}\n2024-01-01 INFO forged line[31m");
+    var preview = redactor.preview("{\"a\":\"line1\\nline2\"}\n2024-01-01 INFO forged line[31m");
     assertThat(preview).doesNotContain("\n").doesNotContain("");
   }
 

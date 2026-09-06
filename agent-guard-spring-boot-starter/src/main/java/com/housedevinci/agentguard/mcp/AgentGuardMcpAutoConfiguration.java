@@ -21,12 +21,15 @@ public class AgentGuardMcpAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean
-  public McpToolGuard mcpToolGuard(ToolGuard guard, PrincipalResolver principals, ObjectProvider<JsonMapper> mappers) {
-    return new McpToolGuard(guard, principals, mappers.getIfAvailable(() -> JsonMapper.builder().build()));
+  public McpToolGuard mcpToolGuard(
+      ToolGuard guard, PrincipalResolver principals, ObjectProvider<JsonMapper> mappers) {
+    return new McpToolGuard(
+        guard, principals, mappers.getIfAvailable(() -> JsonMapper.builder().build()));
   }
 
   @Bean
-  public static McpToolSpecificationGuardBeanPostProcessor mcpToolSpecificationGuardBeanPostProcessor(BeanFactory beanFactory) {
+  public static McpToolSpecificationGuardBeanPostProcessor
+      mcpToolSpecificationGuardBeanPostProcessor(BeanFactory beanFactory) {
     return new McpToolSpecificationGuardBeanPostProcessor(beanFactory);
   }
 }

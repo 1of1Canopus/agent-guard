@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: agent-guard-sample
+  datasource:
+    url: ${AGENTGUARD_DB_URL:jdbc:postgresql://localhost:5432/agentguard}
+    username: ${AGENTGUARD_DB_USER:agentguard}
+    password: ${AGENTGUARD_DB_PASSWORD:agentguard}
+  ai:
+    mcp:
+      server:
+        name: agent-guard-sample
+        version: 0.1.0
+        protocol: STREAMABLE
+
+agentguard:
+  enabled: true
+  store: JDBC            # decisions + hash-chained audit in PostgreSQL (tables agentguard_*)
+  endpoints:
+    enabled: true        # POST /agentguard/decisions/{id}/approve, GET /agentguard/audit
+  approval:
+    ttl: 1h
+  budgets:
+    limits:
+      - scope: PRINCIPAL
+        kind: TOOL_CALLS
+        window: 1m
+        limit: 3         # the 4th call inside a minute gets a structured BUDGET_EXCEEDED error

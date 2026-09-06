@@ -24,7 +24,8 @@ public class AgentGuardSpringAiAutoConfiguration {
   }
 
   @Bean
-  public static ToolCallbackGuardBeanPostProcessor toolCallbackGuardBeanPostProcessor(BeanFactory beanFactory) {
+  public static ToolCallbackGuardBeanPostProcessor toolCallbackGuardBeanPostProcessor(
+      BeanFactory beanFactory) {
     return new ToolCallbackGuardBeanPostProcessor(beanFactory);
   }
 }

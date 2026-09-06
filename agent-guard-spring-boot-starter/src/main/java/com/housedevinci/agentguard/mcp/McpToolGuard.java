@@ -31,7 +31,8 @@ public final class McpToolGuard {
     this.json = json;
   }
 
-  public McpServerFeatures.SyncToolSpecification guard(McpServerFeatures.SyncToolSpecification spec) {
+  public McpServerFeatures.SyncToolSpecification guard(
+      McpServerFeatures.SyncToolSpecification spec) {
     var hint = hint(spec.tool());
     return new McpServerFeatures.SyncToolSpecification(
         spec.tool(),
@@ -39,11 +40,13 @@ public final class McpToolGuard {
             run(spec.tool(), request, hint, args -> spec.callHandler().apply(exchange, args)));
   }
 
-  public McpStatelessServerFeatures.SyncToolSpecification guard(McpStatelessServerFeatures.SyncToolSpecification spec) {
+  public McpStatelessServerFeatures.SyncToolSpecification guard(
+      McpStatelessServerFeatures.SyncToolSpecification spec) {
     var hint = hint(spec.tool());
     return new McpStatelessServerFeatures.SyncToolSpecification(
         spec.tool(),
-        (ctx, request) -> run(spec.tool(), request, hint, args -> spec.callHandler().apply(ctx, args)));
+        (ctx, request) ->
+            run(spec.tool(), request, hint, args -> spec.callHandler().apply(ctx, args)));
   }
 
   private McpSchema.CallToolResult run(
@@ -53,7 +56,9 @@ public final class McpToolGuard {
       Function<McpSchema.CallToolRequest, McpSchema.CallToolResult> delegate) {
     Map<String, Object> arguments = request.arguments() == null ? Map.of() : request.arguments();
     String argsJson = json.writeValueAsString(arguments);
-    var invocation = new ToolInvocation(principals.resolve(), tool.name(), argsJson, conversationId(request), null);
+    var invocation =
+        new ToolInvocation(
+            principals.resolve(), tool.name(), argsJson, conversationId(request), null);
     var holder = new McpSchema.CallToolResult[1];
     GuardResult result =
         guard.execute(
@@ -61,8 +66,12 @@ public final class McpToolGuard {
             hint,
             args -> {
               // args == argsJson on the direct path; on resume they come from the store
-              Map<String, Object> parsed = json.readValue(args, new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
-              var r = delegate.apply(new McpSchema.CallToolRequest(request.name(), parsed, request.meta()));
+              Map<String, Object> parsed =
+                  json.readValue(
+                      args, new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
+              var r =
+                  delegate.apply(
+                      new McpSchema.CallToolRequest(request.name(), parsed, request.meta()));
               holder[0] = r;
               if (Boolean.TRUE.equals(r.isError())) {
                 throw new McpToolException(text(r));
@@ -77,10 +86,16 @@ public final class McpToolGuard {
       try {
         return json.readValue(executed.result(), McpSchema.CallToolResult.class);
       } catch (RuntimeException e) {
-        return McpSchema.CallToolResult.builder().addTextContent(executed.result()).isError(false).build();
+        return McpSchema.CallToolResult.builder()
+            .addTextContent(executed.result())
+            .isError(false)
+            .build();
       }
     }
-    return McpSchema.CallToolResult.builder().addTextContent(result.toModelText()).isError(true).build();
+    return McpSchema.CallToolResult.builder()
+        .addTextContent(result.toModelText())
+        .isError(true)
+        .build();
   }
 
   static Optional<SideEffect> hint(McpSchema.Tool tool) {
@@ -124,10 +139,13 @@ public final class McpToolGuard {
       return bean;
     }
     if (list.stream().allMatch(e -> e instanceof McpServerFeatures.SyncToolSpecification)) {
-      return ((List<McpServerFeatures.SyncToolSpecification>) list).stream().map(this::guard).toList();
+      return ((List<McpServerFeatures.SyncToolSpecification>) list)
+          .stream().map(this::guard).toList();
     }
-    if (list.stream().allMatch(e -> e instanceof McpStatelessServerFeatures.SyncToolSpecification)) {
-      return ((List<McpStatelessServerFeatures.SyncToolSpecification>) list).stream().map(this::guard).toList();
+    if (list.stream()
+        .allMatch(e -> e instanceof McpStatelessServerFeatures.SyncToolSpecification)) {
+      return ((List<McpStatelessServerFeatures.SyncToolSpecification>) list)
+          .stream().map(this::guard).toList();
     }
     return bean;
   }

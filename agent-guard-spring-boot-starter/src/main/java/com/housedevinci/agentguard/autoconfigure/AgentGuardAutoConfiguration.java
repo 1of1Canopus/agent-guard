@@ -10,7 +10,6 @@ import com.housedevinci.agentguard.adapter.memory.InMemoryDecisionStore;
 import com.housedevinci.agentguard.adapter.notify.CompositeNotifier;
 import com.housedevinci.agentguard.adapter.notify.LoggingNotifier;
 import com.housedevinci.agentguard.adapter.notify.WebhookNotifier;
-import com.housedevinci.agentguard.adapter.redis.JedisBudgetStore;
 import com.housedevinci.agentguard.application.ApprovalService;
 import com.housedevinci.agentguard.application.AuditChainVerifier;
 import com.housedevinci.agentguard.application.AuditRecorder;
@@ -47,9 +46,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.core.context.SecurityContextHolder;
-import redis.clients.jedis.JedisPooled;
-import redis.clients.jedis.UnifiedJedis;
 
 /**
  * Wires the free core. Active only with {@code agentguard.enabled=true}. Every port has a
@@ -75,7 +71,8 @@ public class AgentGuardAutoConfiguration {
   }
 
   @Bean
-  public static ToolPolicyAnnotationScanner toolPolicyAnnotationScanner(ToolPolicyRegistry registry) {
+  public static ToolPolicyAnnotationScanner toolPolicyAnnotationScanner(
+      ToolPolicyRegistry registry) {
     return new ToolPolicyAnnotationScanner(registry);
   }
 
@@ -108,10 +105,12 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean
-  public DecisionStore decisionStore(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+  public DecisionStore decisionStore(
+      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
     return switch (props.getStore()) {
       case MEMORY -> {
-        log.warn("agentguard.store=MEMORY: decisions and audit are not durable. Use JDBC in production.");
+        log.warn(
+            "agentguard.store=MEMORY: decisions and audit are not durable. Use JDBC in production.");
         yield new InMemoryDecisionStore();
       }
       case JDBC -> new JdbcDecisionStore(jdbc(props, dataSources));
@@ -127,8 +126,13 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean(AuditSink.class)
-  @ConditionalOnProperty(prefix = "agentguard", name = "store", havingValue = "JDBC", matchIfMissing = true)
-  public JdbcAuditSink jdbcAuditSink(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+  @ConditionalOnProperty(
+      prefix = "agentguard",
+      name = "store",
+      havingValue = "JDBC",
+      matchIfMissing = true)
+  public JdbcAuditSink jdbcAuditSink(
+      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
     return new JdbcAuditSink(jdbc(props, dataSources));
   }
 
@@ -151,14 +155,19 @@ public class AgentGuardAutoConfiguration {
           throw new AgentGuardConfigurationException(
               "agentguard.redis.uri is required when agentguard.budgets.store=REDIS");
         }
-        UnifiedJedis jedis = new JedisPooled(props.getRedis().getUri().toString());
-        yield new JedisBudgetStore(jedis);
+        if (!org.springframework.util.ClassUtils.isPresent(
+            "redis.clients.jedis.UnifiedJedis", null)) {
+          throw new AgentGuardConfigurationException(
+              "agentguard.budgets.store=REDIS requires redis.clients:jedis on the classpath");
+        }
+        yield JedisBudgetStoreFactory.create(props.getRedis().getUri());
       }
       case DEFAULT -> throw new IllegalStateException("unreachable");
     };
   }
 
-  private static DataSource jdbc(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+  private static DataSource jdbc(
+      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
     DataSource ds = dataSources.getIfAvailable();
     if (ds == null) {
       throw new AgentGuardConfigurationException(
@@ -182,10 +191,12 @@ public class AgentGuardAutoConfiguration {
       delegates.add(new LoggingNotifier());
     }
     if (n.getWebhookUrl() != null) {
-      delegates.add(new WebhookNotifier(n.getWebhookUrl(), n.getWebhookSecret(), n.getWebhookTimeout()));
+      delegates.add(
+          new WebhookNotifier(n.getWebhookUrl(), n.getWebhookSecret(), n.getWebhookTimeout()));
     }
     if (delegates.isEmpty()) {
-      log.warn("agentguard: no approval notifier configured; parked calls are only visible through the store");
+      log.warn(
+          "agentguard: no approval notifier configured; parked calls are only visible through the store");
     }
     return new CompositeNotifier(delegates);
   }
@@ -206,7 +217,8 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean
-  public BudgetEnforcer budgetEnforcer(AgentGuardProperties props, BudgetStore store, Clock agentGuardClock) {
+  public BudgetEnforcer budgetEnforcer(
+      AgentGuardProperties props, BudgetStore store, Clock agentGuardClock) {
     List<BudgetLimit> limits =
         props.getBudgets().getLimits().stream()
             .map(l -> new BudgetLimit(l.getScope(), l.getKind(), l.getWindow(), l.getLimit()))
@@ -217,31 +229,57 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public DecisionResumer decisionResumer(
-      DecisionStore store, ToolExecutorRegistry executors, BudgetEnforcer budgets, AuditRecorder audit, Clock agentGuardClock) {
+      DecisionStore store,
+      ToolExecutorRegistry executors,
+      BudgetEnforcer budgets,
+      AuditRecorder audit,
+      Clock agentGuardClock) {
     return new DecisionResumer(store, executors, budgets, audit, agentGuardClock);
   }
 
   @Bean
   @ConditionalOnMissingBean
   public ApprovalService approvalService(
-      DecisionStore store, Notifier notifier, DecisionResumer resumer, AuditRecorder audit,
-      Clock agentGuardClock, AgentGuardProperties props) {
-    return new ApprovalService(store, notifier, resumer, audit, agentGuardClock, props.getApproval().getTtl());
+      DecisionStore store,
+      Notifier notifier,
+      DecisionResumer resumer,
+      AuditRecorder audit,
+      Clock agentGuardClock,
+      AgentGuardProperties props) {
+    return new ApprovalService(
+        store, notifier, resumer, audit, agentGuardClock, props.getApproval().getTtl());
   }
 
   @Bean
   @ConditionalOnMissingBean
   public ToolGuard toolGuard(
-      PolicyLookup policies, ToolPolicyEvaluator evaluator, BudgetEnforcer budgets, ApprovalService approvals,
-      DecisionResumer resumer, DecisionStore decisions, ToolExecutorRegistry executors, AuditRecorder audit,
-      ArgumentRedactor redactor, Clock agentGuardClock) {
-    return new ToolGuard(policies, evaluator, budgets, approvals, resumer, decisions, executors, audit, redactor, agentGuardClock);
+      PolicyLookup policies,
+      ToolPolicyEvaluator evaluator,
+      BudgetEnforcer budgets,
+      ApprovalService approvals,
+      DecisionResumer resumer,
+      DecisionStore decisions,
+      ToolExecutorRegistry executors,
+      AuditRecorder audit,
+      ArgumentRedactor redactor,
+      Clock agentGuardClock) {
+    return new ToolGuard(
+        policies,
+        evaluator,
+        budgets,
+        approvals,
+        resumer,
+        decisions,
+        executors,
+        audit,
+        redactor,
+        agentGuardClock);
   }
 
   // ---- principal ----------------------------------------------------------------------------
 
   @Configuration(proxyBeanMethods = false)
-  @ConditionalOnClass(SecurityContextHolder.class)
+  @ConditionalOnClass(name = "org.springframework.security.core.context.SecurityContextHolder")
   static class SecurityPrincipalConfiguration {
 
     @Bean
@@ -267,7 +305,8 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean(PrincipalResolver.class)
   public PrincipalResolver anonymousPrincipalResolver() {
-    log.warn("agentguard: Spring Security not on the classpath; every caller is 'anonymous'. Provide a PrincipalResolver bean.");
+    log.warn(
+        "agentguard: Spring Security not on the classpath; every caller is 'anonymous'. Provide a PrincipalResolver bean.");
     return com.housedevinci.agentguard.domain.Principal::anonymous;
   }
 }

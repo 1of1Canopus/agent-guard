@@ -26,7 +26,8 @@ public final class JedisBudgetStore implements BudgetStore {
   @Override
   public long incrementAndGet(String key, long amount, Duration ttl) {
     Object result =
-        jedis.eval(SCRIPT, List.of(key), List.of(Long.toString(amount), Long.toString(ttl.toMillis())));
+        jedis.eval(
+            SCRIPT, List.of(key), List.of(Long.toString(amount), Long.toString(ttl.toMillis())));
     return ((Number) result).longValue();
   }
 

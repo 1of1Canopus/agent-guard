@@ -55,7 +55,8 @@ public class AgentGuardProperties {
 
     /** Side effects that park the call for human approval. */
     @NotNull
-    private Set<SideEffect> approvalRequiredFor = EnumSet.of(SideEffect.WRITE, SideEffect.DESTRUCTIVE);
+    private Set<SideEffect> approvalRequiredFor =
+        EnumSet.of(SideEffect.WRITE, SideEffect.DESTRUCTIVE);
 
     public UnregisteredToolBehaviour getUnregisteredTools() {
       return unregisteredTools;

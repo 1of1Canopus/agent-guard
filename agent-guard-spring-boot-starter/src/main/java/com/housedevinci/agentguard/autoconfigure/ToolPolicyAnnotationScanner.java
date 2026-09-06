@@ -14,8 +14,8 @@ import org.springframework.util.ClassUtils;
 import org.springframework.util.ReflectionUtils;
 
 /**
- * Finds {@code @ToolPolicy} on bean methods and registers the rule under the tool name: the
- * {@code name} of {@code @Tool} / {@code @McpTool} when set, else the method name.
+ * Finds {@code @ToolPolicy} on bean methods and registers the rule under the tool name: the {@code
+ * name} of {@code @Tool} / {@code @McpTool} when set, else the method name.
  */
 public final class ToolPolicyAnnotationScanner implements BeanPostProcessor {
 
@@ -61,7 +61,8 @@ public final class ToolPolicyAnnotationScanner implements BeanPostProcessor {
   }
 
   static PolicyRule rule(ToolPolicy p) {
-    return new PolicyRule(Set.of(p.roles()), Set.of(p.scopes()), Set.of(p.tenants()), p.sideEffect());
+    return new PolicyRule(
+        Set.of(p.roles()), Set.of(p.scopes()), Set.of(p.tenants()), p.sideEffect());
   }
 
   String toolName(Method m) {

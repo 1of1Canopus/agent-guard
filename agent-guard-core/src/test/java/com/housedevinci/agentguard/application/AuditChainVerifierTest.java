@@ -11,13 +11,18 @@ import org.junit.jupiter.api.Test;
 class AuditChainVerifierTest {
 
   private static AuditEvent event(String tool) {
-    return AuditEvent.builder().timestamp(Instant.EPOCH).principalId("p").tool(tool)
-        .decision(AuditDecision.ALLOWED).build();
+    return AuditEvent.builder()
+        .timestamp(Instant.EPOCH)
+        .principalId("p")
+        .tool(tool)
+        .decision(AuditDecision.ALLOWED)
+        .build();
   }
 
   @Test
   void empty_trail_is_intact() {
-    assertThat(new AuditChainVerifier(new InMemoryAuditSink()).verify()).isEqualTo(new AuditChainVerifier.Report(0, -1));
+    assertThat(new AuditChainVerifier(new InMemoryAuditSink()).verify())
+        .isEqualTo(new AuditChainVerifier.Report(0, -1));
   }
 
   @Test

@@ -19,7 +19,8 @@ import redis.clients.jedis.JedisPooled;
 class JedisBudgetStoreIntegrationTest {
 
   @Container
-  static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+  static final GenericContainer<?> REDIS =
+      new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
 
   static JedisPooled jedis;
 
@@ -39,7 +40,8 @@ class JedisBudgetStoreIntegrationTest {
     var key = "agentguard:budget:test:" + System.nanoTime();
     List<Long> seen = new ArrayList<>();
     // platform threads on purpose: Jedis pools borrow under synchronized, which pins JDK 21 virtual
-    // threads and deadlocks once the carriers are exhausted (see SECURITY-NOTES.md, "Redis + virtual threads").
+    // threads and deadlocks once the carriers are exhausted (see SECURITY-NOTES.md, "Redis +
+    // virtual threads").
     var pool = Executors.newFixedThreadPool(16);
     try {
       var futures = new ArrayList<Future<Long>>();

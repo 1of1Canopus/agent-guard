@@ -19,13 +19,29 @@ public final class ArgumentRedactor {
 
   public static final Set<String> DEFAULT_SENSITIVE_KEYS =
       Set.of(
-          "password", "passwd", "pwd", "secret", "token", "access_token", "refresh_token",
-          "api_key", "apikey", "authorization", "auth", "credential", "credentials", "private_key",
-          "ssn", "iban", "card_number", "credit_card", "cvv", "pin");
+          "password",
+          "passwd",
+          "pwd",
+          "secret",
+          "token",
+          "access_token",
+          "refresh_token",
+          "api_key",
+          "apikey",
+          "authorization",
+          "auth",
+          "credential",
+          "credentials",
+          "private_key",
+          "ssn",
+          "iban",
+          "card_number",
+          "credit_card",
+          "cvv",
+          "pin");
 
   private static final Pattern CONTROL = Pattern.compile("[\\p{Cntrl}\\u2028\\u2029]");
-  private static final Pattern BEARER =
-      Pattern.compile("(?i)(bearer\\s+)[A-Za-z0-9\\-._~+/]+=*");
+  private static final Pattern BEARER = Pattern.compile("(?i)(bearer\\s+)[A-Za-z0-9\\-._~+/]+=*");
 
   private final Set<String> sensitiveKeys;
   private final int maxLength;
@@ -37,11 +53,14 @@ public final class ArgumentRedactor {
       throw new IllegalArgumentException("maxLength must be >= 16");
     }
     this.sensitiveKeys =
-        sensitiveKeys.stream().map(k -> k.toLowerCase(Locale.ROOT)).collect(java.util.stream.Collectors.toUnmodifiableSet());
+        sensitiveKeys.stream()
+            .map(k -> k.toLowerCase(Locale.ROOT))
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
     this.maxLength = maxLength;
     // "key" : <string | number | true | false | null>
     this.keyValue =
-        Pattern.compile("\"([^\"]+)\"\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|-?\\d+(?:\\.\\d+)?|true|false|null)");
+        Pattern.compile(
+            "\"([^\"]+)\"\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|-?\\d+(?:\\.\\d+)?|true|false|null)");
   }
 
   public static ArgumentRedactor defaults() {
@@ -81,6 +100,12 @@ public final class ArgumentRedactor {
     if (sensitiveKeys.contains(lower)) {
       return true;
     }
-    return sensitiveKeys.stream().anyMatch(s -> lower.endsWith("_" + s) || lower.endsWith(s) && lower.length() > s.length() && !Character.isLetter(lower.charAt(lower.length() - s.length() - 1)));
+    return sensitiveKeys.stream()
+        .anyMatch(
+            s ->
+                lower.endsWith("_" + s)
+                    || lower.endsWith(s)
+                        && lower.length() > s.length()
+                        && !Character.isLetter(lower.charAt(lower.length() - s.length() - 1)));
   }
 }

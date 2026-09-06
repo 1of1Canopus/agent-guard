@@ -71,12 +71,16 @@ public final class ApprovalService {
   public Outcome approve(DecisionId id, String approver) {
     var decision = load(id);
     if (decision.state() == DecisionState.APPROVED) {
-      return new Outcome(decision, resumer.resume(id)); // idempotent: returns the stored result
+      var result = resumer.resume(id); // idempotent: returns the stored result, runs nothing
+      return new Outcome(load(id), result);
     }
-    if (!store.transition(id, DecisionState.PENDING, DecisionState.APPROVED, approver, clock.instant())) {
+    if (!store.transition(
+        id, DecisionState.PENDING, DecisionState.APPROVED, approver, clock.instant())) {
       throw new IllegalDecisionTransitionException(load(id).state(), DecisionState.APPROVED);
     }
-    return new Outcome(load(id), resumer.resume(id));
+    var result =
+        resumer.resume(id); // executes once, then the reloaded decision shows executed=true
+    return new Outcome(load(id), result);
   }
 
   public PendingDecision reject(DecisionId id, String approver) {
@@ -84,7 +88,8 @@ public final class ApprovalService {
     if (decision.state() == DecisionState.REJECTED) {
       return decision;
     }
-    if (!store.transition(id, DecisionState.PENDING, DecisionState.REJECTED, approver, clock.instant())) {
+    if (!store.transition(
+        id, DecisionState.PENDING, DecisionState.REJECTED, approver, clock.instant())) {
       throw new IllegalDecisionTransitionException(load(id).state(), DecisionState.REJECTED);
     }
     var rejected = load(id);
@@ -123,7 +128,10 @@ public final class ApprovalService {
   }
 
   PendingDecision load(DecisionId id) {
-    return store.findById(id).map(this::expireIfOverdue).orElseThrow(() -> new DecisionNotFoundException(id));
+    return store
+        .findById(id)
+        .map(this::expireIfOverdue)
+        .orElseThrow(() -> new DecisionNotFoundException(id));
   }
 
   private PendingDecision expireIfOverdue(PendingDecision d) {
@@ -131,8 +139,14 @@ public final class ApprovalService {
     if (d.isExpiredAt(now)
         && store.transition(d.id(), DecisionState.PENDING, DecisionState.EXPIRED, "system", now)) {
       audit.record(
-          d.principal(), d.tool().name(), d.argumentsJson(), null, 0, AuditDecision.EXPIRED,
-          d.correlationId(), d.id().toString());
+          d.principal(),
+          d.tool().name(),
+          d.argumentsJson(),
+          null,
+          0,
+          AuditDecision.EXPIRED,
+          d.correlationId(),
+          d.id().toString());
       return store.findById(d.id()).orElse(d);
     }
     return store.findById(d.id()).orElse(d);

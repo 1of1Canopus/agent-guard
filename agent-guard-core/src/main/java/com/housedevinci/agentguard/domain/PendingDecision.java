@@ -94,14 +94,40 @@ public record PendingDecision(
   public PendingDecision decide(DecisionState target, String by, Instant at) {
     var next = state.transitionTo(target);
     return new PendingDecision(
-        id, principal, tool, argumentsJson, argsHash, argsPreview, conversationId, correlationId,
-        createdAt, expiresAt, next, by, at, executed, resultJson);
+        id,
+        principal,
+        tool,
+        argumentsJson,
+        argsHash,
+        argsPreview,
+        conversationId,
+        correlationId,
+        createdAt,
+        expiresAt,
+        next,
+        by,
+        at,
+        executed,
+        resultJson);
   }
 
   public PendingDecision withExecuted(String result) {
     return new PendingDecision(
-        id, principal, tool, argumentsJson, argsHash, argsPreview, conversationId, correlationId,
-        createdAt, expiresAt, state, decidedBy, decidedAt, true, result);
+        id,
+        principal,
+        tool,
+        argumentsJson,
+        argsHash,
+        argsPreview,
+        conversationId,
+        correlationId,
+        createdAt,
+        expiresAt,
+        state,
+        decidedBy,
+        decidedAt,
+        true,
+        result);
   }
 
   public Optional<String> result() {

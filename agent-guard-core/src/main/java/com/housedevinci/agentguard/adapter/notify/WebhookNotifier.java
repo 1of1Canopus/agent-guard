@@ -50,8 +50,13 @@ public final class WebhookNotifier implements Notifier {
         .put("expiresAt", d.expiresAt().toString())
         .put(
             "text",
-            "Agent Guard: '" + d.tool().name() + "' by " + d.principal().id()
-                + " needs approval (decision " + d.id() + ")")
+            "Agent Guard: '"
+                + d.tool().name()
+                + "' by "
+                + d.principal().id()
+                + " needs approval (decision "
+                + d.id()
+                + ")")
         .toString();
   }
 
@@ -66,12 +71,18 @@ public final class WebhookNotifier implements Notifier {
       builder.header("X-AgentGuard-Token", secretHeader);
     }
     try {
-      HttpResponse<Void> response = client.send(builder.build(), HttpResponse.BodyHandlers.discarding());
+      HttpResponse<Void> response =
+          client.send(builder.build(), HttpResponse.BodyHandlers.discarding());
       if (response.statusCode() >= 300) {
-        log.warn("Approval webhook {} answered {} for decision {}", url.getHost(), response.statusCode(), d.id());
+        log.warn(
+            "Approval webhook {} answered {} for decision {}",
+            url.getHost(),
+            response.statusCode(),
+            d.id());
       }
     } catch (java.io.IOException e) {
-      log.warn("Approval webhook {} failed for decision {}: {}", url.getHost(), d.id(), e.toString());
+      log.warn(
+          "Approval webhook {} failed for decision {}: {}", url.getHost(), d.id(), e.toString());
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       log.warn("Approval webhook interrupted for decision {}", d.id());

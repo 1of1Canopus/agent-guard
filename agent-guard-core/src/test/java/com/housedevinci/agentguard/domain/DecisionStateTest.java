@@ -13,9 +13,12 @@ class DecisionStateTest {
 
   @Test
   void pending_can_move_to_each_terminal_state() {
-    assertThat(DecisionState.PENDING.transitionTo(DecisionState.APPROVED)).isEqualTo(DecisionState.APPROVED);
-    assertThat(DecisionState.PENDING.transitionTo(DecisionState.REJECTED)).isEqualTo(DecisionState.REJECTED);
-    assertThat(DecisionState.PENDING.transitionTo(DecisionState.EXPIRED)).isEqualTo(DecisionState.EXPIRED);
+    assertThat(DecisionState.PENDING.transitionTo(DecisionState.APPROVED))
+        .isEqualTo(DecisionState.APPROVED);
+    assertThat(DecisionState.PENDING.transitionTo(DecisionState.REJECTED))
+        .isEqualTo(DecisionState.REJECTED);
+    assertThat(DecisionState.PENDING.transitionTo(DecisionState.EXPIRED))
+        .isEqualTo(DecisionState.EXPIRED);
   }
 
   static Stream<Arguments> illegal() {

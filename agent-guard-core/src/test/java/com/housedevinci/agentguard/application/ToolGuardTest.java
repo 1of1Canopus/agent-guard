@@ -27,8 +27,10 @@ class ToolGuardTest {
   @BeforeEach
   void policies() {
     f.registry.register("read", PolicyRule.unrestricted(SideEffect.READ));
-    f.registry.register("write", new PolicyRule(Set.of("AGENT"), Set.of(), Set.of(), SideEffect.WRITE));
-    f.registry.register("admin_only", new PolicyRule(Set.of("ADMIN"), Set.of(), Set.of(), SideEffect.READ));
+    f.registry.register(
+        "write", new PolicyRule(Set.of("AGENT"), Set.of(), Set.of(), SideEffect.WRITE));
+    f.registry.register(
+        "admin_only", new PolicyRule(Set.of("ADMIN"), Set.of(), Set.of(), SideEffect.READ));
   }
 
   private GuardResult call(String tool, String args) {
@@ -55,7 +57,9 @@ class ToolGuardTest {
   void role_miss_is_denied_with_structured_error() {
     var result = call("admin_only", "{}");
     assertThat(result).isInstanceOf(GuardResult.Denied.class);
-    assertThat(result.toModelText()).contains("\"error\":\"TOOL_DENIED\"").contains("AG-POLICY-001");
+    assertThat(result.toModelText())
+        .contains("\"error\":\"TOOL_DENIED\"")
+        .contains("AG-POLICY-001");
     assertThat(result.toModelText()).doesNotContain("Exception").doesNotContain("\tat ");
     assertThat(f.auditSink.latest(1).get(0).decision()).isEqualTo(AuditDecision.DENIED);
   }
@@ -63,7 +67,9 @@ class ToolGuardTest {
   @Test
   void unregistered_tool_is_denied_by_default() {
     var result = call("mystery", "{}");
-    assertThat(result.toModelText()).contains("AG-POLICY-004").contains("agentguard.policy.unregistered-tools");
+    assertThat(result.toModelText())
+        .contains("AG-POLICY-004")
+        .contains("agentguard.policy.unregistered-tools");
   }
 
   @Test
@@ -75,7 +81,11 @@ class ToolGuardTest {
 
   @Test
   void mcp_hint_is_used_when_no_policy_is_registered() {
-    var r = f.guard.execute(ToolInvocation.of(AGENT, "hinted", "{}"), Optional.of(SideEffect.DESTRUCTIVE), a -> "x");
+    var r =
+        f.guard.execute(
+            ToolInvocation.of(AGENT, "hinted", "{}"),
+            Optional.of(SideEffect.DESTRUCTIVE),
+            a -> "x");
     assertThat(r).isInstanceOf(GuardResult.AwaitingApproval.class);
   }
 
@@ -139,7 +149,9 @@ class ToolGuardTest {
         .isInstanceOf(IllegalDecisionTransitionException.class);
     assertThat(writes).hasValue(1);
     // agent re-calling a rejected call gets a structured rejection
-    assertThat(call("write", "{\"a\":3}").toModelText()).contains("AG-APPROVAL-005").contains("bob");
+    assertThat(call("write", "{\"a\":3}").toModelText())
+        .contains("AG-APPROVAL-005")
+        .contains("bob");
   }
 
   @Test
@@ -152,8 +164,10 @@ class ToolGuardTest {
         .isInstanceOf(IllegalDecisionTransitionException.class);
     var again = call("write", "{\"a\":4}");
     assertThat(again).isInstanceOf(GuardResult.AwaitingApproval.class);
-    assertThat(((GuardResult.AwaitingApproval) again).decision().id()).isNotEqualTo(parked.decision().id());
-    assertThat(f.auditSink.latest(10).stream().map(e -> e.decision()).toList()).contains(AuditDecision.EXPIRED);
+    assertThat(((GuardResult.AwaitingApproval) again).decision().id())
+        .isNotEqualTo(parked.decision().id());
+    assertThat(f.auditSink.latest(10).stream().map(e -> e.decision()).toList())
+        .contains(AuditDecision.EXPIRED);
   }
 
   @Test
@@ -161,9 +175,22 @@ class ToolGuardTest {
     var parked = (GuardResult.AwaitingApproval) call("write", "{\"a\":5}");
     var d = parked.decision();
     var tampered =
-        new PendingDecision(d.id(), d.principal(), d.tool(), "{\"a\":999}", d.argsHash(), d.argsPreview(),
-            d.conversationId(), d.correlationId(), d.createdAt(), d.expiresAt(), d.state(), null, null,
-            false, null);
+        new PendingDecision(
+            d.id(),
+            d.principal(),
+            d.tool(),
+            "{\"a\":999}",
+            d.argsHash(),
+            d.argsPreview(),
+            d.conversationId(),
+            d.correlationId(),
+            d.createdAt(),
+            d.expiresAt(),
+            d.state(),
+            null,
+            null,
+            false,
+            null);
     f.decisions.save(tampered);
     assertThatThrownBy(() -> f.approvals.approve(d.id(), "alice"))
         .isInstanceOf(ArgumentsTamperedException.class);
@@ -172,9 +199,13 @@ class ToolGuardTest {
 
   @Test
   void tool_failure_becomes_structured_error_and_is_audited_failed() {
-    var r = f.guard.execute(ToolInvocation.of(AGENT, "read", "{}"), Optional.empty(), a -> {
-      throw new IllegalStateException("db down");
-    });
+    var r =
+        f.guard.execute(
+            ToolInvocation.of(AGENT, "read", "{}"),
+            Optional.empty(),
+            a -> {
+              throw new IllegalStateException("db down");
+            });
     assertThat(r).isInstanceOf(GuardResult.Failed.class);
     assertThat(r.toModelText()).contains("TOOL_FAILED").contains("db down").doesNotContain("\tat ");
     assertThat(f.auditSink.latest(1).get(0).decision()).isEqualTo(AuditDecision.FAILED);
@@ -182,7 +213,9 @@ class ToolGuardTest {
 
   @Test
   void anonymous_principal_is_denied_role_restricted_tools() {
-    var r = f.guard.execute(ToolInvocation.of(Principal.anonymous(), "write", "{}"), Optional.empty(), a -> "x");
+    var r =
+        f.guard.execute(
+            ToolInvocation.of(Principal.anonymous(), "write", "{}"), Optional.empty(), a -> "x");
     assertThat(r).isInstanceOf(GuardResult.Denied.class);
   }
 

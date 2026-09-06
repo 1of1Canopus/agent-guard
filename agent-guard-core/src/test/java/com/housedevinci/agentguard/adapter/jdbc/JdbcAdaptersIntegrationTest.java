@@ -53,11 +53,20 @@ class JdbcAdaptersIntegrationTest {
     ds.close();
   }
 
-  private static final Principal P = new Principal("u1", Set.of("AGENT", "OPS"), Set.of("s1"), "acme");
+  private static final Principal P =
+      new Principal("u1", Set.of("AGENT", "OPS"), Set.of("s1"), "acme");
 
   private static PendingDecision decision(String args) {
     var now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-    return PendingDecision.park(P, new ToolRef("write", SideEffect.WRITE), args, "preview", "conv", "corr", now, now.plus(Duration.ofHours(1)));
+    return PendingDecision.park(
+        P,
+        new ToolRef("write", SideEffect.WRITE),
+        args,
+        "preview",
+        "conv",
+        "corr",
+        now,
+        now.plus(Duration.ofHours(1)));
   }
 
   @Test
@@ -68,7 +77,8 @@ class JdbcAdaptersIntegrationTest {
     assertThat(store.findById(d.id())).contains(d);
     assertThat(store.findLatest("u1", "write", d.argsHash())).contains(d);
     assertThat(store.findByState(DecisionState.PENDING, 100)).contains(d);
-    assertThat(store.findById(d.id()).orElseThrow().principal().roles()).containsExactlyInAnyOrder("AGENT", "OPS");
+    assertThat(store.findById(d.id()).orElseThrow().principal().roles())
+        .containsExactlyInAnyOrder("AGENT", "OPS");
   }
 
   @Test
@@ -77,8 +87,10 @@ class JdbcAdaptersIntegrationTest {
     var d = decision("{\"a\":2}");
     store.save(d);
     var at = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-    assertThat(store.transition(d.id(), DecisionState.PENDING, DecisionState.APPROVED, "alice", at)).isTrue();
-    assertThat(store.transition(d.id(), DecisionState.PENDING, DecisionState.REJECTED, "bob", at)).isFalse();
+    assertThat(store.transition(d.id(), DecisionState.PENDING, DecisionState.APPROVED, "alice", at))
+        .isTrue();
+    assertThat(store.transition(d.id(), DecisionState.PENDING, DecisionState.REJECTED, "bob", at))
+        .isFalse();
     var loaded = store.findById(d.id()).orElseThrow();
     assertThat(loaded.state()).isEqualTo(DecisionState.APPROVED);
     assertThat(loaded.decidedBy()).isEqualTo("alice");
@@ -131,16 +143,29 @@ class JdbcAdaptersIntegrationTest {
   void audit_table_refuses_update_and_delete() {
     var sink = new JdbcAuditSink(ds);
     var e = sink.append(event("immutable"));
-    assertThatThrownBy(() -> JdbcSupport.withConnection(ds, c -> {
-      try (var st = c.createStatement()) {
-        return st.executeUpdate("UPDATE agentguard_audit SET tool = 'x' WHERE seq = " + e.sequence());
-      }
-    })).hasCauseInstanceOf(SQLException.class).hasMessageContaining("append-only");
-    assertThatThrownBy(() -> JdbcSupport.withConnection(ds, c -> {
-      try (var st = c.createStatement()) {
-        return st.executeUpdate("DELETE FROM agentguard_audit WHERE seq = " + e.sequence());
-      }
-    })).hasMessageContaining("append-only");
+    assertThatThrownBy(
+            () ->
+                JdbcSupport.withConnection(
+                    ds,
+                    c -> {
+                      try (var st = c.createStatement()) {
+                        return st.executeUpdate(
+                            "UPDATE agentguard_audit SET tool = 'x' WHERE seq = " + e.sequence());
+                      }
+                    }))
+        .hasCauseInstanceOf(SQLException.class)
+        .hasMessageContaining("append-only");
+    assertThatThrownBy(
+            () ->
+                JdbcSupport.withConnection(
+                    ds,
+                    c -> {
+                      try (var st = c.createStatement()) {
+                        return st.executeUpdate(
+                            "DELETE FROM agentguard_audit WHERE seq = " + e.sequence());
+                      }
+                    }))
+        .hasMessageContaining("append-only");
   }
 
   @Test
@@ -167,8 +192,17 @@ class JdbcAdaptersIntegrationTest {
   }
 
   private static AuditEvent event(String tool) {
-    return AuditEvent.builder().timestamp(Instant.now().truncatedTo(ChronoUnit.MILLIS)).principalId("p").tenantId("acme")
-        .tool(tool).argsHash("a").resultHash("r").latencyMillis(3).decision(AuditDecision.ALLOWED).correlationId("c").build();
+    return AuditEvent.builder()
+        .timestamp(Instant.now().truncatedTo(ChronoUnit.MILLIS))
+        .principalId("p")
+        .tenantId("acme")
+        .tool(tool)
+        .argsHash("a")
+        .resultHash("r")
+        .latencyMillis(3)
+        .decision(AuditDecision.ALLOWED)
+        .correlationId("c")
+        .build();
   }
 
   static final class MutableClock extends Clock {

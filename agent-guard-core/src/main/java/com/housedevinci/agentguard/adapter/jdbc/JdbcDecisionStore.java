@@ -82,7 +82,10 @@ public final class JdbcDecisionStore implements DecisionStore {
 
   @Override
   public Optional<PendingDecision> findById(DecisionId id) {
-    return query("SELECT " + COLUMNS + " FROM agentguard_decision WHERE id = ?", ps -> ps.setObject(1, id.value()), 1)
+    return query(
+            "SELECT " + COLUMNS + " FROM agentguard_decision WHERE id = ?",
+            ps -> ps.setObject(1, id.value()),
+            1)
         .stream()
         .findFirst();
   }
@@ -90,7 +93,9 @@ public final class JdbcDecisionStore implements DecisionStore {
   @Override
   public Optional<PendingDecision> findLatest(String principalId, String tool, String argsHash) {
     return query(
-            "SELECT " + COLUMNS + " FROM agentguard_decision WHERE principal_id = ? AND tool = ? "
+            "SELECT "
+                + COLUMNS
+                + " FROM agentguard_decision WHERE principal_id = ? AND tool = ? "
                 + "AND args_hash = ? ORDER BY created_at DESC LIMIT 1",
             ps -> {
               ps.setString(1, principalId);
@@ -106,7 +111,9 @@ public final class JdbcDecisionStore implements DecisionStore {
   public List<PendingDecision> findByState(DecisionState state, int limit) {
     int capped = Math.max(1, Math.min(limit, 1000));
     return query(
-        "SELECT " + COLUMNS + " FROM agentguard_decision WHERE state = ? ORDER BY created_at LIMIT ?",
+        "SELECT "
+            + COLUMNS
+            + " FROM agentguard_decision WHERE state = ? ORDER BY created_at LIMIT ?",
         ps -> {
           ps.setString(1, state.name());
           ps.setInt(2, capped);
@@ -115,7 +122,8 @@ public final class JdbcDecisionStore implements DecisionStore {
   }
 
   @Override
-  public boolean transition(DecisionId id, DecisionState expected, DecisionState target, String by, Instant at) {
+  public boolean transition(
+      DecisionId id, DecisionState expected, DecisionState target, String by, Instant at) {
     return JdbcSupport.withConnection(
         dataSource,
         c -> {
@@ -153,7 +161,8 @@ public final class JdbcDecisionStore implements DecisionStore {
         dataSource,
         c -> {
           try (PreparedStatement ps =
-              c.prepareStatement("UPDATE agentguard_decision SET result_json = ?, executed = true WHERE id = ?")) {
+              c.prepareStatement(
+                  "UPDATE agentguard_decision SET result_json = ?, executed = true WHERE id = ?")) {
             ps.setString(1, resultJson);
             ps.setObject(2, id.value());
             ps.executeUpdate();
@@ -217,6 +226,9 @@ public final class JdbcDecisionStore implements DecisionStore {
     if (csv == null || csv.isBlank()) {
       return Set.of();
     }
-    return Arrays.stream(csv.split(",")).map(String::strip).filter(s -> !s.isEmpty()).collect(Collectors.toSet());
+    return Arrays.stream(csv.split(","))
+        .map(String::strip)
+        .filter(s -> !s.isEmpty())
+        .collect(Collectors.toSet());
   }
 }

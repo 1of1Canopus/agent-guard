@@ -39,18 +39,24 @@ class NotifiersTest {
     var body = new AtomicReference<String>();
     var token = new AtomicReference<String>();
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-    server.createContext("/hook", ex -> {
-      body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-      token.set(ex.getRequestHeaders().getFirst("X-AgentGuard-Token"));
-      ex.sendResponseHeaders(204, -1);
-      ex.close();
-    });
+    server.createContext(
+        "/hook",
+        ex -> {
+          body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+          token.set(ex.getRequestHeaders().getFirst("X-AgentGuard-Token"));
+          ex.sendResponseHeaders(204, -1);
+          ex.close();
+        });
     server.start();
     try {
       var url = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/hook");
       new WebhookNotifier(url, "s3cret", Duration.ofSeconds(2)).notify(decision());
-      assertThat(body.get()).contains("\"event\":\"agentguard.approval.requested\"").contains("\"tool\":\"refund\"")
-          .contains("\\\"password\\\":\\\"***\\\"").doesNotContain("hunter").doesNotContain("\\\"x\\\"");
+      assertThat(body.get())
+          .contains("\"event\":\"agentguard.approval.requested\"")
+          .contains("\"tool\":\"refund\"")
+          .contains("\\\"password\\\":\\\"***\\\"")
+          .doesNotContain("hunter")
+          .doesNotContain("\\\"x\\\"");
       assertThat(token.get()).isEqualTo("s3cret");
     } finally {
       server.stop(0);
@@ -59,18 +65,22 @@ class NotifiersTest {
 
   @Test
   void webhook_never_throws_when_receiver_is_down_or_errors() throws IOException {
-    var notifier = new WebhookNotifier(URI.create("http://127.0.0.1:1/hook"), null, Duration.ofMillis(500));
+    var notifier =
+        new WebhookNotifier(URI.create("http://127.0.0.1:1/hook"), null, Duration.ofMillis(500));
     assertThatCode(() -> notifier.notify(decision())).doesNotThrowAnyException();
 
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-    server.createContext("/hook", ex -> {
-      ex.sendResponseHeaders(500, -1);
-      ex.close();
-    });
+    server.createContext(
+        "/hook",
+        ex -> {
+          ex.sendResponseHeaders(500, -1);
+          ex.close();
+        });
     server.start();
     try {
       var url = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/hook");
-      assertThatCode(() -> new WebhookNotifier(url, "", Duration.ofSeconds(2)).notify(decision())).doesNotThrowAnyException();
+      assertThatCode(() -> new WebhookNotifier(url, "", Duration.ofSeconds(2)).notify(decision()))
+          .doesNotThrowAnyException();
     } finally {
       server.stop(0);
     }
@@ -78,9 +88,13 @@ class NotifiersTest {
 
   @Test
   void logging_and_composite_swallow_failures() {
-    var composite = new CompositeNotifier(List.of(d -> {
-      throw new IllegalStateException("boom");
-    }, new LoggingNotifier()));
+    var composite =
+        new CompositeNotifier(
+            List.of(
+                d -> {
+                  throw new IllegalStateException("boom");
+                },
+                new LoggingNotifier()));
     assertThatCode(() -> composite.notify(decision())).doesNotThrowAnyException();
   }
 }

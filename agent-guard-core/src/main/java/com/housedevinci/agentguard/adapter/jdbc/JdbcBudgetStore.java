@@ -13,8 +13,12 @@ import javax.sql.DataSource;
 /** PostgreSQL counters: one atomic upsert per increment, expired rows restart from zero. */
 public final class JdbcBudgetStore implements BudgetStore {
 
+  static final int PURGE_EVERY = 1000;
+
   private final DataSource dataSource;
   private final Clock clock;
+  private final java.util.concurrent.atomic.AtomicLong calls =
+      new java.util.concurrent.atomic.AtomicLong();
 
   public JdbcBudgetStore(DataSource dataSource, Clock clock) {
     this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
@@ -24,6 +28,9 @@ public final class JdbcBudgetStore implements BudgetStore {
   @Override
   public long incrementAndGet(String key, long amount, Duration ttl) {
     var now = clock.instant();
+    if (calls.incrementAndGet() % PURGE_EVERY == 0) {
+      purgeExpired(now);
+    }
     return JdbcSupport.withConnection(
         dataSource,
         c -> {
@@ -44,6 +51,19 @@ public final class JdbcBudgetStore implements BudgetStore {
               rs.next();
               return rs.getLong(1);
             }
+          }
+        });
+  }
+
+  /** Deletes counters whose window ended more than a day ago; safe to call any time. */
+  public int purgeExpired(java.time.Instant now) {
+    return JdbcSupport.withConnection(
+        dataSource,
+        c -> {
+          try (PreparedStatement ps =
+              c.prepareStatement("DELETE FROM agentguard_budget WHERE expires_at < ?")) {
+            ps.setObject(1, ts(now.minus(Duration.ofDays(1))));
+            return ps.executeUpdate();
           }
         });
   }

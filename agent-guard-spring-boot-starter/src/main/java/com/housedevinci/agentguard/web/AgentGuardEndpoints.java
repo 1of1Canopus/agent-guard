@@ -9,10 +9,13 @@ import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.DecisionId;
 import com.housedevinci.agentguard.domain.DecisionNotFoundException;
 import com.housedevinci.agentguard.domain.IllegalDecisionTransitionException;
+import com.housedevinci.agentguard.domain.PendingDecision;
+import com.housedevinci.agentguard.domain.SelfApprovalException;
 import com.housedevinci.agentguard.security.PrincipalResolver;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
@@ -27,9 +30,11 @@ import org.springframework.web.bind.annotation.ResponseBody;
 /**
  * Approval inbox and audit query, JSON over HTTP, under {@code agentguard.endpoints.base-path} when
  * {@code agentguard.endpoints.enabled=true}. The approver is the authenticated principal; anonymous
- * callers are refused (401) unless {@code agentguard.endpoints.allow-anonymous=true}. Approving
- * requires the {@code argsHash} the approver reviewed (fetch the full redacted arguments from
- * {@code GET /decisions/{id}/arguments}); a mismatch is a 409 and nothing runs.
+ * callers are refused (401) unless {@code agentguard.endpoints.allow-anonymous=true}. An approver
+ * with a tenant only sees and decides that tenant's decisions (another tenant's decision is a 404).
+ * Approving requires the {@code argsHash} the approver reviewed (fetch the full redacted arguments
+ * from {@code GET /decisions/{id}/arguments}); a mismatch is a 409 and nothing runs; the principal
+ * that parked a call may not decide it (403).
  */
 @Controller
 @ResponseBody
@@ -41,6 +46,7 @@ public class AgentGuardEndpoints {
   private final PrincipalResolver principals;
   private final ArgumentRedactor redactor;
   private final boolean allowAnonymous;
+  private final boolean tenantScoped;
 
   public AgentGuardEndpoints(
       ApprovalService approvals,
@@ -48,18 +54,31 @@ public class AgentGuardEndpoints {
       PrincipalResolver principals,
       ArgumentRedactor redactor,
       boolean allowAnonymous) {
+    this(approvals, audit, principals, redactor, allowAnonymous, true);
+  }
+
+  public AgentGuardEndpoints(
+      ApprovalService approvals,
+      AuditReader audit,
+      PrincipalResolver principals,
+      ArgumentRedactor redactor,
+      boolean allowAnonymous,
+      boolean tenantScoped) {
     this.approvals = approvals;
     this.audit = audit;
     this.principals = principals;
     this.redactor = redactor;
     this.allowAnonymous = allowAnonymous;
+    this.tenantScoped = tenantScoped;
   }
 
   @GetMapping("/decisions")
   public List<DecisionResponse> pending(
       @RequestParam(defaultValue = "100") int limit, Principal caller) {
     approver(caller);
+    var tenant = approverTenant();
     return approvals.pending(Math.max(1, Math.min(limit, 500))).stream()
+        .filter(d -> visible(d, tenant))
         .map(DecisionResponse::from)
         .toList();
   }
@@ -67,32 +86,25 @@ public class AgentGuardEndpoints {
   @GetMapping("/decisions/{id}")
   public DecisionResponse get(@PathVariable String id, Principal caller) {
     approver(caller);
-    var decisionId = DecisionId.of(id);
-    return approvals
-        .find(decisionId)
-        .map(DecisionResponse::from)
-        .orElseThrow(() -> new DecisionNotFoundException(decisionId));
+    return DecisionResponse.from(load(id));
   }
 
   /** The complete, redacted arguments: what the approver reads before attesting the hash. */
   @GetMapping("/decisions/{id}/arguments")
   public Map<String, String> arguments(@PathVariable String id, Principal caller) {
     approver(caller);
-    var decisionId = DecisionId.of(id);
-    var d = approvals.find(decisionId).orElseThrow(() -> new DecisionNotFoundException(decisionId));
+    var d = load(id);
     return Map.of(
-        "id",
-        d.id().toString(),
-        "argsHash",
-        d.argsHash(),
-        "arguments",
-        redactor.redact(d.argumentsJson()));
+        "id", d.id().toString(),
+        "argsHash", d.argsHash(),
+        "arguments", redactor.redact(d.argumentsJson()));
   }
 
   @PostMapping("/decisions/{id}/approve")
   public Map<String, Object> approve(
       @PathVariable String id, @RequestParam String argsHash, Principal caller) {
-    var outcome = approvals.approve(DecisionId.of(id), approver(caller), argsHash);
+    String approver = approver(caller);
+    var outcome = approvals.approve(load(id).id(), approver, argsHash);
     return Map.of(
         "decision", DecisionResponse.from(outcome.decision()),
         "result", outcome.result().toModelText(),
@@ -101,25 +113,46 @@ public class AgentGuardEndpoints {
 
   @PostMapping("/decisions/{id}/reject")
   public DecisionResponse reject(@PathVariable String id, Principal caller) {
-    return DecisionResponse.from(approvals.reject(DecisionId.of(id), approver(caller)));
+    String approver = approver(caller);
+    return DecisionResponse.from(approvals.reject(load(id).id(), approver));
   }
 
   @GetMapping("/audit")
   public List<AuditEvent> audit(@RequestParam(defaultValue = "100") int limit, Principal caller) {
     approver(caller);
-    return audit.latest(Math.max(1, Math.min(limit, 500)));
+    var tenant = approverTenant();
+    return audit.latest(Math.max(1, Math.min(limit, 500))).stream()
+        .filter(e -> tenant.isEmpty() || tenant.get().equals(e.tenantId()))
+        .toList();
+  }
+
+  /** A decision of another tenant does not exist for this approver (404, not 403). */
+  private PendingDecision load(String id) {
+    var decisionId = DecisionId.of(id);
+    var tenant = approverTenant();
+    return approvals
+        .find(decisionId)
+        .filter(d -> visible(d, tenant))
+        .orElseThrow(() -> new DecisionNotFoundException(decisionId));
+  }
+
+  private Optional<String> approverTenant() {
+    return tenantScoped ? principals.resolve().tenantId() : Optional.empty();
+  }
+
+  private static boolean visible(PendingDecision d, Optional<String> tenant) {
+    return tenant.isEmpty() || tenant.equals(d.principal().tenantId());
   }
 
   /** The approver: the resolved security principal, else the servlet principal; never anonymous. */
   private String approver(Principal p) {
     var resolved = principals.resolve();
+    String anonymous = com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID;
     String name =
-        com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID.equals(resolved.id())
-            ? (p == null || p.getName() == null
-                ? com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID
-                : p.getName())
+        anonymous.equals(resolved.id())
+            ? (p == null || p.getName() == null ? anonymous : p.getName())
             : resolved.id();
-    if (com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID.equals(name) && !allowAnonymous) {
+    if (anonymous.equals(name) && !allowAnonymous) {
       throw new AnonymousApproverException();
     }
     return name;
@@ -128,7 +161,8 @@ public class AgentGuardEndpoints {
   static final class AnonymousApproverException extends RuntimeException {
     AnonymousApproverException() {
       super(
-          "anonymous approver refused; authenticate, or set agentguard.endpoints.allow-anonymous=true (trial only)");
+          "anonymous approver refused; authenticate, or set"
+              + " agentguard.endpoints.allow-anonymous=true (trial only)");
     }
   }
 
@@ -136,6 +170,12 @@ public class AgentGuardEndpoints {
   ResponseEntity<Map<String, String>> unauthorized(AnonymousApproverException e) {
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
         .body(Map.of("code", "AG-HTTP-401", "message", e.getMessage()));
+  }
+
+  @ExceptionHandler(SelfApprovalException.class)
+  ResponseEntity<Map<String, String>> forbidden(SelfApprovalException e) {
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
+        .body(Map.of("code", e.code(), "message", e.getMessage()));
   }
 
   @ExceptionHandler(DecisionNotFoundException.class)

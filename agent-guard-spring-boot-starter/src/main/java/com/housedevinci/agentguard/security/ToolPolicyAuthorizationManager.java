@@ -41,7 +41,7 @@ public final class ToolPolicyAuthorizationManager implements AuthorizationManage
   public AuthorizationResult authorize(
       Supplier<? extends Authentication> authentication, ToolInvocation invocation) {
     var auth = authentication.get();
-    var principal = auth == null ? invocation.principal() : resolver.from(auth);
+    var principal = auth == null ? invocation.principal() : resolver.of(auth);
     var rule = policies.resolve(invocation.toolName(), Optional.empty());
     if (rule.isEmpty()) {
       return new Result(PolicyDecision.deny(ErrorCodes.POLICY_UNREGISTERED, "tool has no policy"));

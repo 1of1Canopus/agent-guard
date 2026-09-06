@@ -214,7 +214,23 @@ class ToolGuardTest {
               throw new IllegalStateException("db down");
             });
     assertThat(r).isInstanceOf(GuardResult.Failed.class);
-    assertThat(r.toModelText()).contains("TOOL_FAILED").contains("db down").doesNotContain("\tat ");
+    assertThat(r.toModelText())
+        .contains("TOOL_FAILED")
+        .contains("IllegalStateException")
+        .contains("correlationId=")
+        .doesNotContain("db down")
+        .doesNotContain("\tat ")
+        .contains("\"retryable\":true");
+    f.options = new GuardOptions(20, 65536, java.time.Duration.ofHours(1), true);
+    f.build();
+    var verbose =
+        f.guard.execute(
+            ToolInvocation.of(AGENT, "read", "{}"),
+            Optional.empty(),
+            a -> {
+              throw new IllegalStateException("db down");
+            });
+    assertThat(verbose.toModelText()).contains("db down");
     assertThat(f.auditSink.latest(1).get(0).decision()).isEqualTo(AuditDecision.FAILED);
   }
 
@@ -235,5 +251,32 @@ class ToolGuardTest {
     var report = new AuditChainVerifier(f.auditSink).verify();
     assertThat(report.intact()).isTrue();
     assertThat(report.verified()).isEqualTo(4);
+  }
+
+  @Test
+  void whitespace_and_key_order_do_not_create_a_second_decision() {
+    var a = call("write", "{\"a\":1,\"b\":2}");
+    var b = call("write", "{ \"b\":2, \"a\":1 }");
+    assertThat(a).isInstanceOf(GuardResult.AwaitingApproval.class);
+    assertThat(((GuardResult.AwaitingApproval) b).decision().id())
+        .isEqualTo(((GuardResult.AwaitingApproval) a).decision().id());
+    assertThat(f.notified).hasSize(1);
+    assertThat(((GuardResult.AwaitingApproval) a).decision().argsHash())
+        .isEqualTo(
+            com.housedevinci.agentguard.domain.ArgumentCanonicalizer.hash("{\"b\":2,\"a\":1}"));
+  }
+
+  @Test
+  void guard_exception_from_the_tool_path_leaves_a_failed_row_and_fails_closed() {
+    var r =
+        f.guard.execute(
+            ToolInvocation.of(AGENT, "read", "{}"),
+            Optional.empty(),
+            a -> {
+              throw new com.housedevinci.agentguard.domain.AgentGuardException(
+                  "AG-GUARD-001", "store down");
+            });
+    assertThat(r).isInstanceOf(GuardResult.GuardUnavailable.class);
+    assertThat(f.auditSink.latest(1).get(0).decision()).isEqualTo(AuditDecision.FAILED);
   }
 }

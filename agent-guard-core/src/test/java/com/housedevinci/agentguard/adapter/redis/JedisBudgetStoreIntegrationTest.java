@@ -20,7 +20,9 @@ class JedisBudgetStoreIntegrationTest {
 
   @Container
   static final GenericContainer<?> REDIS =
-      new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+      new GenericContainer<>(
+              "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99")
+          .withExposedPorts(6379);
 
   static JedisPooled jedis;
 

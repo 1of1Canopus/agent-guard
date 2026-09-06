@@ -23,11 +23,25 @@ class CipherProbeJedisFactoryTest {
 
   @Container
   static final GenericContainer<?> REDIS =
-      new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+      new GenericContainer<>(
+              "redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99")
+          .withExposedPorts(6379);
 
   @Test
   void factory_pool_never_grows_under_virtual_thread_burst() throws Exception {
+    burst(true);
+  }
+
+  @Test // R6 flipped: even a cold, growing pool completes because Redis calls run on platform
+  // threads
+  void factory_without_prefill_still_completes_under_virtual_threads() throws Exception {
+    burst(false);
+  }
+
+  private static void burst(boolean prefill) throws Exception {
     var pool = new AgentGuardProperties.Pool();
+    pool.setPreparePool(prefill);
+    pool.setMaxTotal(4);
     var store =
         JedisBudgetStoreFactory.create(
             URI.create("redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379)), pool);
@@ -59,5 +73,9 @@ class CipherProbeJedisFactoryTest {
     assertThat(done.await(20, TimeUnit.SECONDS)).as("all virtual threads finished").isTrue();
     assertThat(errors).hasValue(0);
     assertThat(store.current(key)).isEqualTo(1000);
+    assertThat(
+            ((com.housedevinci.agentguard.adapter.redis.JedisBudgetStore) store)
+                .isOnPlatformThreads())
+        .isEqualTo(Runtime.version().feature() < 24);
   }
 }

@@ -1,15 +1,20 @@
 package com.housedevinci.agentguard.domain;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
- * Produces the human-visible preview of tool arguments: values of sensitive keys are masked,
- * bearer-like tokens are masked wherever they appear, control characters are stripped (log
- * injection) and the result is length-capped.
+ * Produces the human-visible form of tool arguments by walking the parsed JSON: the whole value of
+ * a sensitive key is masked whatever its shape (string, number, array, object); keys are compared
+ * after JSON unescaping; bearer-like tokens are masked inside any string; control and format
+ * characters are stripped (log injection); unparseable input is fully masked. {@link #preview}
+ * additionally caps the length.
  */
 public final class ArgumentRedactor {
 
@@ -40,12 +45,11 @@ public final class ArgumentRedactor {
           "cvv",
           "pin");
 
-  private static final Pattern CONTROL = Pattern.compile("[\\p{Cntrl}\\u2028\\u2029]");
+  private static final Pattern CONTROL = Pattern.compile("[\\p{Cc}\\p{Cf}\\u0085\\u2028\\u2029]");
   private static final Pattern BEARER = Pattern.compile("(?i)(bearer\\s+)[A-Za-z0-9\\-._~+/]+=*");
 
   private final Set<String> sensitiveKeys;
   private final int maxLength;
-  private final Pattern keyValue;
 
   public ArgumentRedactor(Set<String> sensitiveKeys, int maxLength) {
     Objects.requireNonNull(sensitiveKeys, "sensitiveKeys");
@@ -55,12 +59,8 @@ public final class ArgumentRedactor {
     this.sensitiveKeys =
         sensitiveKeys.stream()
             .map(k -> k.toLowerCase(Locale.ROOT))
-            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            .collect(Collectors.toUnmodifiableSet());
     this.maxLength = maxLength;
-    // "key" : <string | number | true | false | null>
-    this.keyValue =
-        Pattern.compile(
-            "\"([^\"]+)\"\\s*:\\s*(\"(?:\\\\.|[^\"\\\\])*\"|-?\\d+(?:\\.\\d+)?|true|false|null)");
   }
 
   public static ArgumentRedactor defaults() {
@@ -81,24 +81,26 @@ public final class ArgumentRedactor {
     if (argumentsJson == null || argumentsJson.isEmpty()) {
       return "";
     }
-    String masked = maskKeys(argumentsJson);
-    masked = BEARER.matcher(masked).replaceAll("$1" + MASK);
+    String masked =
+        JsonText.parse(argumentsJson).map(n -> mask(n).toJson(false)).orElse("\"" + MASK + "\"");
     return CONTROL.matcher(masked).replaceAll("");
   }
 
-  private String maskKeys(String json) {
-    Matcher m = keyValue.matcher(json);
-    var sb = new StringBuilder(json.length());
-    while (m.find()) {
-      String key = m.group(1);
-      if (isSensitive(key)) {
-        m.appendReplacement(sb, Matcher.quoteReplacement("\"" + key + "\":\"" + MASK + "\""));
-      } else {
-        m.appendReplacement(sb, Matcher.quoteReplacement(m.group()));
+  private JsonNode mask(JsonNode n) {
+    return switch (n) {
+      case JsonNode.JsonObject o -> {
+        Map<String, JsonNode> out = new LinkedHashMap<>();
+        o.fields()
+            .forEach(
+                (k, v) -> out.put(k, isSensitive(k) ? new JsonNode.JsonString(MASK) : mask(v)));
+        yield new JsonNode.JsonObject(out);
       }
-    }
-    m.appendTail(sb);
-    return sb.toString();
+      case JsonNode.JsonArray a ->
+          new JsonNode.JsonArray(a.items().stream().map(this::mask).toList());
+      case JsonNode.JsonString s ->
+          new JsonNode.JsonString(BEARER.matcher(s.value()).replaceAll("$1" + MASK));
+      default -> n;
+    };
   }
 
   private boolean isSensitive(String key) {
@@ -106,12 +108,21 @@ public final class ArgumentRedactor {
     if (sensitiveKeys.contains(lower)) {
       return true;
     }
-    return sensitiveKeys.stream()
-        .anyMatch(
-            s ->
-                lower.endsWith("_" + s)
-                    || lower.endsWith(s)
-                        && lower.length() > s.length()
-                        && !Character.isLetter(lower.charAt(lower.length() - s.length() - 1)));
+    for (String s : sensitiveKeys) {
+      if (lower.endsWith("_" + s) || lower.endsWith("-" + s) || lower.endsWith("." + s)) {
+        return true;
+      }
+      if (lower.endsWith(s)
+          && lower.length() > s.length()
+          && !Character.isLetter(lower.charAt(lower.length() - s.length() - 1))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Test hook. */
+  List<String> keys() {
+    return sensitiveKeys.stream().sorted().toList();
   }
 }

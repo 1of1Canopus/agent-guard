@@ -28,12 +28,17 @@ import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 @Testcontainers
 class JdbcAdaptersIntegrationTest {
 
   @Container
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+  static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+          DockerImageName.parse(
+                  "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
+              .asCompatibleSubstituteFor("postgres"));
 
   static HikariDataSource ds;
 
@@ -75,9 +80,12 @@ class JdbcAdaptersIntegrationTest {
     var d = decision("{\"a\":1}");
     store.save(d);
     assertThat(store.findById(d.id())).contains(d);
-    assertThat(store.findLatest("u1", "acme", "write", d.argsHash())).contains(d);
-    assertThat(store.findLatest("u1", "other", "write", d.argsHash())).isEmpty();
-    assertThat(store.countPending("u1")).isGreaterThanOrEqualTo(1);
+    assertThat(store.findLatest("u1", "acme", "write", d.argsHash(), Instant.EPOCH)).contains(d);
+    assertThat(store.findLatest("u1", "acme", "write", d.argsHash(), Instant.now().plusSeconds(60)))
+        .isEmpty();
+    assertThat(store.findLatest("u1", "other", "write", d.argsHash(), Instant.EPOCH)).isEmpty();
+    assertThat(store.countPending("u1", "acme")).isGreaterThanOrEqualTo(1);
+    assertThat(store.countPending("u1", "other")).isZero();
     assertThat(store.findByState(DecisionState.PENDING, 100)).contains(d);
     assertThat(store.findById(d.id()).orElseThrow().principal().roles())
         .containsExactlyInAnyOrder("AGENT", "OPS");

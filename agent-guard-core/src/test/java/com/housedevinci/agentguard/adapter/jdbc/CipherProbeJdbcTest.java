@@ -22,6 +22,7 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 /**
  * Cipher probes against the real PostgreSQL adapters: what the application's own database
@@ -33,7 +34,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 class CipherProbeJdbcTest {
 
   @Container
-  static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+  static final PostgreSQLContainer POSTGRES =
+      new PostgreSQLContainer(
+          DockerImageName.parse(
+                  "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
+              .asCompatibleSubstituteFor("postgres"));
 
   static HikariDataSource ds;
 
@@ -130,26 +135,37 @@ class CipherProbeJdbcTest {
         .isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
   }
 
-  @Test
+  @Test // L8 flipped
   @Order(4)
-  void probe_expired_budget_rows_are_never_purged() throws SQLException {
+  void expired_budget_rows_are_purged_and_long_subjects_fit() throws SQLException {
     var now = Instant.parse("2026-09-06T10:00:00Z");
     var store = new JdbcBudgetStore(ds, Clock.fixed(now, ZoneOffset.UTC));
     for (int i = 0; i < 20; i++) {
       store.incrementAndGet(
           "agentguard:budget:CONVERSATION:STEPS:conv-" + i + ":0", 1, Duration.ofMillis(1));
     }
-    var later = new JdbcBudgetStore(ds, Clock.fixed(now.plusSeconds(3600), ZoneOffset.UTC));
+    assertThat(count("agentguard_budget")).isGreaterThanOrEqualTo(20);
+    var later = new JdbcBudgetStore(ds, Clock.fixed(now.plus(Duration.ofDays(2)), ZoneOffset.UTC));
     assertThat(later.current("agentguard:budget:CONVERSATION:STEPS:conv-1:0")).isZero();
-    assertThat(count("agentguard_budget")).isEqualTo(20);
-  }
-
-  @Test
-  @Order(5)
-  void probe_key_longer_than_the_column_fails_the_call_closed() {
-    var store = new JdbcBudgetStore(ds, Clock.systemUTC());
-    assertThatThrownBy(() -> store.incrementAndGet("k".repeat(600), 1, Duration.ofMinutes(1)))
-        .isInstanceOf(JdbcSupport.JdbcAccessException.class)
-        .hasMessageContaining("too long");
+    assertThat(later.purgeExpired(now.plus(Duration.ofDays(2)))).isGreaterThanOrEqualTo(20);
+    assertThat(count("agentguard_budget")).isZero();
+    // automatic purge every 1000 increments
+    for (int i = 0; i < 20; i++) {
+      store.incrementAndGet(
+          "agentguard:budget:CONVERSATION:STEPS:again-" + i + ":0", 1, Duration.ofMillis(1));
+    }
+    for (int i = 0; i < JdbcBudgetStore.PURGE_EVERY; i++) {
+      later.incrementAndGet("agentguard:budget:PRINCIPAL:TOOL_CALLS:p:0", 1, Duration.ofHours(1));
+    }
+    assertThat(count("agentguard_budget")).isEqualTo(1);
+    // a 600-character key is stored (column is text) and a long subject is hashed anyway
+    assertThat(store.incrementAndGet("k".repeat(600), 1, Duration.ofMinutes(1))).isEqualTo(1);
+    var limit =
+        new com.housedevinci.agentguard.domain.BudgetLimit(
+            com.housedevinci.agentguard.domain.BudgetScope.CONVERSATION,
+            com.housedevinci.agentguard.domain.BudgetKind.STEPS,
+            Duration.ofHours(1),
+            5);
+    assertThat(limit.key("c".repeat(5000), now)).hasSizeLessThan(200);
   }
 }

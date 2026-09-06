@@ -9,6 +9,7 @@ import com.housedevinci.agentguard.domain.DecisionStore;
 import com.housedevinci.agentguard.domain.IllegalDecisionTransitionException;
 import com.housedevinci.agentguard.domain.Notifier;
 import com.housedevinci.agentguard.domain.PendingDecision;
+import com.housedevinci.agentguard.domain.SelfApprovalException;
 import com.housedevinci.agentguard.domain.ToolRef;
 import java.time.Clock;
 import java.time.Duration;
@@ -30,6 +31,7 @@ public final class ApprovalService {
   private final AuditRecorder audit;
   private final Clock clock;
   private final Duration ttl;
+  private final boolean allowSelfApproval;
 
   public ApprovalService(
       DecisionStore store,
@@ -38,6 +40,18 @@ public final class ApprovalService {
       AuditRecorder audit,
       Clock clock,
       Duration ttl) {
+    this(store, notifier, resumer, audit, clock, ttl, false);
+  }
+
+  public ApprovalService(
+      DecisionStore store,
+      Notifier notifier,
+      DecisionResumer resumer,
+      AuditRecorder audit,
+      Clock clock,
+      Duration ttl,
+      boolean allowSelfApproval) {
+    this.allowSelfApproval = allowSelfApproval;
     this.store = Objects.requireNonNull(store, "store");
     this.notifier = Objects.requireNonNull(notifier, "notifier");
     this.resumer = Objects.requireNonNull(resumer, "resumer");
@@ -86,6 +100,7 @@ public final class ApprovalService {
   /** Programmatic approval without hash attestation (the caller has the decision in hand). */
   public Outcome approve(DecisionId id, String approver) {
     var decision = load(id);
+    fourEyes(decision, approver);
     if (decision.state() == DecisionState.APPROVED) {
       var result = resumer.resume(id); // idempotent: returns the stored result, runs nothing
       return new Outcome(load(id), result);
@@ -101,6 +116,7 @@ public final class ApprovalService {
 
   public PendingDecision reject(DecisionId id, String approver) {
     var decision = load(id);
+    fourEyes(decision, approver);
     if (decision.state() == DecisionState.REJECTED) {
       return decision;
     }
@@ -142,6 +158,12 @@ public final class ApprovalService {
       }
     }
     return n;
+  }
+
+  private void fourEyes(PendingDecision decision, String approver) {
+    if (!allowSelfApproval && approver != null && approver.equals(decision.principal().id())) {
+      throw new SelfApprovalException(decision.id(), approver);
+    }
   }
 
   PendingDecision load(DecisionId id) {

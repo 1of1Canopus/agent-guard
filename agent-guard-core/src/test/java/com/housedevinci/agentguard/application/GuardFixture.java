@@ -47,17 +47,36 @@ final class GuardFixture {
   }
 
   MissingSubjectPolicy missingSubject = MissingSubjectPolicy.DENY;
-  ApprovalLimits approvalLimits = ApprovalLimits.DEFAULTS;
+  GuardOptions options = GuardOptions.DEFAULTS;
+  PrincipalRefresher refresher = PrincipalRefresher.identity();
+  boolean allowSelfApproval = false;
 
   void build() {
     var budgets = new BudgetEnforcer(limits, budgetStore, clock, missingSubject);
+    var lookup = new PolicyLookup(registry, unregistered);
     var resumer =
-        new DecisionResumer(decisions, executors, audit, ResumeContextProvider.none(), clock);
+        new DecisionResumer(
+            decisions,
+            executors,
+            audit,
+            ResumeContextProvider.none(),
+            lookup,
+            ToolPolicyEvaluator.defaults(),
+            refresher,
+            options.includeToolMessage(),
+            clock);
     approvals =
-        new ApprovalService(decisions, notified::add, resumer, audit, clock, Duration.ofHours(1));
+        new ApprovalService(
+            decisions,
+            notified::add,
+            resumer,
+            audit,
+            clock,
+            Duration.ofHours(1),
+            allowSelfApproval);
     guard =
         new ToolGuard(
-            new PolicyLookup(registry, unregistered),
+            lookup,
             ToolPolicyEvaluator.defaults(),
             budgets,
             approvals,
@@ -66,7 +85,7 @@ final class GuardFixture {
             executors,
             audit,
             ArgumentRedactor.defaults(),
-            approvalLimits,
+            options,
             clock);
   }
 

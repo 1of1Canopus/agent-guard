@@ -130,30 +130,52 @@ class CipherProbeFinalSpringAiTest {
             });
   }
 
-  @Test
-  void probe_run_as_token_is_publicly_constructible_serializable_and_fully_trusted()
+  @Test // R10 flipped: only the resume provider mints the token; it cannot be serialised or
+  // re-authenticated
+  void run_as_token_is_package_private_non_serializable_and_not_re_authenticable()
       throws Exception {
+    var ctors = RunAsAuthentication.class.getDeclaredConstructors();
+    assertThat(ctors).allMatch(c -> !Modifier.isPublic(c.getModifiers()));
+    assertThat(Modifier.isFinal(RunAsAuthentication.class.getModifiers())).isTrue();
+
+    var principal = new Principal("root", Set.of("ADMIN"), Set.of("all"), "victim-tenant");
+    var now = java.time.Instant.parse("2026-09-06T10:00:00Z");
+    var decision =
+        com.housedevinci.agentguard.domain.PendingDecision.park(
+            principal,
+            new com.housedevinci.agentguard.domain.ToolRef("t", SideEffect.WRITE),
+            "{}",
+            "{}",
+            null,
+            "c",
+            now,
+            now.plusSeconds(60));
+    var provider = new com.housedevinci.agentguard.security.SecurityContextResumeContextProvider();
+    var token =
+        provider.runAs(decision, () -> SecurityContextHolder.getContext().getAuthentication());
+    assertThat(token).isInstanceOf(RunAsAuthentication.class);
+    assertThat(token.isAuthenticated()).isTrue();
+    // gone again once the resumed call returned
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    // cannot travel through a session store
+    var bytes = new ByteArrayOutputStream();
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> new ObjectOutputStream(bytes).writeObject(token))
+        .isInstanceOf(java.io.NotSerializableException.class);
+    // cannot be re-marked authenticated by external code
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> token.setAuthenticated(true))
+        .isInstanceOf(IllegalArgumentException.class);
+    token.setAuthenticated(false);
+    assertThat(token.isAuthenticated()).isFalse();
+    // the resolver still trusts a live token minted by the provider (that is its purpose)
     new ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class))
         .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY")
         .run(
             ctx -> {
-              var ctor = RunAsAuthentication.class.getConstructor(Principal.class);
-              assertThat(Modifier.isPublic(ctor.getModifiers())).isTrue();
-              var forged =
-                  new RunAsAuthentication(
-                      new Principal("root", Set.of("ADMIN"), Set.of("all"), "victim-tenant"));
-              // it cannot come back from a session store: the Principal record is not Serializable
-              var bytes = new ByteArrayOutputStream();
-              org.assertj.core.api.Assertions.assertThatThrownBy(
-                      () -> new ObjectOutputStream(bytes).writeObject(forged))
-                  .isInstanceOf(java.io.NotSerializableException.class);
-              // but any code inside the JVM can mint one and it is trusted verbatim
-              assertThat(forged.isAuthenticated()).isTrue();
-              SecurityContextHolder.getContext().setAuthentication(forged);
-              var seen = ctx.getBean(PrincipalResolver.class).resolve();
+              var seen =
+                  provider.runAs(decision, () -> ctx.getBean(PrincipalResolver.class).resolve());
               assertThat(seen.id()).isEqualTo("root");
-              assertThat(seen.roles()).contains("ADMIN");
               assertThat(seen.tenantId()).contains("victim-tenant");
             });
   }

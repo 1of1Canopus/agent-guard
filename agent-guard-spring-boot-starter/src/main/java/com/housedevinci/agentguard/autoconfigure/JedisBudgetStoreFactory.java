@@ -36,6 +36,9 @@ final class JedisBudgetStoreFactory {
             "agentguard.redis.uri: cannot open the Redis connection pool: " + e.getMessage());
       }
     }
+    if (pool.isPlatformThreads() && Runtime.version().feature() < 24) {
+      return JedisBudgetStore.onPlatformThreads(jedis, pool.getMaxTotal(), pool.getMaxWait());
+    }
     return new JedisBudgetStore(jedis);
   }
 }

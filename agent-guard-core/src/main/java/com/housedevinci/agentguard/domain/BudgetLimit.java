@@ -35,14 +35,19 @@ public record BudgetLimit(BudgetScope scope, BudgetKind kind, Duration window, l
     return windowStart(now).plus(window);
   }
 
+  /** Longest subject kept verbatim in a key; longer ones are replaced by their SHA-256. */
+  public static final int MAX_SUBJECT_LENGTH = 128;
+
   /** Store key for {@code subject} in the window containing {@code now}. */
   public String key(String subject, Instant now) {
+    String s =
+        subject.length() > MAX_SUBJECT_LENGTH ? "sha256:" + Hashes.sha256Hex(subject) : subject;
     return "agentguard:budget:"
         + scope
         + ":"
         + kind
         + ":"
-        + subject
+        + s
         + ":"
         + windowStart(now).getEpochSecond();
   }

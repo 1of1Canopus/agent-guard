@@ -36,8 +36,7 @@ class ArgumentRedactorTest {
   @Test
   void handles_null_and_non_json_input() {
     assertThat(redactor.preview(null)).isEmpty();
-    assertThat(redactor.preview("not json with password=abc"))
-        .isEqualTo("not json with password=abc");
+    assertThat(redactor.preview("not json with password=abc")).isEqualTo("\"***\"");
   }
 
   @Test

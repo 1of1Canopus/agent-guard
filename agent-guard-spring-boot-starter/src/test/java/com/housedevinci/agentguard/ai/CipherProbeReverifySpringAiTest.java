@@ -140,8 +140,9 @@ class CipherProbeReverifySpringAiTest {
             });
   }
 
+  /** R3, documented: a manager built by hand never reaches the bean post-processor. */
   @Test
-  void probe_hand_built_manager_outside_the_context_bypasses_the_chokepoint() {
+  void hand_built_manager_outside_the_context_is_documented_as_unguarded() {
     runner.run(
         ctx -> {
           REFUNDS.set(0);
@@ -171,7 +172,7 @@ class CipherProbeReverifySpringAiTest {
   }
 
   @Test // R5 flipped: the nested principal during a resumed call keeps roles, scopes and tenant
-  void nested_principal_during_resume_keeps_roles_and_tenant() {
+  void nested_principal_during_resume_keeps_roles_and_tenant() throws Exception {
     runner
         .withUserConfiguration(TenantConfig.class)
         .run(
@@ -200,10 +201,21 @@ class CipherProbeReverifySpringAiTest {
                   .isEqualTo("alice");
             });
     // the default resolver understands the run-as token as well
-    var runAs =
-        new com.housedevinci.agentguard.security.RunAsAuthentication(
+    var now = java.time.Instant.parse("2026-09-06T10:00:00Z");
+    var decision =
+        com.housedevinci.agentguard.domain.PendingDecision.park(
             new com.housedevinci.agentguard.domain.Principal(
-                "bob", java.util.Set.of("SUPPORT"), java.util.Set.of(), "acme"));
+                "bob", java.util.Set.of("SUPPORT"), java.util.Set.of(), "acme"),
+            new com.housedevinci.agentguard.domain.ToolRef("t", SideEffect.WRITE),
+            "{}",
+            "{}",
+            null,
+            "c",
+            now,
+            now.plusSeconds(60));
+    var runAs =
+        new com.housedevinci.agentguard.security.SecurityContextResumeContextProvider()
+            .runAs(decision, () -> SecurityContextHolder.getContext().getAuthentication());
     assertThat(new com.housedevinci.agentguard.security.NoTenantResolver().tenantOf(runAs))
         .contains("acme");
   }

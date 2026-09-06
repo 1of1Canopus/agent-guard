@@ -28,6 +28,7 @@ public final class GuardCoverage {
   private final Set<String> guarded = ConcurrentHashMap.newKeySet();
   private final Map<String, Declared> policies = new ConcurrentHashMap<>();
   private volatile boolean springAiChokepoint;
+  private volatile String springAiDelegate = "";
 
   public void guarded(String toolName, Path path) {
     guarded.add(toolName);
@@ -39,6 +40,15 @@ public final class GuardCoverage {
 
   public void springAiChokepointActive() {
     this.springAiChokepoint = true;
+  }
+
+  public void springAiChokepointActive(String delegateClass) {
+    this.springAiChokepoint = true;
+    this.springAiDelegate = delegateClass;
+  }
+
+  public String springAiDelegate() {
+    return springAiDelegate;
   }
 
   public boolean isSpringAiChokepointActive() {

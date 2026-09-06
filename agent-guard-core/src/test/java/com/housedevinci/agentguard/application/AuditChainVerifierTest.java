@@ -70,4 +70,29 @@ class AuditChainVerifierTest {
     assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
     assertThat(report.intact()).isFalse();
   }
+
+  @Test
+  void keyed_chain_verifies_only_with_the_key() {
+    var chain =
+        com.housedevinci.agentguard.domain.AuditChain.keyed(
+            "0123456789abcdef0123456789abcdef".getBytes());
+    var sink = new InMemoryAuditSink(chain);
+    sink.append(event("a"));
+    sink.append(event("b"));
+    assertThat(AuditChainVerifier.of(sink, chain).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.INTACT);
+    assertThat(
+            AuditChainVerifier.of(sink, com.housedevinci.agentguard.domain.AuditChain.unkeyed())
+                .verify()
+                .status())
+        .isEqualTo(AuditChainVerifier.Status.BROKEN);
+    var other =
+        com.housedevinci.agentguard.domain.AuditChain.keyed(
+            "fedcba9876543210fedcba9876543210".getBytes());
+    assertThat(AuditChainVerifier.of(sink, other).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.BROKEN);
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> com.housedevinci.agentguard.domain.AuditChain.keyed("short".getBytes()))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
 }

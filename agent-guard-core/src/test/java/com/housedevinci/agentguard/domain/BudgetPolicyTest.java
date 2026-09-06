@@ -45,4 +45,12 @@ class BudgetPolicyTest {
             () -> new BudgetLimit(BudgetScope.PRINCIPAL, BudgetKind.STEPS, Duration.ofHours(1), 0))
         .isInstanceOf(IllegalArgumentException.class);
   }
+
+  @Test
+  void long_subjects_are_hashed_into_the_key() {
+    var limit = new BudgetLimit(BudgetScope.CONVERSATION, BudgetKind.STEPS, Duration.ofHours(1), 5);
+    var key = limit.key("x".repeat(600), Instant.EPOCH);
+    assertThat(key).contains(":sha256:").hasSizeLessThan(200);
+    assertThat(limit.key("short", Instant.EPOCH)).contains(":short:");
+  }
 }

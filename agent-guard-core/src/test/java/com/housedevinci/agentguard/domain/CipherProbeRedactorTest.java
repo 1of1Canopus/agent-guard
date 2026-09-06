@@ -4,30 +4,37 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
 
-/** the security review fuzz of {@link ArgumentRedactor} with adversarial JSON shapes. */
+/** the security review fuzz of {@link ArgumentRedactor}, flipped (L5): the redactor walks parsed JSON. */
 class CipherProbeRedactorTest {
 
   private final ArgumentRedactor r = ArgumentRedactor.defaults();
 
   @Test
-  void probe_array_and_object_values_of_sensitive_keys_are_not_masked() {
-    assertThat(r.preview("{\"password\":[\"hunter2\"]}")).contains("hunter2");
-    assertThat(r.preview("{\"api_key\":{\"value\":\"sk-live-123\"}}")).contains("sk-live-123");
-    assertThat(r.preview("{\"secret\":{\"v\":\"hunter2\"}}")).contains("hunter2");
+  void array_and_object_values_of_sensitive_keys_are_masked_whole() {
+    assertThat(r.preview("{\"password\":[\"hunter2\"]}")).isEqualTo("{\"password\":\"***\"}");
+    assertThat(r.preview("{\"api_key\":{\"value\":\"sk-live-123\"}}"))
+        .doesNotContain("sk-live-123");
+    assertThat(r.preview("{\"secret\":{\"v\":\"hunter2\"}}")).doesNotContain("hunter2");
+    assertThat(r.preview("{\"pin\":1234,\"n\":5}")).isEqualTo("{\"pin\":\"***\",\"n\":5}");
   }
 
   @Test
-  void probe_unicode_escaped_keys_bypass_the_key_match_on_the_spring_ai_path() {
-    // Spring AI hands the model's JSON text to the guard verbatim; JSON allows \\u escapes in keys
-    assertThat(r.preview("{\"passw\\u006frd\":\"hunter2\"}")).contains("hunter2");
-    assertThat(r.preview("{\"\\u0070assword\":\"hunter2\"}")).contains("hunter2");
+  void unicode_escaped_keys_are_matched_after_unescaping() {
+    assertThat(r.preview("{\"passw\\u006frd\":\"hunter2\"}")).doesNotContain("hunter2");
+    assertThat(r.preview("{\"\\u0070assword\":\"hunter2\"}")).doesNotContain("hunter2");
   }
 
   @Test
-  void probe_line_and_direction_control_code_points_outside_cntrl_pass_through() {
-    // U+0085 NEL is a line terminator for many log viewers; U+202E flips rendering direction
-    assertThat(r.preview("{\"q\":\"a\u0085b\"}")).contains("\u0085");
-    assertThat(r.preview("{\"q\":\"a\u202Eb\"}")).contains("\u202E");
+  void line_and_direction_control_code_points_are_stripped() {
+    assertThat(r.preview("{\"q\":\"a\u0085b\"}")).doesNotContain("\u0085").contains("ab");
+    assertThat(r.preview("{\"q\":\"a\u202Eb\"}")).doesNotContain("\u202E");
+  }
+
+  @Test
+  void unparseable_input_is_fully_masked() {
+    assertThat(r.preview("password=hunter2 not json")).isEqualTo("\"***\"");
+    assertThat(r.preview("{\"a\":")).isEqualTo("\"***\"");
+    assertThat(r.redact("")).isEmpty();
   }
 
   @Test
@@ -38,9 +45,12 @@ class CipherProbeRedactorTest {
         .doesNotContain("t1")
         .doesNotContain("s1");
     assertThat(r.preview("{\"h\":\"Bearer abc.def-ghi\"}")).doesNotContain("abc.def");
-    assertThat(r.preview("{\"q\":\"a\nb\rc\u001b[31md\u2028e\"}"))
+    assertThat(r.preview("{\"q\":\"a\\nb\\rc\\u001b[31md\\u2028e\"}"))
         .doesNotContain("\n")
         .doesNotContain("\u001b")
         .doesNotContain("\u2028");
+    // values keep their exact JSON representation
+    assertThat(r.preview("{\"n\":1.50e3,\"b\":true,\"z\":null,\"s\":\"q\\\"uote\"}"))
+        .isEqualTo("{\"n\":1.50e3,\"b\":true,\"z\":null,\"s\":\"q\\\"uote\"}");
   }
 }

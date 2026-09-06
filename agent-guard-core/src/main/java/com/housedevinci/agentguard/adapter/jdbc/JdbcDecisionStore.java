@@ -92,18 +92,19 @@ public final class JdbcDecisionStore implements DecisionStore {
 
   @Override
   public Optional<PendingDecision> findLatest(
-      String principalId, String tenantId, String tool, String argsHash) {
+      String principalId, String tenantId, String tool, String argsHash, Instant createdAfter) {
     return query(
             "SELECT "
                 + COLUMNS
                 + " FROM agentguard_decision WHERE principal_id = ? "
                 + "AND tenant_id IS NOT DISTINCT FROM ? AND tool = ? AND args_hash = ? "
-                + "ORDER BY created_at DESC LIMIT 1",
+                + "AND created_at > ? ORDER BY created_at DESC LIMIT 1",
             ps -> {
               ps.setString(1, principalId);
               ps.setString(2, tenantId);
               ps.setString(3, tool);
               ps.setString(4, argsHash);
+              ps.setObject(5, ts(createdAfter));
             },
             1)
         .stream()
@@ -111,14 +112,16 @@ public final class JdbcDecisionStore implements DecisionStore {
   }
 
   @Override
-  public long countPending(String principalId) {
+  public long countPending(String principalId, String tenantId) {
     return JdbcSupport.withConnection(
         dataSource,
         c -> {
           try (PreparedStatement ps =
               c.prepareStatement(
-                  "SELECT count(*) FROM agentguard_decision WHERE principal_id = ? AND state = 'PENDING'")) {
+                  "SELECT count(*) FROM agentguard_decision WHERE principal_id = ? "
+                      + "AND tenant_id IS NOT DISTINCT FROM ? AND state = 'PENDING'")) {
             ps.setString(1, principalId);
+            ps.setString(2, tenantId);
             try (ResultSet rs = ps.executeQuery()) {
               rs.next();
               return rs.getLong(1);

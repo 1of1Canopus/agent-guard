@@ -14,7 +14,8 @@ class SecurityConfig {
 
   @Bean
   SecurityFilterChain security(HttpSecurity http) throws Exception {
-    return http.csrf(csrf -> csrf.disable())
+    return http.csrf(
+            csrf -> csrf.ignoringRequestMatchers("/mcp/**")) // approval POSTs need the token
         .authorizeHttpRequests(
             a ->
                 a.requestMatchers("/agentguard/**")

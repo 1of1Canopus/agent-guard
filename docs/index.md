@@ -88,6 +88,13 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.approval.ttl` | `1h` | Parked calls expire after this. |
 | `agentguard.approval.max-pending-per-principal` | `20` | Further WRITE calls are refused (`AG-APPROVAL-008`). |
 | `agentguard.approval.max-argument-bytes` | `65536` | Larger arguments are not parked (`AG-APPROVAL-009`). |
+| `agentguard.approval.replay-window` | `= ttl` | How far back an identical call is matched to an existing decision. |
+| `agentguard.approval.allow-self-approval` | `false` | Four-eyes: the parking principal may not decide its own call (`AG-APPROVAL-011`). |
+| `agentguard.approval.notifier.webhook-allow-insecure` | `false` | Trial only; otherwise https or a loopback host. |
+| `agentguard.audit.hmac-secret` | – | Keyed chain (`ag2h`): rewrites by anyone without the key become detectable. |
+| `agentguard.errors.include-tool-message` | `false` | Forward the tool's exception message to the model (default: class + correlation id). |
+| `agentguard.endpoints.tenant-scoped` | `true` | Approvers only see and decide their own tenant's decisions. |
+| `agentguard.redis.pool.platform-threads` | `true` | JDK 21-23: Redis calls on a bounded platform-thread pool. |
 | `agentguard.approval.notifier.log-enabled` | `true` | WARN log per parked call (logger `agentguard.approval`). |
 | `agentguard.approval.notifier.webhook-url` | – | POST a JSON payload per parked call; `webhook-secret` goes in `X-AgentGuard-Token`. |
 | `agentguard.budgets.store` | `DEFAULT` | `DEFAULT` (follows `store`), `JDBC`, `REDIS` (`agentguard.redis.uri`), `MEMORY`. |
@@ -117,7 +124,14 @@ configured scope has no id the call is denied under strict (`AG-BUDGET-002`).
 `GET /decisions` (pending), `GET /decisions/{id}`, `GET /decisions/{id}/arguments` (complete, redacted),
 `POST /decisions/{id}/approve?argsHash=…` (required; 409 on mismatch), `POST /decisions/{id}/reject`,
 `GET /audit`. Put Spring Security in front of them, e.g. `.requestMatchers("/agentguard/**").hasRole("APPROVER")`;
-anonymous approvers get 401.
+anonymous approvers get 401, the principal that parked the call gets 403, another tenant's decision is a 404.
+Before running, the approved call is re-checked against the current policy and a refreshed principal
+(`PrincipalRefresher` bean): a role revoked between park and approve denies.
+
+### Webhook verification
+With `agentguard.approval.notifier.webhook-secret` set, each POST carries `X-AgentGuard-Timestamp` (epoch seconds)
+and `X-AgentGuard-Signature: v1=<hex>`. Verify with `hex(HMAC-SHA256(secret, timestamp + "." + body)) == <hex>` and
+reject timestamps older than a few minutes. The URL must be https unless the host is loopback.
 
 ### Database roles
 `agentguard.jdbc.initialize-schema=true` runs DDL with the application's credentials. For production use two roles:
@@ -131,6 +145,10 @@ On JDK 21–23 a virtual thread blocked on the connection pool's growth lock pin
 tool calls than carriers the JVM hangs (reproduced: 64 virtual threads on a cold pool of 4, zero completions).
 The starter pre-fills the pool at startup (`min-idle = max-total`, `prepare-pool=true`) so it never grows under
 load: set `agentguard.redis.pool.max-total` at or above your peak concurrent tool calls. JDK 24+ removes the pin.
+
+### Arguments and hashes
+The hash bound to a decision is over the canonical arguments (sorted keys, no whitespace), so
+`{"a":1,"b":2}` and `{ "b":2, "a":1 }` are one call. Identical calls within `replay-window` reuse the decision.
 
 ## Error codes
 
@@ -147,6 +165,7 @@ load: set `agentguard.redis.pool.max-total` at or above your peak concurrent too
 | `AG-APPROVAL-008` | too many decisions already pending for this principal |
 | `AG-APPROVAL-009` | arguments too large to park |
 | `AG-APPROVAL-010` | the attested arguments hash does not match the decision |
+| `AG-APPROVAL-011` | the parking principal tried to decide its own call |
 | `AG-BUDGET-001` | budget exceeded |
 | `AG-BUDGET-002` | a configured budget scope has no subject (no conversation / tenant id) |
 | `AG-TOOL-001` | the tool itself failed |
@@ -174,6 +193,9 @@ pieces only when their classes are present. You can call `ToolGuard.execute(...)
 
 **Async / WebFlux MCP servers?** Not yet: async tool specification beans make startup fail rather than run
 unguarded (see QUESTIONS.md).
+
+**A tool failed after approval — can the agent retry?** No: the single execution is spent (`"retryable":false`).
+The agent must ask again and a human must approve again.
 
 **Where are the raw arguments?** In `agentguard_decision.arguments_json`, needed to run the call after approval.
 Everything humans see is the redacted preview.

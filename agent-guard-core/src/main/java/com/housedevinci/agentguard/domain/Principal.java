@@ -5,8 +5,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Who is calling the tool. Built by the host application (from Spring Security, an API key, an
- * MCP session) and evaluated by {@link ToolPolicyEvaluator}.
+ * Who is calling the tool. Built by the host application (from Spring Security, an API key, an MCP
+ * session) and evaluated by {@link ToolPolicyEvaluator}.
  *
  * @param id stable identifier (username, subject claim, API-key id); never null
  * @param roles granted roles without any {@code ROLE_} prefix

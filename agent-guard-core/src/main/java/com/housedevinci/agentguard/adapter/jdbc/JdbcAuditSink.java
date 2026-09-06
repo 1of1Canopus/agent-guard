@@ -46,7 +46,8 @@ public final class JdbcAuditSink implements AuditSink, AuditReader {
           }
           String prev = AuditChain.GENESIS;
           try (PreparedStatement last =
-                  c.prepareStatement("SELECT hash FROM agentguard_audit ORDER BY seq DESC LIMIT 1");
+                  c.prepareStatement(
+                      "SELECT hash FROM agentguard_audit ORDER BY seq DESC LIMIT 1");
               ResultSet rs = last.executeQuery()) {
             if (rs.next()) {
               prev = rs.getString(1);
@@ -89,7 +90,10 @@ public final class JdbcAuditSink implements AuditSink, AuditReader {
 
   @Override
   public List<AuditEvent> latest(int limit) {
-    return read("SELECT " + COLUMNS + " FROM agentguard_audit WHERE seq > ? ORDER BY seq DESC LIMIT ?", 0, limit);
+    return read(
+        "SELECT " + COLUMNS + " FROM agentguard_audit WHERE seq > ? ORDER BY seq DESC LIMIT ?",
+        0,
+        limit);
   }
 
   private List<AuditEvent> read(String sql, long after, int limit) {

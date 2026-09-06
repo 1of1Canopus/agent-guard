@@ -60,7 +60,8 @@ public final class JdbcSupport {
   public static void initializeSchema(DataSource ds) {
     String sql;
     try (InputStream in =
-        JdbcSupport.class.getResourceAsStream("/com/housedevinci/agentguard/schema-postgresql.sql")) {
+        JdbcSupport.class.getResourceAsStream(
+            "/com/housedevinci/agentguard/schema-postgresql.sql")) {
       if (in == null) {
         throw new IllegalStateException("schema-postgresql.sql missing from classpath");
       }

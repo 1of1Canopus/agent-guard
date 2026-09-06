@@ -1,9 +1,9 @@
 package com.housedevinci.agentguard.ai;
 
-import org.springframework.beans.factory.BeanFactory;
-import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 
 /** Wraps every {@link ToolCallback} and {@link ToolCallbackProvider} bean. */
 public final class ToolCallbackGuardBeanPostProcessor implements BeanPostProcessor {

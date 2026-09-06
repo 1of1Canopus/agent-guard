@@ -80,8 +80,15 @@ public final class DecisionResumer {
           new GuardResult.Denied(
               ErrorCodes.APPROVAL_NO_EXECUTOR, tool, "no executor registered for tool");
       store.storeResult(decision.id(), failed.toModelText());
-      audit.record(decision.principal(), tool, decision.argumentsJson(), null, 0,
-          AuditDecision.FAILED, decision.correlationId(), decision.id().toString());
+      audit.record(
+          decision.principal(),
+          tool,
+          decision.argumentsJson(),
+          null,
+          0,
+          AuditDecision.FAILED,
+          decision.correlationId(),
+          decision.id().toString());
       return failed;
     }
     try {
@@ -89,8 +96,15 @@ public final class DecisionResumer {
     } catch (BudgetExceededException e) {
       var result = new GuardResult.BudgetExceeded(tool, e.getMessage());
       store.storeResult(decision.id(), result.toModelText());
-      audit.record(decision.principal(), tool, decision.argumentsJson(), null, 0,
-          AuditDecision.BUDGET_EXCEEDED, decision.correlationId(), decision.id().toString());
+      audit.record(
+          decision.principal(),
+          tool,
+          decision.argumentsJson(),
+          null,
+          0,
+          AuditDecision.BUDGET_EXCEEDED,
+          decision.correlationId(),
+          decision.id().toString());
       return result;
     }
     long start = clock.millis();
@@ -98,15 +112,29 @@ public final class DecisionResumer {
       String output = executor.get().execute(decision.argumentsJson());
       long latency = clock.millis() - start;
       store.storeResult(decision.id(), output);
-      audit.record(decision.principal(), tool, decision.argumentsJson(), output, latency,
-          AuditDecision.APPROVED, decision.correlationId(), decision.id().toString());
+      audit.record(
+          decision.principal(),
+          tool,
+          decision.argumentsJson(),
+          output,
+          latency,
+          AuditDecision.APPROVED,
+          decision.correlationId(),
+          decision.id().toString());
       return new GuardResult.Executed(output);
     } catch (Exception e) {
       long latency = clock.millis() - start;
       var failed = new GuardResult.Failed(tool, Errors.describe(e));
       store.storeResult(decision.id(), failed.toModelText());
-      audit.record(decision.principal(), tool, decision.argumentsJson(), null, latency,
-          AuditDecision.FAILED, decision.correlationId(), decision.id().toString());
+      audit.record(
+          decision.principal(),
+          tool,
+          decision.argumentsJson(),
+          null,
+          latency,
+          AuditDecision.FAILED,
+          decision.correlationId(),
+          decision.id().toString());
       return failed;
     }
   }

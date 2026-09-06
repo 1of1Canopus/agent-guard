@@ -19,7 +19,11 @@ class ToolPolicyAnnotationScannerTest {
     }
 
     @Tool(description = "d")
-    @ToolPolicy(roles = {"SUPPORT", "ADMIN"}, scopes = "orders:write", tenants = "acme", sideEffect = SideEffect.DESTRUCTIVE)
+    @ToolPolicy(
+        roles = {"SUPPORT", "ADMIN"},
+        scopes = "orders:write",
+        tenants = "acme",
+        sideEffect = SideEffect.DESTRUCTIVE)
     public String refund(String id) {
       return id;
     }

@@ -37,23 +37,88 @@ public record AuditEvent(
   }
 
   public AuditEvent withDecision(AuditDecision d) {
-    return new AuditEvent(sequence, timestamp, principalId, tenantId, tool, argsHash, resultHash, latencyMillis, d, correlationId, decisionId, prevHash, hash);
+    return new AuditEvent(
+        sequence,
+        timestamp,
+        principalId,
+        tenantId,
+        tool,
+        argsHash,
+        resultHash,
+        latencyMillis,
+        d,
+        correlationId,
+        decisionId,
+        prevHash,
+        hash);
   }
 
   public AuditEvent withLatencyMillis(long l) {
-    return new AuditEvent(sequence, timestamp, principalId, tenantId, tool, argsHash, resultHash, l, decision, correlationId, decisionId, prevHash, hash);
+    return new AuditEvent(
+        sequence,
+        timestamp,
+        principalId,
+        tenantId,
+        tool,
+        argsHash,
+        resultHash,
+        l,
+        decision,
+        correlationId,
+        decisionId,
+        prevHash,
+        hash);
   }
 
   public AuditEvent withTool(String t) {
-    return new AuditEvent(sequence, timestamp, principalId, tenantId, t, argsHash, resultHash, latencyMillis, decision, correlationId, decisionId, prevHash, hash);
+    return new AuditEvent(
+        sequence,
+        timestamp,
+        principalId,
+        tenantId,
+        t,
+        argsHash,
+        resultHash,
+        latencyMillis,
+        decision,
+        correlationId,
+        decisionId,
+        prevHash,
+        hash);
   }
 
   public AuditEvent withSequence(long s) {
-    return new AuditEvent(s, timestamp, principalId, tenantId, tool, argsHash, resultHash, latencyMillis, decision, correlationId, decisionId, prevHash, hash);
+    return new AuditEvent(
+        s,
+        timestamp,
+        principalId,
+        tenantId,
+        tool,
+        argsHash,
+        resultHash,
+        latencyMillis,
+        decision,
+        correlationId,
+        decisionId,
+        prevHash,
+        hash);
   }
 
   public AuditEvent withChain(String prev, String h) {
-    return new AuditEvent(sequence, timestamp, principalId, tenantId, tool, argsHash, resultHash, latencyMillis, decision, correlationId, decisionId, prev, h);
+    return new AuditEvent(
+        sequence,
+        timestamp,
+        principalId,
+        tenantId,
+        tool,
+        argsHash,
+        resultHash,
+        latencyMillis,
+        decision,
+        correlationId,
+        decisionId,
+        prev,
+        h);
   }
 
   /** Fluent builder; {@code sequence}, {@code prevHash} and {@code hash} are set by the sink. */
@@ -69,19 +134,71 @@ public record AuditEvent(
     private String correlationId;
     private String decisionId;
 
-    public Builder timestamp(Instant v) { this.timestamp = v; return this; }
-    public Builder principalId(String v) { this.principalId = v; return this; }
-    public Builder tenantId(String v) { this.tenantId = v; return this; }
-    public Builder tool(String v) { this.tool = v; return this; }
-    public Builder argsHash(String v) { this.argsHash = v; return this; }
-    public Builder resultHash(String v) { this.resultHash = v; return this; }
-    public Builder latencyMillis(long v) { this.latencyMillis = v; return this; }
-    public Builder decision(AuditDecision v) { this.decision = v; return this; }
-    public Builder correlationId(String v) { this.correlationId = v; return this; }
-    public Builder decisionId(String v) { this.decisionId = v; return this; }
+    public Builder timestamp(Instant v) {
+      this.timestamp = v;
+      return this;
+    }
+
+    public Builder principalId(String v) {
+      this.principalId = v;
+      return this;
+    }
+
+    public Builder tenantId(String v) {
+      this.tenantId = v;
+      return this;
+    }
+
+    public Builder tool(String v) {
+      this.tool = v;
+      return this;
+    }
+
+    public Builder argsHash(String v) {
+      this.argsHash = v;
+      return this;
+    }
+
+    public Builder resultHash(String v) {
+      this.resultHash = v;
+      return this;
+    }
+
+    public Builder latencyMillis(long v) {
+      this.latencyMillis = v;
+      return this;
+    }
+
+    public Builder decision(AuditDecision v) {
+      this.decision = v;
+      return this;
+    }
+
+    public Builder correlationId(String v) {
+      this.correlationId = v;
+      return this;
+    }
+
+    public Builder decisionId(String v) {
+      this.decisionId = v;
+      return this;
+    }
 
     public AuditEvent build() {
-      return new AuditEvent(0, timestamp, principalId, tenantId, tool, argsHash, resultHash, latencyMillis, decision, correlationId, decisionId, null, null);
+      return new AuditEvent(
+          0,
+          timestamp,
+          principalId,
+          tenantId,
+          tool,
+          argsHash,
+          resultHash,
+          latencyMillis,
+          decision,
+          correlationId,
+          decisionId,
+          null,
+          null);
     }
   }
 }

@@ -6,8 +6,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Tool name to executor, so an approved decision can be resumed later from a different thread
- * (the approval endpoint) than the one that parked it.
+ * Tool name to executor, so an approved decision can be resumed later from a different thread (the
+ * approval endpoint) than the one that parked it.
  */
 public final class ToolExecutorRegistry {
 

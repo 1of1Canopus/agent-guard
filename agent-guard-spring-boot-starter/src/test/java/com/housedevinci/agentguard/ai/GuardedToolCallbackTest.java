@@ -34,8 +34,8 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 /**
- * Drives the Spring AI tool-calling path the way a ChatModel does: a fake model answers with a
- * tool call and {@link DefaultToolCallingManager} executes it through the guarded callbacks.
+ * Drives the Spring AI tool-calling path the way a ChatModel does: a fake model answers with a tool
+ * call and {@link DefaultToolCallingManager} executes it through the guarded callbacks.
  */
 class GuardedToolCallbackTest {
 
@@ -71,7 +71,9 @@ class GuardedToolCallbackTest {
 
   private final ApplicationContextRunner runner =
       new ApplicationContextRunner()
-          .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class, AgentGuardSpringAiAutoConfiguration.class))
+          .withConfiguration(
+              AutoConfigurations.of(
+                  AgentGuardAutoConfiguration.class, AgentGuardSpringAiAutoConfiguration.class))
           .withUserConfiguration(ToolsConfig.class)
           .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY");
 
@@ -81,19 +83,31 @@ class GuardedToolCallbackTest {
   }
 
   private static void loginAs(String user, String... roles) {
-    var auth = new TestingAuthenticationToken(user, "n/a", List.of(roles).stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList());
+    var auth =
+        new TestingAuthenticationToken(
+            user,
+            "n/a",
+            List.of(roles).stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).toList());
     auth.setAuthenticated(true);
     SecurityContextHolder.getContext().setAuthentication(auth);
   }
 
-  /** What a ChatModel does after the LLM asked for a tool: run it through the ToolCallingManager. */
+  /**
+   * What a ChatModel does after the LLM asked for a tool: run it through the ToolCallingManager.
+   */
   private static String runToolCall(ToolCallback[] callbacks, String tool, String argsJson) {
     var options = ToolCallingChatOptions.builder().toolCallbacks(callbacks).build();
     var prompt = new Prompt(new UserMessage("do it"), options);
-    var assistant = AssistantMessage.builder().content("").toolCalls(List.of(new AssistantMessage.ToolCall("call-1", "function", tool, argsJson))).build();
+    var assistant =
+        AssistantMessage.builder()
+            .content("")
+            .toolCalls(List.of(new AssistantMessage.ToolCall("call-1", "function", tool, argsJson)))
+            .build();
     var response = new ChatResponse(List.of(new Generation(assistant)));
     var result = DefaultToolCallingManager.builder().build().executeToolCalls(prompt, response);
-    var last = (ToolResponseMessage) result.conversationHistory().get(result.conversationHistory().size() - 1);
+    var last =
+        (ToolResponseMessage)
+            result.conversationHistory().get(result.conversationHistory().size() - 1);
     return last.getResponses().get(0).responseData();
   }
 
@@ -107,14 +121,17 @@ class GuardedToolCallbackTest {
           assertThat(callbacks).allMatch(c -> c instanceof GuardedToolCallback);
 
           loginAs("bob", "SUPPORT");
-          assertThat(runToolCall(callbacks, "lookupOrder", "{\"orderId\":\"42\"}")).isEqualTo("\"order 42 is shipped\"");
+          assertThat(runToolCall(callbacks, "lookupOrder", "{\"orderId\":\"42\"}"))
+              .isEqualTo("\"order 42 is shipped\"");
 
           loginAs("eve", "VIEWER");
           assertThat(runToolCall(callbacks, "lookupOrder", "{\"orderId\":\"42\"}"))
-              .contains("\"error\":\"TOOL_DENIED\"").contains("AG-POLICY-001");
+              .contains("\"error\":\"TOOL_DENIED\"")
+              .contains("AG-POLICY-001");
 
           SecurityContextHolder.clearContext();
-          assertThat(runToolCall(callbacks, "lookupOrder", "{\"orderId\":\"42\"}")).contains("TOOL_DENIED");
+          assertThat(runToolCall(callbacks, "lookupOrder", "{\"orderId\":\"42\"}"))
+              .contains("TOOL_DENIED");
         });
   }
 
@@ -125,24 +142,36 @@ class GuardedToolCallbackTest {
           REFUNDS.set(0);
           var callbacks = ctx.getBean(ToolCallbackProvider.class).getToolCallbacks();
           loginAs("bob", "SUPPORT");
-          var parked = runToolCall(callbacks, "refundOrder", "{\"orderId\":\"42\",\"password\":\"hunter2\"}");
+          var parked =
+              runToolCall(
+                  callbacks, "refundOrder", "{\"orderId\":\"42\",\"password\":\"hunter2\"}");
           assertThat(parked).contains("AWAITING_APPROVAL");
           assertThat(REFUNDS).hasValue(0);
 
           var approvals = ctx.getBean(ApprovalService.class);
           var pending = approvals.pending(10);
           assertThat(pending).hasSize(1);
-          assertThat(pending.get(0).argsPreview()).contains("\"password\":\"***\"").doesNotContain("hunter2");
+          assertThat(pending.get(0).argsPreview())
+              .contains("\"password\":\"***\"")
+              .doesNotContain("hunter2");
 
           var outcome = approvals.approve(pending.get(0).id(), "alice");
           assertThat(outcome.result().toModelText()).isEqualTo("\"refunded 42\"");
           assertThat(REFUNDS).hasValue(1);
           approvals.approve(pending.get(0).id(), "alice");
           assertThat(REFUNDS).hasValue(1);
-          assertThat(approvals.find(DecisionId.of(pending.get(0).id().toString())).orElseThrow().state()).isEqualTo(DecisionState.APPROVED);
+          assertThat(
+                  approvals
+                      .find(DecisionId.of(pending.get(0).id().toString()))
+                      .orElseThrow()
+                      .state())
+              .isEqualTo(DecisionState.APPROVED);
 
           // the agent re-asks with the same arguments and gets the stored result, no second refund
-          assertThat(runToolCall(callbacks, "refundOrder", "{\"orderId\":\"42\",\"password\":\"hunter2\"}")).isEqualTo("\"refunded 42\"");
+          assertThat(
+                  runToolCall(
+                      callbacks, "refundOrder", "{\"orderId\":\"42\",\"password\":\"hunter2\"}"))
+              .isEqualTo("\"refunded 42\"");
           assertThat(REFUNDS).hasValue(1);
 
           var audit = ctx.getBean(AuditReader.class).latest(10);
@@ -156,7 +185,11 @@ class GuardedToolCallbackTest {
     runner.run(
         ctx -> {
           var agentGuard = ctx.getBean(AgentGuard.class);
-          var raw = MethodToolCallbackProvider.builder().toolObjects(new OrderTools()).build().getToolCallbacks()[0];
+          var raw =
+              MethodToolCallbackProvider.builder()
+                  .toolObjects(new OrderTools())
+                  .build()
+                  .getToolCallbacks()[0];
           var guarded = agentGuard.guard(raw);
           assertThat(guarded).isInstanceOf(GuardedToolCallback.class);
           assertThat(agentGuard.guard(guarded)).isSameAs(guarded);

@@ -33,24 +33,53 @@ class ToolPolicyEvaluatorTest {
         Arguments.of("no restriction, READ", anyRule, principal(Set.of(), Set.of(), null), "ALLOW"),
         Arguments.of("role match", adminRead, principal(Set.of("ADMIN"), Set.of(), null), "ALLOW"),
         Arguments.of("role miss", adminRead, principal(Set.of("VIEWER"), Set.of(), null), "DENY"),
-        Arguments.of("role missing entirely", adminRead, principal(Set.of(), Set.of(), null), "DENY"),
-        Arguments.of("scope match", scopedRead, principal(Set.of(), Set.of("tools:read"), null), "ALLOW"),
-        Arguments.of("scope miss", scopedRead, principal(Set.of(), Set.of("tools:write"), null), "DENY"),
+        Arguments.of(
+            "role missing entirely", adminRead, principal(Set.of(), Set.of(), null), "DENY"),
+        Arguments.of(
+            "scope match", scopedRead, principal(Set.of(), Set.of("tools:read"), null), "ALLOW"),
+        Arguments.of(
+            "scope miss", scopedRead, principal(Set.of(), Set.of("tools:write"), null), "DENY"),
         Arguments.of("tenant match", tenantRead, principal(Set.of(), Set.of(), "acme"), "ALLOW"),
         Arguments.of("tenant miss", tenantRead, principal(Set.of(), Set.of(), "other"), "DENY"),
-        Arguments.of("tenant required, principal has none", tenantRead, principal(Set.of(), Set.of(), null), "DENY"),
-        Arguments.of("WRITE with role", adminWrite, principal(Set.of("ADMIN"), Set.of(), null), "REQUIRE_APPROVAL"),
-        Arguments.of("WRITE without role denied before approval", adminWrite, principal(Set.of("VIEWER"), Set.of(), null), "DENY"),
-        Arguments.of("DESTRUCTIVE unrestricted", destructive, principal(Set.of(), Set.of(), null), "REQUIRE_APPROVAL"),
-        Arguments.of("all constraints satisfied", full, principal(Set.of("OPS"), Set.of("tools:write"), "acme"), "REQUIRE_APPROVAL"),
-        Arguments.of("all but scope", full, principal(Set.of("OPS"), Set.of("nope"), "acme"), "DENY"),
-        Arguments.of("all but tenant", full, principal(Set.of("OPS"), Set.of("tools:write"), "zeta"), "DENY"));
+        Arguments.of(
+            "tenant required, principal has none",
+            tenantRead,
+            principal(Set.of(), Set.of(), null),
+            "DENY"),
+        Arguments.of(
+            "WRITE with role",
+            adminWrite,
+            principal(Set.of("ADMIN"), Set.of(), null),
+            "REQUIRE_APPROVAL"),
+        Arguments.of(
+            "WRITE without role denied before approval",
+            adminWrite,
+            principal(Set.of("VIEWER"), Set.of(), null),
+            "DENY"),
+        Arguments.of(
+            "DESTRUCTIVE unrestricted",
+            destructive,
+            principal(Set.of(), Set.of(), null),
+            "REQUIRE_APPROVAL"),
+        Arguments.of(
+            "all constraints satisfied",
+            full,
+            principal(Set.of("OPS"), Set.of("tools:write"), "acme"),
+            "REQUIRE_APPROVAL"),
+        Arguments.of(
+            "all but scope", full, principal(Set.of("OPS"), Set.of("nope"), "acme"), "DENY"),
+        Arguments.of(
+            "all but tenant",
+            full,
+            principal(Set.of("OPS"), Set.of("tools:write"), "zeta"),
+            "DENY"));
   }
 
   @ParameterizedTest(name = "{0}")
   @MethodSource("matrix")
   void policy_matrix(String label, PolicyRule rule, Principal principal, String expected) {
-    PolicyDecision decision = EVALUATOR.evaluate(rule, principal, new ToolRef("t", rule.sideEffect()));
+    PolicyDecision decision =
+        EVALUATOR.evaluate(rule, principal, new ToolRef("t", rule.sideEffect()));
     assertThat(decision.kind().name()).isEqualTo(expected);
   }
 
@@ -58,7 +87,8 @@ class ToolPolicyEvaluatorTest {
   void deny_carries_stable_code_and_reason() {
     var rule = new PolicyRule(Set.of("ADMIN"), Set.of(), Set.of(), SideEffect.READ);
     var decision =
-        EVALUATOR.evaluate(rule, principal(Set.of(), Set.of(), null), new ToolRef("t", SideEffect.READ));
+        EVALUATOR.evaluate(
+            rule, principal(Set.of(), Set.of(), null), new ToolRef("t", SideEffect.READ));
     assertThat(decision).isInstanceOf(PolicyDecision.Deny.class);
     var deny = (PolicyDecision.Deny) decision;
     assertThat(deny.code()).isEqualTo("AG-POLICY-001");

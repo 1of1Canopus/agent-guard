@@ -28,7 +28,8 @@ class AgentGuardAutoConfigurationTest {
 
   @Test
   void off_by_default() {
-    runner.run(ctx -> assertThat(ctx).doesNotHaveBean(ToolGuard.class).doesNotHaveBean(AgentGuard.class));
+    runner.run(
+        ctx -> assertThat(ctx).doesNotHaveBean(ToolGuard.class).doesNotHaveBean(AgentGuard.class));
   }
 
   @Test
@@ -43,9 +44,13 @@ class AgentGuardAutoConfigurationTest {
             "agentguard.budgets.limits[0].limit=3")
         .run(
             ctx -> {
-              assertThat(ctx).hasSingleBean(ToolGuard.class).hasSingleBean(AgentGuard.class)
-                  .hasSingleBean(McpToolGuard.class).hasSingleBean(ToolPolicyAuthorizationManager.class);
-              assertThat(ctx.getBean(com.housedevinci.agentguard.domain.AuditSink.class)).isInstanceOf(InMemoryAuditSink.class);
+              assertThat(ctx)
+                  .hasSingleBean(ToolGuard.class)
+                  .hasSingleBean(AgentGuard.class)
+                  .hasSingleBean(McpToolGuard.class)
+                  .hasSingleBean(ToolPolicyAuthorizationManager.class);
+              assertThat(ctx.getBean(com.housedevinci.agentguard.domain.AuditSink.class))
+                  .isInstanceOf(InMemoryAuditSink.class);
               var limits = ctx.getBean(BudgetEnforcer.class).limits();
               assertThat(limits).hasSize(1);
               assertThat(limits.get(0).scope()).isEqualTo(BudgetScope.PRINCIPAL);
@@ -61,25 +66,33 @@ class AgentGuardAutoConfigurationTest {
         .run(
             ctx -> {
               assertThat(ctx).hasFailed();
-              assertThat(ctx.getStartupFailure()).rootCause().hasMessageContaining("agentguard.store=JDBC requires a DataSource");
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.store=JDBC requires a DataSource");
             });
   }
 
   @Test
   void redis_budgets_without_uri_fail_fast() {
     runner
-        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.budgets.store=REDIS")
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.budgets.store=REDIS")
         .run(
             ctx -> {
               assertThat(ctx).hasFailed();
-              assertThat(ctx.getStartupFailure()).rootCause().hasMessageContaining("agentguard.redis.uri is required");
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.redis.uri is required");
             });
   }
 
   @Test
   void invalid_limit_is_rejected_by_validation() {
     runner
-        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.budgets.limits[0].limit=0")
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.limits[0].limit=0")
         .run(ctx -> assertThat(ctx).hasFailed());
   }
 }

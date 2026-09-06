@@ -55,7 +55,8 @@ public final class JdbcBudgetStore implements BudgetStore {
         dataSource,
         c -> {
           try (PreparedStatement ps =
-              c.prepareStatement("SELECT used FROM agentguard_budget WHERE key = ? AND expires_at > ?")) {
+              c.prepareStatement(
+                  "SELECT used FROM agentguard_budget WHERE key = ? AND expires_at > ?")) {
             ps.setString(1, key);
             ps.setObject(2, ts(now));
             try (ResultSet rs = ps.executeQuery()) {

@@ -71,8 +71,15 @@ public final class ToolGuard {
     var principal = invocation.principal();
     Optional<PolicyRule> rule = policies.resolve(toolName, sideEffectHint);
     if (rule.isEmpty()) {
-      audit.record(principal, toolName, invocation.argumentsJson(), null, 0, AuditDecision.DENIED,
-          invocation.correlationId(), null);
+      audit.record(
+          principal,
+          toolName,
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.DENIED,
+          invocation.correlationId(),
+          null);
       return new GuardResult.Denied(
           ErrorCodes.POLICY_UNREGISTERED,
           toolName,
@@ -82,8 +89,15 @@ public final class ToolGuard {
     PolicyDecision decision = evaluator.evaluate(rule.get(), principal, tool);
     return switch (decision) {
       case PolicyDecision.Deny deny -> {
-        audit.record(principal, toolName, invocation.argumentsJson(), null, 0, AuditDecision.DENIED,
-            invocation.correlationId(), null);
+        audit.record(
+            principal,
+            toolName,
+            invocation.argumentsJson(),
+            null,
+            0,
+            AuditDecision.DENIED,
+            invocation.correlationId(),
+            null);
         yield new GuardResult.Denied(deny.code(), toolName, deny.reason());
       }
       case PolicyDecision.RequireApproval ra -> gate(invocation, tool, executor);
@@ -101,8 +115,15 @@ public final class ToolGuard {
     if (existing.isPresent()) {
       var d = existing.get();
       if (d.state() == DecisionState.PENDING) {
-        audit.record(invocation.principal(), tool.name(), invocation.argumentsJson(), null, 0,
-            AuditDecision.PENDING, invocation.correlationId(), d.id().toString());
+        audit.record(
+            invocation.principal(),
+            tool.name(),
+            invocation.argumentsJson(),
+            null,
+            0,
+            AuditDecision.PENDING,
+            invocation.correlationId(),
+            d.id().toString());
         return new GuardResult.AwaitingApproval(d);
       }
       if (d.state() == DecisionState.APPROVED || d.state() == DecisionState.REJECTED) {
@@ -111,8 +132,15 @@ public final class ToolGuard {
       // EXPIRED: fall through and park again
     }
     var parked = approvals.park(invocation, tool, redactor.preview(invocation.argumentsJson()));
-    audit.record(invocation.principal(), tool.name(), invocation.argumentsJson(), null, 0,
-        AuditDecision.PENDING, invocation.correlationId(), parked.id().toString());
+    audit.record(
+        invocation.principal(),
+        tool.name(),
+        invocation.argumentsJson(),
+        null,
+        0,
+        AuditDecision.PENDING,
+        invocation.correlationId(),
+        parked.id().toString());
     return new GuardResult.AwaitingApproval(parked);
   }
 
@@ -121,19 +149,40 @@ public final class ToolGuard {
     try {
       budgets.reserve(invocation);
     } catch (BudgetExceededException e) {
-      audit.record(invocation.principal(), tool, invocation.argumentsJson(), null, 0,
-          AuditDecision.BUDGET_EXCEEDED, invocation.correlationId(), null);
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.BUDGET_EXCEEDED,
+          invocation.correlationId(),
+          null);
       return new GuardResult.BudgetExceeded(tool, e.getMessage());
     }
     long start = clock.millis();
     try {
       String output = executor.execute(invocation.argumentsJson());
-      audit.record(invocation.principal(), tool, invocation.argumentsJson(), output,
-          clock.millis() - start, AuditDecision.ALLOWED, invocation.correlationId(), null);
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          output,
+          clock.millis() - start,
+          AuditDecision.ALLOWED,
+          invocation.correlationId(),
+          null);
       return new GuardResult.Executed(output);
     } catch (Exception e) {
-      audit.record(invocation.principal(), tool, invocation.argumentsJson(), null,
-          clock.millis() - start, AuditDecision.FAILED, invocation.correlationId(), null);
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          null,
+          clock.millis() - start,
+          AuditDecision.FAILED,
+          invocation.correlationId(),
+          null);
       return new GuardResult.Failed(tool, Errors.describe(e));
     }
   }

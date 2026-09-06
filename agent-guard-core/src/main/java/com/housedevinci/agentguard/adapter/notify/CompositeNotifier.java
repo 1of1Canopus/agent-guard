@@ -23,7 +23,11 @@ public final class CompositeNotifier implements Notifier {
       try {
         n.notify(decision);
       } catch (RuntimeException e) {
-        log.warn("Notifier {} failed for decision {}: {}", n.getClass().getSimpleName(), decision.id(), e.toString());
+        log.warn(
+            "Notifier {} failed for decision {}: {}",
+            n.getClass().getSimpleName(),
+            decision.id(),
+            e.toString());
       }
     }
   }

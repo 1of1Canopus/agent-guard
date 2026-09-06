@@ -28,7 +28,10 @@ class McpToolGuardTest {
   static final AtomicInteger DELETES = new AtomicInteger();
 
   static class Tools {
-    @McpTool(name = "get_weather", description = "read", annotations = @McpTool.McpAnnotations(readOnlyHint = true))
+    @McpTool(
+        name = "get_weather",
+        description = "read",
+        annotations = @McpTool.McpAnnotations(readOnlyHint = true))
     public String weather(String city) {
       return "sunny in " + city;
     }
@@ -61,7 +64,9 @@ class McpToolGuardTest {
 
   private final ApplicationContextRunner runner =
       new ApplicationContextRunner()
-          .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
+          .withConfiguration(
+              AutoConfigurations.of(
+                  AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
           .withUserConfiguration(SpecsConfig.class)
           .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY");
 
@@ -71,14 +76,19 @@ class McpToolGuardTest {
   }
 
   private static void loginAs(String user, String role) {
-    var auth = new TestingAuthenticationToken(user, "n/a", List.of(new SimpleGrantedAuthority("ROLE_" + role)));
+    var auth =
+        new TestingAuthenticationToken(
+            user, "n/a", List.of(new SimpleGrantedAuthority("ROLE_" + role)));
     auth.setAuthenticated(true);
     SecurityContextHolder.getContext().setAuthentication(auth);
   }
 
   @SuppressWarnings("unchecked")
-  private static McpSchema.CallToolResult call(List<?> specs, String tool, Map<String, Object> args) {
-    var spec = ((List<McpServerFeatures.SyncToolSpecification>) specs).stream().filter(s -> s.tool().name().equals(tool)).findFirst().orElseThrow();
+  private static McpSchema.CallToolResult call(
+      List<?> specs, String tool, Map<String, Object> args) {
+    var spec =
+        ((List<McpServerFeatures.SyncToolSpecification>) specs)
+            .stream().filter(s -> s.tool().name().equals(tool)).findFirst().orElseThrow();
     return spec.callHandler().apply(null, new McpSchema.CallToolRequest(tool, args));
   }
 
@@ -129,8 +139,18 @@ class McpToolGuardTest {
 
   @Test
   void hint_only_honours_read_only() {
-    var readOnly = McpSchema.Tool.builder().name("a").inputSchema(Map.of()).annotations(new McpSchema.ToolAnnotations("t", true, null, null, null, null)).build();
-    var destructive = McpSchema.Tool.builder().name("b").inputSchema(Map.of()).annotations(new McpSchema.ToolAnnotations("t", false, true, null, null, null)).build();
+    var readOnly =
+        McpSchema.Tool.builder()
+            .name("a")
+            .inputSchema(Map.of())
+            .annotations(new McpSchema.ToolAnnotations("t", true, null, null, null, null))
+            .build();
+    var destructive =
+        McpSchema.Tool.builder()
+            .name("b")
+            .inputSchema(Map.of())
+            .annotations(new McpSchema.ToolAnnotations("t", false, true, null, null, null))
+            .build();
     var none = McpSchema.Tool.builder().name("c").inputSchema(Map.of()).build();
     assertThat(McpToolGuard.hint(readOnly)).contains(SideEffect.READ);
     assertThat(McpToolGuard.hint(destructive)).isEmpty();

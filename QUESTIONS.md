@@ -13,7 +13,8 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
    only public seam that sits between the annotation scanner and `McpServerAutoConfiguration`. It covers the sync
    streamable-HTTP / SSE servers and the stateless sync server. **Async (WebFlux) servers are not guarded yet**: a
    `McpServerFeatures.AsyncToolSpecification` wrapper is the same 30 lines, but the blocking JDBC/Redis stores would
-   run on reactor threads; deferred until someone asks.
+   run on reactor threads; deferred until someone asks. Since Cipher H2, async specification beans **fail startup**
+   instead of running unguarded.
 3. **[decided]** MCP tool hints: only `readOnlyHint=true` is honoured (tool treated as READ when it has no
    `@ToolPolicy`). `destructiveHint` is not used because `@McpTool` defaults it to `true`, so every unannotated tool
    would silently become DESTRUCTIVE. Unannotated non-read-only tools follow `agentguard.policy.unregistered-tools`
@@ -35,13 +36,14 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
 7. **[decided — coordinator ruling]** `agentguard.store=JDBC` stays the fail-closed default. The startup error names
    the trial setting explicitly: "no DataSource found; for a local trial set agentguard.store=memory - not for
    production." Implemented in `AgentGuardAutoConfiguration`, asserted in `AgentGuardAutoConfigurationTest`.
-8. **[ruling?]** Token budgets (`kind: TOKENS`) are enforced before dispatch and recorded through
+8. **[ruling?, still open]** Token budgets (`kind: TOKENS`) are enforced before dispatch and recorded through
    `BudgetEnforcer.recordTokens(...)`, but nothing calls `recordTokens` automatically yet: Spring AI usage metadata lives
    on the `ChatResponse`, not on the tool call, so it needs a `ChatClient` advisor or a `ChatModel` decorator. Proposed:
    an `AgentGuardUsageAdvisor` (CallAdvisor) in the starter next run.
 9. **[decided]** Budget windows are fixed, epoch-aligned windows (not sliding). Counters count attempts that reached
    dispatch, and a refused attempt is not rolled back. Cheap, atomic, predictable.
-10. **[decided]** Approved calls also consume budget at execution time (Peekflo "cap before dispatch" discipline).
+10. **[decided, revised after Cipher M4]** A parked call consumes the call budget when it is parked; its later
+    execution is not charged again (still "cap before dispatch": nothing runs without a reservation).
 11. **[decided]** A REJECTED decision re-requested with identical arguments returns a structured rejection
     (`AG-APPROVAL-005`); an EXPIRED one is parked again. Different arguments always park a new decision.
 12. **[decided — coordinator ruling]** The JSON approve / reject / audit-query endpoints stay in the free starter
@@ -53,5 +55,9 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     `-XDaddTypeAnnotationsToSymbol=true`; both are in place. `maven-enforcer` `dependencyConvergence` is on.
 14. **[decided]** JaCoCo gate is on `agent-guard-core` only (line >= 80%). The starter is covered by context tests but
     has no gate yet.
+16. **[decided, Cipher review]** `agentguard.strict=true` by default: fail startup on unguarded `@ToolPolicy`
+    tools and deny calls whose budget scope has no subject. Trial users set `agentguard.strict=false`.
+17. **[decided, Cipher review]** The child-JVM virtual-thread pinning probe runs only with `-Ppinning-probe` (it
+    hangs on purpose for 2 x 10 s).
 15. **[decided]** Testcontainers 2.0.5 (Boot-managed): `testcontainers-postgresql` + `testcontainers-junit-jupiter`;
     Redis via `GenericContainer("redis:7-alpine")`.

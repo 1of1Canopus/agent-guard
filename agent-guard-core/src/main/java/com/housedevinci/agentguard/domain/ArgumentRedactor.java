@@ -67,17 +67,23 @@ public final class ArgumentRedactor {
     return new ArgumentRedactor(DEFAULT_SENSITIVE_KEYS, DEFAULT_MAX_LENGTH);
   }
 
+  /** Redacted and length-capped: what logs, notifiers and list views show. */
   public String preview(String argumentsJson) {
+    String masked = redact(argumentsJson);
+    if (masked.length() > maxLength) {
+      return masked.substring(0, maxLength) + TRUNCATION_MARK;
+    }
+    return masked;
+  }
+
+  /** Redacted but complete: what an approver reads before attesting the arguments hash. */
+  public String redact(String argumentsJson) {
     if (argumentsJson == null || argumentsJson.isEmpty()) {
       return "";
     }
     String masked = maskKeys(argumentsJson);
     masked = BEARER.matcher(masked).replaceAll("$1" + MASK);
-    masked = CONTROL.matcher(masked).replaceAll("");
-    if (masked.length() > maxLength) {
-      return masked.substring(0, maxLength) + TRUNCATION_MARK;
-    }
-    return masked;
+    return CONTROL.matcher(masked).replaceAll("");
   }
 
   private String maskKeys(String json) {

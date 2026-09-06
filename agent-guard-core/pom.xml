@@ -13,6 +13,10 @@
   <name>Agent Guard :: Core</name>
   <description>Framework-free domain and application layer: tool policy, approval gate, hash-chained audit, budgets</description>
 
+  <properties>
+    <agentguard.surefire.exclude>**/CipherProbeJedisPinningTest.java</agentguard.surefire.exclude>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -70,6 +74,17 @@
   <build>
     <plugins>
       <plugin>
+        <!-- The child-JVM virtual-thread pinning probe deliberately hangs twice for 10 s;
+             run it on demand: ./mvnw -Ppinning-probe -pl agent-guard-core test -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>${agentguard.surefire.exclude}</exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
         <executions>
@@ -105,4 +120,13 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <id>pinning-probe</id>
+      <properties>
+        <agentguard.surefire.exclude>none</agentguard.surefire.exclude>
+      </properties>
+    </profile>
+  </profiles>
 </project>

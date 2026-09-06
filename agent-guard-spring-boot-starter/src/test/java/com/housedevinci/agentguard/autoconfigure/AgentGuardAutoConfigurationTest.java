@@ -97,4 +97,41 @@ class AgentGuardAutoConfigurationTest {
             "agentguard.budgets.limits[0].limit=0")
         .run(ctx -> assertThat(ctx).hasFailed());
   }
+
+  @Test
+  void jedis_pool_is_prefilled_by_default_and_sized_from_properties() {
+    var pool = new AgentGuardProperties.Pool();
+    pool.setMaxTotal(32);
+    var config = JedisBudgetStoreFactory.poolConfig(pool);
+    assertThat(config.getMaxTotal()).isEqualTo(32);
+    assertThat(config.getMinIdle()).isEqualTo(32);
+    assertThat(config.getMaxIdle()).isEqualTo(32);
+    assertThat(config.getMaxWaitDuration()).isEqualTo(java.time.Duration.ofSeconds(2));
+    assertThat(pool.isPreparePool()).isTrue();
+    pool.setMinIdle(4);
+    assertThat(JedisBudgetStoreFactory.poolConfig(pool).getMinIdle()).isEqualTo(4);
+  }
+
+  @Test
+  void tenant_limit_without_tenant_resolver_starts_with_a_warning_and_denies_by_default() {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.limits[0].scope=TENANT",
+            "agentguard.budgets.limits[0].limit=3")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasNotFailed();
+              assertThat(ctx.getBean(BudgetEnforcer.class).missingSubjectPolicy())
+                  .isEqualTo(com.housedevinci.agentguard.application.MissingSubjectPolicy.DENY);
+            });
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.strict=false")
+        .run(
+            ctx ->
+                assertThat(ctx.getBean(BudgetEnforcer.class).missingSubjectPolicy())
+                    .isEqualTo(com.housedevinci.agentguard.application.MissingSubjectPolicy.SKIP));
+  }
 }

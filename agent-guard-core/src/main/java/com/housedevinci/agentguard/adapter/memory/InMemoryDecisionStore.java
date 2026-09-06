@@ -27,12 +27,21 @@ public final class InMemoryDecisionStore implements DecisionStore {
   }
 
   @Override
-  public Optional<PendingDecision> findLatest(String principalId, String tool, String argsHash) {
+  public Optional<PendingDecision> findLatest(
+      String principalId, String tenantId, String tool, String argsHash) {
     return byId.values().stream()
         .filter(d -> d.principal().id().equals(principalId))
+        .filter(d -> java.util.Objects.equals(d.principal().tenantId().orElse(null), tenantId))
         .filter(d -> d.tool().name().equals(tool))
         .filter(d -> d.argsHash().equals(argsHash))
         .max(Comparator.comparing(PendingDecision::createdAt));
+  }
+
+  @Override
+  public long countPending(String principalId) {
+    return byId.values().stream()
+        .filter(d -> d.state() == DecisionState.PENDING && d.principal().id().equals(principalId))
+        .count();
   }
 
   @Override

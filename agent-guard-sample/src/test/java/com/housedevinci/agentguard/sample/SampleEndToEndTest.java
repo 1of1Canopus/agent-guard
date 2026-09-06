@@ -96,13 +96,30 @@ class SampleEndToEndTest {
               .getResponse()
               .getContentAsString();
       var id = list.replaceAll(".*\"id\":\"([0-9a-f-]{36})\".*", "$1");
-      mvc.perform(post("/agentguard/decisions/" + id + "/approve").with(alice))
+      var argsHash = list.replaceAll(".*\"argsHash\":\"([0-9a-f]{64})\".*", "$1");
+      // the approver reads the full redacted arguments, then attests their hash
+      mvc.perform(get("/agentguard/decisions/" + id + "/arguments").with(alice))
+          .andExpect(status().isOk())
+          .andExpect(jsonPath("$.arguments").value("{\"orderId\":\"42\"}"))
+          .andExpect(jsonPath("$.argsHash").value(argsHash));
+      mvc.perform(
+              post("/agentguard/decisions/" + id + "/approve")
+                  .param("argsHash", "f".repeat(64))
+                  .with(alice))
+          .andExpect(status().isConflict());
+      mvc.perform(
+              post("/agentguard/decisions/" + id + "/approve")
+                  .param("argsHash", argsHash)
+                  .with(alice))
           .andExpect(status().isOk())
           .andExpect(jsonPath("$.decision.state").value("APPROVED"))
           .andExpect(jsonPath("$.decision.decidedBy").value("alice"))
           .andExpect(jsonPath("$.decision.executed").value(true))
           .andExpect(jsonPath("$.error").value(false));
-      mvc.perform(post("/agentguard/decisions/" + id + "/approve").with(alice))
+      mvc.perform(
+              post("/agentguard/decisions/" + id + "/approve")
+                  .param("argsHash", argsHash)
+                  .with(alice))
           .andExpect(status().isOk())
           .andExpect(jsonPath("$.decision.executed").value(true));
       mvc.perform(get("/agentguard/decisions").with(alice)).andExpect(jsonPath("$").isEmpty());
@@ -112,7 +129,8 @@ class SampleEndToEndTest {
                   .with(SecurityMockMvcRequestPostProcessors.httpBasic("agent", "agent")))
           .andExpect(status().isForbidden());
 
-      // 4. budget of 3 calls: this is the 4th within the minute
+      // 4. budget of 3 calls: read, parked write, read = 3; the approved execution is not charged
+      //    again, so this read is the 4th call within the minute
       var fourth =
           agent.callTool(new McpSchema.CallToolRequest("get_order", Map.of("orderId", "42")));
       assertThat(fourth.isError()).isTrue();
@@ -131,7 +149,8 @@ class SampleEndToEndTest {
           .contains("\"APPROVED\"")
           .contains("\"PENDING\"")
           .contains("\"ALLOWED\"")
-          .contains("\"prevHash\"");
+          .contains("\"prevHash\"")
+          .contains("\"actorId\":\"alice\"");
       assertThat(audit).doesNotContain("argumentsJson");
       assertThat(verifier.verify().intact()).isTrue();
       assertThat(verifier.verify().verified()).isGreaterThanOrEqualTo(5);

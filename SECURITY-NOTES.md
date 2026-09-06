@@ -14,15 +14,23 @@ does about it, and what still needs a reviewer's eye.
 ## Threat 2 — Argument tampering between approval and execution
 - **Mitigation:** `PendingDecision.argsHash = SHA-256(argumentsJson)`; `DecisionResumer` recomputes the hash of the
   stored arguments before running (`ArgumentsTamperedException`, `AG-APPROVAL-004`); a re-call by the agent only
-  resumes when the new arguments hash to the approved hash, otherwise a new decision is parked.
+  resumes when the new arguments hash to the approved hash, otherwise a new decision is parked. The approver
+  attests the hash they reviewed: `POST /decisions/{id}/approve?argsHash=` is required, a mismatch is a 409
+  (`AG-APPROVAL-010`) and nothing runs; `GET /decisions/{id}/arguments` returns the **complete** redacted
+  arguments (never truncated) so no key is hidden from the reviewer (Cipher M5).
 - **Residual:** the raw arguments are stored in `agentguard_decision.arguments_json` (needed to execute later). Protect
   the table like any other sensitive table; there is no encryption at rest in core (pro candidate).
 - **Test:** `ToolGuardTest.tampered_arguments_between_approval_and_execution_are_refused`.
 
-## Threat 3 — Replay of approvals
+## Threat 3 — Replay of approvals, wrong identity at resume
 - **Mitigation:** `DecisionStore.markExecutedOnce` is a single conditional `UPDATE ... WHERE executed = false`
   (processed-event-ledger pattern); the state machine forbids leaving a terminal state; a second approve returns the
   stored result and runs nothing.
+- **Identity and context at resume (Cipher H1):** the executor closure (the parking caller's `ToolContext` / MCP
+  exchange) is registered **per decision id** and released after the run; the call executes inside a security
+  context rebuilt from the stored principal (`RunAsAuthentication`, via the `ResumeContextProvider` SPI), never as
+  the approver, and the approver's context is restored afterwards. Closures live in memory: a decision parked
+  before a restart cannot be resumed (`AG-APPROVAL-007`). The approved call runs on the approver's request thread.
 - **Test:** `JdbcAdaptersIntegrationTest.mark_executed_once_wins_exactly_once_under_concurrency` (50 threads),
   `GuardedToolCallbackTest`, `SampleEndToEndTest`.
 
@@ -34,32 +42,66 @@ does about it, and what still needs a reviewer's eye.
 - **Open:** key matching is regex-based on JSON text, not a JSON parser; nested arrays of objects are handled, but a
   value that itself contains `"password":` inside a string would also be masked (harmless). Reviewer: fuzz it.
 
-## Threat 5 — Privilege escalation via tool chaining
+## Threat 5 — Privilege escalation via tool chaining, budget evasion
 - **Mitigation:** every call is evaluated on its own with the caller's principal; budgets have a `CONVERSATION`
   scope (`kind: STEPS`) so a chain cannot loop forever inside one conversation.
-- **Open:** the conversation id must be supplied (Spring AI `ToolContext` key `agentguard.conversationId` or
-  `chat_memory_conversation_id`; MCP `_meta.agentguard.conversationId`). Without it the STEPS limit is skipped.
+- **Subject is server-side (Cipher M3):** on MCP the conversation is the server's session id
+  (`McpSyncServerExchange.sessionId()`); client `_meta` is ignored. On Spring AI it is the `ToolContext` key set by
+  server code. When a configured scope has no subject the call is **denied** (`AG-BUDGET-002`) under
+  `agentguard.strict=true` (`agentguard.budgets.missing-subject` = `DENY` | `FALLBACK_TO_PRINCIPAL` | `SKIP`); a
+  TENANT limit without a `TenantResolver` bean warns at startup.
+- **Parking is bounded (Cipher M4):** a parked call consumes the call budget (its later execution is not charged
+  again), pending decisions are capped per principal (`agentguard.approval.max-pending-per-principal`, default 20,
+  `AG-APPROVAL-008`), arguments are capped (`max-argument-bytes`, default 64 KiB, `AG-APPROVAL-009`), and the
+  dedup key includes the tenant so `admin@tenant-2` never receives `admin@tenant-1`'s stored result.
+- **Coverage is checked (Cipher H2):** Spring AI tools are guarded at the `ToolCallingManager` chokepoint (inline
+  `.tools(obj)` / `ToolCallbacks.from` / resolver-by-name included); MCP single and list specification beans are
+  wrapped; async (WebFlux) specifications fail startup; `agentguard.strict=true` fails startup when a scanned
+  `@ToolPolicy` is not reachable through a guarded path, and the startup log lists the guarded tools.
 
 ## Threat 6 — Audit tampering
-- **Mitigation:** hash chain (`hash = SHA-256(canonical(row) || prevHash)`), appends serialised by a PostgreSQL
-  transaction-scoped advisory lock, table trigger raising on UPDATE/DELETE, `AuditChainVerifier`.
-- **Residual:** a DBA with `DROP TRIGGER` rights can still rewrite; the chain makes it detectable, not impossible.
-  Anchoring the head hash elsewhere (pro: export + external timestamp) is the answer.
-- **Test:** `JdbcAdaptersIntegrationTest.audit_*`, `AuditChainVerifierTest`.
+- **Mitigation:** hash chain (`hash = SHA-256(canonical(row) || prevHash)`) with a **length-prefixed** canonical form
+  (`ag1|<len>:<value>|…`, nulls as `-`), so no rewrite can move a boundary between fields (Cipher M2); the approver
+  is part of the material (`actor_id`, Cipher M1); timestamps are truncated to milliseconds in `AuditEvent` so every
+  store round-trips them; appends are serialised by a PostgreSQL transaction-scoped advisory lock; triggers refuse
+  UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash + row count) is
+  written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `BROKEN` /
+  `ANCHOR_MISMATCH` — tail deletion or truncation by a role that can disable triggers is detected.
+- **Residual:** a role that owns the tables can rewrite chain **and** anchor consistently. Run the application with a
+  least-privilege role (INSERT + SELECT on `agentguard_audit`, UPDATE on the anchor row only, no DDL, not the table
+  owner) and keep `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the
+  head hash periodically. An HMAC-keyed chain and external anchoring stay pro items.
+- **Test:** `JdbcAdaptersIntegrationTest.audit_*`, `AuditChainVerifierTest`, `CipherProbeJdbcTest`,
+  `CipherProbeAuditChainTest`.
 
-## Operational hazards found while building
-- **Redis + virtual threads on JDK 21:** Jedis pools borrow connections under `synchronized`, which pins virtual threads.
-  With more concurrent tool calls than carrier threads the JVM deadlocks. Either size `JedisPooled` above the expected
-  concurrency, run tool execution on platform threads, or use JDK 24+ (JEP 491). The integration test uses platform
-  threads on purpose.
-- **Fail-closed on audit failure:** if the audit sink throws, the tool call fails (`AuditRecorder` propagates).
-  Intentional; document for ops.
-- **Endpoints:** `/agentguard/**` has no built-in authentication; the sample restricts it to `ROLE_APPROVER`. The
-  starter must not ship without that sentence in the docs.
+## Operational hazards
+- **Redis + virtual threads on JDK 21–23 (Cipher H3).** The pin is not in Jedis itself but in commons-pool2's growth
+  path: `GenericObjectPool.create()` holds a monitor (`makeObjectCountLock`) around the Jedis handshake I/O. A virtual
+  thread blocked on that `monitorenter` pins its carrier; once every carrier is pinned the threads doing the handshake
+  never get scheduled again and the JVM hangs. Reproduced with 64 virtual threads on a cold pool of 4: zero
+  completions after 10 s; the same on platform threads completes in 62 ms (`CipherProbeJedisPinningTest`, profile
+  `pinning-probe`). It recurs every time the pool has to grow (idle eviction after 60 s, Redis restarts). **Fix
+  shipped:** the pool is pre-filled at startup from the platform startup thread (`min-idle = max-total`,
+  `prepare-pool=true`, `agentguard.redis.pool.*`) so it never grows under load; size `max-total` at or above peak
+  concurrent tool calls. Proven: 200 virtual threads on 8 pre-filled connections finish in 76 ms. JDK 24 (JEP 491)
+  removes the pinning.
+- **Guard failures are structured (Cipher M6):** any failure of the guard's own infrastructure (store, audit sink,
+  notifier, JSON, security context) becomes `{"error":"GUARD_UNAVAILABLE","code":"AG-GUARD-001","correlationId":…}`
+  on both paths; the cause is logged server-side at ERROR with that correlation id, and the tool is not run. Tool
+  authors' own exception messages still reach the model (300 chars): do not put secrets in exception messages.
+- **Endpoints refuse anonymous approvers (Cipher M7):** 401 unless `agentguard.endpoints.allow-anonymous=true`
+  (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
-## Reviewer checklist (to complete before the first public release)
+## Review status
+Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`): H1–H3 and M1–M7 fixed on the branch,
+each probe flipped to assert the fixed behaviour. Still open, tracked as LOW with their probes left in place:
+L1 self-approval, L2 tamper detection not audited, L3 policy not re-evaluated at resume, L4 dedup has no time bound,
+L5 redactor gaps (array/object values, `\u`-escaped keys, U+0085/U+202E), L6 webhook signature, L7 property
+messages, L8 budget table hygiene, L9 sample CSRF note, L10 `initialize-schema` default; INFO I1–I9.
+
+## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.
-- [ ] Fuzz `ArgumentRedactor` with adversarial JSON.
+- [x] Fuzz `ArgumentRedactor` with adversarial JSON (done by Cipher; gaps tracked as L5).
 - [ ] Confirm no secret / PII reaches logs in the sample run (grep the log for `hunter2`, `Bearer `, IBAN-like patterns).
-- [ ] Review `schema-postgresql.sql` grants: application role should have INSERT on `agentguard_audit`, no UPDATE/DELETE.
-- [ ] Threat model the webhook (SSRF: the URL is operator-configured, not user-supplied; document).
+- [ ] Two-role database setup documented and used by the sample compose file.
+- [x] Threat model the webhook (done by Cipher; signature tracked as L6).

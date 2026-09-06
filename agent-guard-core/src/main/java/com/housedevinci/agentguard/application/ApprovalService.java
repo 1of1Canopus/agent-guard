@@ -1,5 +1,6 @@
 package com.housedevinci.agentguard.application;
 
+import com.housedevinci.agentguard.domain.ApprovalHashMismatchException;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.DecisionId;
 import com.housedevinci.agentguard.domain.DecisionNotFoundException;
@@ -68,6 +69,21 @@ public final class ApprovalService {
     return decision;
   }
 
+  /**
+   * Approves after the approver attested the arguments hash they reviewed (the endpoints always
+   * require it).
+   *
+   * @throws ApprovalHashMismatchException when {@code attestedArgsHash} differs from the decision's
+   */
+  public Outcome approve(DecisionId id, String approver, String attestedArgsHash) {
+    var decision = load(id);
+    if (attestedArgsHash == null || !attestedArgsHash.equalsIgnoreCase(decision.argsHash())) {
+      throw new ApprovalHashMismatchException(id);
+    }
+    return approve(id, approver);
+  }
+
+  /** Programmatic approval without hash attestation (the caller has the decision in hand). */
   public Outcome approve(DecisionId id, String approver) {
     var decision = load(id);
     if (decision.state() == DecisionState.APPROVED) {
@@ -101,7 +117,8 @@ public final class ApprovalService {
         0,
         AuditDecision.REJECTED,
         rejected.correlationId(),
-        id.toString());
+        id.toString(),
+        approver);
     return rejected;
   }
 

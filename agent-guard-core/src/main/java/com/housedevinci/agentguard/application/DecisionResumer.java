@@ -2,7 +2,6 @@ package com.housedevinci.agentguard.application;
 
 import com.housedevinci.agentguard.domain.ArgumentsTamperedException;
 import com.housedevinci.agentguard.domain.AuditDecision;
-import com.housedevinci.agentguard.domain.BudgetExceededException;
 import com.housedevinci.agentguard.domain.DecisionId;
 import com.housedevinci.agentguard.domain.DecisionNotFoundException;
 import com.housedevinci.agentguard.domain.DecisionStore;
@@ -13,26 +12,28 @@ import java.util.Objects;
 
 /**
  * Executes an approved decision exactly once and stores the result. Idempotent by decision id:
- * later resumes return the stored result. Verifies the argument hash before running.
+ * later resumes return the stored result. Verifies the argument hash before running, runs the
+ * closure captured when the decision was parked, inside the parking principal's context ({@link
+ * ResumeContextProvider}). The budget was reserved at park time and is not charged again.
  */
 public final class DecisionResumer {
 
   private final DecisionStore store;
   private final ToolExecutorRegistry executors;
-  private final BudgetEnforcer budgets;
   private final AuditRecorder audit;
+  private final ResumeContextProvider context;
   private final Clock clock;
 
   public DecisionResumer(
       DecisionStore store,
       ToolExecutorRegistry executors,
-      BudgetEnforcer budgets,
       AuditRecorder audit,
+      ResumeContextProvider context,
       Clock clock) {
     this.store = Objects.requireNonNull(store, "store");
     this.executors = Objects.requireNonNull(executors, "executors");
-    this.budgets = Objects.requireNonNull(budgets, "budgets");
     this.audit = Objects.requireNonNull(audit, "audit");
+    this.context = Objects.requireNonNull(context, "context");
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
@@ -67,18 +68,14 @@ public final class DecisionResumer {
                       decision.tool().name(), "already executed, result not yet stored"));
     }
     var tool = decision.tool().name();
-    var invocation =
-        new ToolInvocation(
-            decision.principal(),
-            tool,
-            decision.argumentsJson(),
-            decision.conversationId(),
-            decision.correlationId());
-    var executor = executors.find(tool);
+    var actor = decision.decidedBy();
+    var executor = executors.find(decision.id());
     if (executor.isEmpty()) {
       var failed =
           new GuardResult.Denied(
-              ErrorCodes.APPROVAL_NO_EXECUTOR, tool, "no executor registered for tool");
+              ErrorCodes.APPROVAL_NO_EXECUTOR,
+              tool,
+              "no executor captured for this decision (parked before a restart?)");
       store.storeResult(decision.id(), failed.toModelText());
       audit.record(
           decision.principal(),
@@ -88,28 +85,14 @@ public final class DecisionResumer {
           0,
           AuditDecision.FAILED,
           decision.correlationId(),
-          decision.id().toString());
+          decision.id().toString(),
+          actor);
       return failed;
-    }
-    try {
-      budgets.reserve(invocation);
-    } catch (BudgetExceededException e) {
-      var result = new GuardResult.BudgetExceeded(tool, e.getMessage());
-      store.storeResult(decision.id(), result.toModelText());
-      audit.record(
-          decision.principal(),
-          tool,
-          decision.argumentsJson(),
-          null,
-          0,
-          AuditDecision.BUDGET_EXCEEDED,
-          decision.correlationId(),
-          decision.id().toString());
-      return result;
     }
     long start = clock.millis();
     try {
-      String output = executor.get().execute(decision.argumentsJson());
+      String output =
+          context.runAs(decision, () -> executor.get().execute(decision.argumentsJson()));
       long latency = clock.millis() - start;
       store.storeResult(decision.id(), output);
       audit.record(
@@ -120,7 +103,8 @@ public final class DecisionResumer {
           latency,
           AuditDecision.APPROVED,
           decision.correlationId(),
-          decision.id().toString());
+          decision.id().toString(),
+          actor);
       return new GuardResult.Executed(output);
     } catch (Exception e) {
       long latency = clock.millis() - start;
@@ -134,8 +118,11 @@ public final class DecisionResumer {
           latency,
           AuditDecision.FAILED,
           decision.correlationId(),
-          decision.id().toString());
+          decision.id().toString(),
+          actor);
       return failed;
+    } finally {
+      executors.remove(decision.id());
     }
   }
 }

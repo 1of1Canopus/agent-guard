@@ -1,7 +1,8 @@
 package com.housedevinci.agentguard.mcp;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.housedevinci.agentguard.api.ToolPolicy;
 import com.housedevinci.agentguard.autoconfigure.AgentGuardAutoConfiguration;
@@ -10,6 +11,7 @@ import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.AuditSink;
 import com.housedevinci.agentguard.domain.SideEffect;
 import io.modelcontextprotocol.server.McpServerFeatures;
+import io.modelcontextprotocol.server.McpSyncServerExchange;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +29,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import reactor.core.publisher.Mono;
 
-/** Cipher probes for the MCP integration seam. */
+/** Cipher probes for the MCP integration seam, flipped: H2, M3 and M6 are fixed. */
 class CipherProbeMcpTest {
 
   static final AtomicInteger DIRECT = new AtomicInteger();
@@ -72,7 +74,10 @@ class CipherProbeMcpTest {
       return new McpServerFeatures.SyncToolSpecification(
           tool, (exchange, request) -> direct("wiped"));
     }
+  }
 
+  @Configuration(proxyBeanMethods = false)
+  static class AsyncSpecsConfig {
     /** What a WebFlux (async) MCP server publishes. */
     @Bean
     List<McpServerFeatures.AsyncToolSpecification> asyncSpecs() {
@@ -140,106 +145,137 @@ class CipherProbeMcpTest {
     return ((McpSchema.TextContent) r.content().get(0)).text();
   }
 
-  @Test
-  void probe_client_controlled_meta_conversation_id_defeats_the_steps_budget() {
+  private static McpSyncServerExchange session(String id) {
+    var exchange = mock(McpSyncServerExchange.class);
+    when(exchange.sessionId()).thenReturn(id);
+    return exchange;
+  }
+
+  @Test // M3 flipped: the conversation is the server-side session; client _meta is ignored; absent
+  // = denied
+  void steps_budget_uses_the_server_side_session_id() {
     runner
         .withPropertyValues(
             "agentguard.budgets.limits[0].scope=CONVERSATION",
-            "agentguard.budgets.limits[0].kind=STEPS",
-            "agentguard.budgets.limits[0].window=PT1H",
-            "agentguard.budgets.limits[0].limit=2")
+                "agentguard.budgets.limits[0].kind=STEPS",
+            "agentguard.budgets.limits[0].window=PT1H", "agentguard.budgets.limits[0].limit=2")
         .run(
             ctx -> {
               var weather = spec(ctx.getBean("toolSpecs", List.class), "get_weather");
               loginAs("bob", "USER");
-              for (int i = 0; i < 5; i++) {
-                // no _meta at all
-                var r =
-                    weather
-                        .callHandler()
-                        .apply(
-                            null,
-                            new McpSchema.CallToolRequest("get_weather", Map.of("city", "Paris")));
-                assertThat(r.isError()).isNotEqualTo(Boolean.TRUE);
-                // a fresh _meta id every call
-                var r2 =
-                    weather
-                        .callHandler()
-                        .apply(
-                            null,
-                            new McpSchema.CallToolRequest(
-                                "get_weather",
-                                Map.of("city", "Paris"),
-                                Map.of("agentguard.conversationId", "c" + i)));
-                assertThat(r2.isError()).isNotEqualTo(Boolean.TRUE);
-              }
-              // control: honest client with a stable id hits the cap on the 3rd step
+              // no session (stateless / unknown): fail closed under strict
+              var none =
+                  weather
+                      .callHandler()
+                      .apply(
+                          null,
+                          new McpSchema.CallToolRequest("get_weather", Map.of("city", "Paris")));
+              assertThat(none.isError()).isTrue();
+              assertThat(text(none)).contains("AG-BUDGET-002");
+              // a rotating client _meta id does not help: the session decides
+              var session = session("session-1");
               McpSchema.CallToolResult last = null;
               for (int i = 0; i < 3; i++) {
                 last =
                     weather
                         .callHandler()
                         .apply(
-                            null,
+                            session,
                             new McpSchema.CallToolRequest(
                                 "get_weather",
                                 Map.of("city", "Paris"),
-                                Map.of("agentguard.conversationId", "stable")));
+                                Map.of("agentguard.conversationId", "c" + i)));
               }
+              assertThat(last.isError()).isTrue();
               assertThat(text(last)).contains("AG-BUDGET-001");
+              // another session has its own counter
+              var other =
+                  weather
+                      .callHandler()
+                      .apply(
+                          session("session-2"),
+                          new McpSchema.CallToolRequest("get_weather", Map.of("city", "Paris")));
+              assertThat(other.isError()).isNotEqualTo(Boolean.TRUE);
             });
   }
 
-  @Test
-  void probe_single_spec_beans_and_async_spec_lists_are_silently_unguarded() {
+  @Test // H2 flipped: single spec beans are guarded, async specs refuse to start
+  void single_spec_beans_are_guarded_and_async_specs_fail_startup() {
     runner.run(
         ctx -> {
           DIRECT.set(0);
-          SecurityContextHolder.clearContext(); // anonymous caller
-
+          SecurityContextHolder.clearContext();
           var single = ctx.getBean("wipeDisk", McpServerFeatures.SyncToolSpecification.class);
           var r =
               single
                   .callHandler()
                   .apply(null, new McpSchema.CallToolRequest("wipe_disk", Map.of()));
-          assertThat(text(r)).isEqualTo("wiped");
-
-          @SuppressWarnings("unchecked")
-          var async =
-              (List<McpServerFeatures.AsyncToolSpecification>)
-                  ctx.getBean("asyncSpecs", List.class);
-          var r2 =
-              async
-                  .get(0)
-                  .callHandler()
-                  .apply(null, new McpSchema.CallToolRequest("drop_database", Map.of()))
-                  .block();
-          assertThat(text(r2)).isEqualTo("dropped");
-
-          assertThat(DIRECT).hasValue(2);
-          assertThat(ctx.getBean(AuditReader.class).latest(10)).isEmpty();
+          assertThat(r.isError()).isTrue();
+          assertThat(text(r)).contains("AG-POLICY-004");
+          assertThat(DIRECT).hasValue(0);
+          assertThat(ctx.getBean(AuditReader.class).latest(10))
+              .extracting(e -> e.decision().name())
+              .containsExactly("DENIED");
         });
+    runner
+        .withUserConfiguration(AsyncSpecsConfig.class)
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("async MCP tool specifications");
+            });
   }
 
-  @Test
-  void probe_guard_infrastructure_failure_escapes_as_a_raw_exception_to_the_mcp_layer() {
+  @Test // M6 flipped
+  void guard_infrastructure_failure_is_a_structured_error_result() {
     runner
         .withUserConfiguration(BrokenAuditConfig.class)
         .run(
             ctx -> {
               var weather = spec(ctx.getBean("toolSpecs", List.class), "get_weather");
               loginAs("bob", "USER");
-              // McpServerSession maps this to JSON-RPC error {code:-32603, message: getMessage()}
-              assertThatThrownBy(
-                      () ->
-                          weather
-                              .callHandler()
-                              .apply(
-                                  null,
-                                  new McpSchema.CallToolRequest(
-                                      "get_weather", Map.of("city", "x"))))
-                  .isInstanceOf(IllegalStateException.class)
-                  .hasMessageContaining("db.internal:5432");
+              var r =
+                  weather
+                      .callHandler()
+                      .apply(
+                          session("s"),
+                          new McpSchema.CallToolRequest("get_weather", Map.of("city", "x")));
+              assertThat(r.isError()).isTrue();
+              assertThat(text(r))
+                  .contains("AG-GUARD-001")
+                  .contains("correlationId")
+                  .doesNotContain("db.internal");
             });
+  }
+
+  @Test // strict coverage: an @McpTool with a policy that no server publishes fails startup
+  void strict_mode_refuses_unguarded_policies() {
+    new ApplicationContextRunner()
+        .withConfiguration(
+            AutoConfigurations.of(
+                AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
+        .withBean(Tools.class)
+        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              Throwable t = ctx.getStartupFailure();
+              while (t.getCause() != null) {
+                t = t.getCause();
+              }
+              assertThat(t)
+                  .hasMessageContaining("delete_account")
+                  .hasMessageContaining("agentguard.strict");
+            });
+    new ApplicationContextRunner()
+        .withConfiguration(
+            AutoConfigurations.of(
+                AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
+        .withBean(Tools.class)
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.strict=false")
+        .run(ctx -> assertThat(ctx).hasNotFailed());
   }
 }

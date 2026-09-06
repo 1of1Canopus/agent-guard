@@ -21,8 +21,9 @@ class AuditChainVerifierTest {
 
   @Test
   void empty_trail_is_intact() {
-    assertThat(new AuditChainVerifier(new InMemoryAuditSink()).verify())
-        .isEqualTo(new AuditChainVerifier.Report(0, -1));
+    var report = new AuditChainVerifier(new InMemoryAuditSink()).verify();
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.EMPTY);
+    assertThat(report.intact()).isTrue();
   }
 
   @Test
@@ -31,7 +32,8 @@ class AuditChainVerifierTest {
     for (int i = 0; i < 1200; i++) {
       sink.append(event("t" + i));
     }
-    assertThat(new AuditChainVerifier(sink).verify().intact()).isTrue();
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.INTACT);
     var row = sink.readAfter(599, 1).get(0);
     sink.tamper(599, row.withTool("evil"));
     var report = new AuditChainVerifier(sink).verify();
@@ -50,5 +52,22 @@ class AuditChainVerifierTest {
     sink.tamper(1, sink.readAfter(2, 1).get(0).withSequence(2));
     assertThat(new AuditChainVerifier(sink).verify().brokenAtSequence()).isEqualTo(2);
     assertThat(b.hash()).isNotNull();
+  }
+
+  @Test
+  void anchor_mismatch_is_reported_when_the_tail_is_gone() {
+    var sink = new InMemoryAuditSink();
+    sink.append(event("a"));
+    var last = sink.append(event("b"));
+    var anchorOnly =
+        new com.housedevinci.agentguard.domain.AuditAnchor() {
+          @Override
+          public java.util.Optional<Anchor> anchor() {
+            return java.util.Optional.of(new Anchor(last.hash(), 3)); // anchor says three rows
+          }
+        };
+    var report = new AuditChainVerifier(sink, anchorOnly).verify();
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
+    assertThat(report.intact()).isFalse();
   }
 }

@@ -10,12 +10,15 @@ import com.housedevinci.agentguard.adapter.memory.InMemoryDecisionStore;
 import com.housedevinci.agentguard.adapter.notify.CompositeNotifier;
 import com.housedevinci.agentguard.adapter.notify.LoggingNotifier;
 import com.housedevinci.agentguard.adapter.notify.WebhookNotifier;
+import com.housedevinci.agentguard.application.ApprovalLimits;
 import com.housedevinci.agentguard.application.ApprovalService;
 import com.housedevinci.agentguard.application.AuditChainVerifier;
 import com.housedevinci.agentguard.application.AuditRecorder;
 import com.housedevinci.agentguard.application.BudgetEnforcer;
 import com.housedevinci.agentguard.application.DecisionResumer;
+import com.housedevinci.agentguard.application.MissingSubjectPolicy;
 import com.housedevinci.agentguard.application.PolicyLookup;
+import com.housedevinci.agentguard.application.ResumeContextProvider;
 import com.housedevinci.agentguard.application.ToolExecutorRegistry;
 import com.housedevinci.agentguard.application.ToolGuard;
 import com.housedevinci.agentguard.domain.ArgumentRedactor;
@@ -27,6 +30,7 @@ import com.housedevinci.agentguard.domain.DecisionStore;
 import com.housedevinci.agentguard.domain.Notifier;
 import com.housedevinci.agentguard.domain.ToolPolicyEvaluator;
 import com.housedevinci.agentguard.domain.ToolPolicyRegistry;
+import com.housedevinci.agentguard.security.NoTenantResolver;
 import com.housedevinci.agentguard.security.PrincipalResolver;
 import com.housedevinci.agentguard.security.SecurityContextPrincipalResolver;
 import com.housedevinci.agentguard.security.TenantResolver;
@@ -34,7 +38,6 @@ import com.housedevinci.agentguard.security.ToolPolicyAuthorizationManager;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,9 +74,31 @@ public class AgentGuardAutoConfiguration {
   }
 
   @Bean
+  @ConditionalOnMissingBean
+  public GuardCoverage guardCoverage() {
+    return new GuardCoverage();
+  }
+
+  @Bean
   public static ToolPolicyAnnotationScanner toolPolicyAnnotationScanner(
-      ToolPolicyRegistry registry) {
-    return new ToolPolicyAnnotationScanner(registry);
+      ToolPolicyRegistry registry, GuardCoverage coverage) {
+    return new ToolPolicyAnnotationScanner(registry, coverage);
+  }
+
+  @Bean
+  public AgentGuardStartupCheck agentGuardStartupCheck(
+      GuardCoverage coverage, AgentGuardProperties props) {
+    return new AgentGuardStartupCheck(coverage, props.isStrict());
+  }
+
+  @Bean
+  @ConditionalOnMissingBean
+  public ResumeContextProvider resumeContextProvider() {
+    if (org.springframework.util.ClassUtils.isPresent(
+        "org.springframework.security.core.context.SecurityContextHolder", null)) {
+      return new com.housedevinci.agentguard.security.SecurityContextResumeContextProvider();
+    }
+    return ResumeContextProvider.none();
   }
 
   @Bean
@@ -160,7 +185,7 @@ public class AgentGuardAutoConfiguration {
           throw new AgentGuardConfigurationException(
               "agentguard.budgets.store=REDIS requires redis.clients:jedis on the classpath");
         }
-        yield JedisBudgetStoreFactory.create(props.getRedis().getUri());
+        yield JedisBudgetStoreFactory.create(props.getRedis().getUri(), props.getRedis().getPool());
       }
       case DEFAULT -> throw new IllegalStateException("unreachable");
     };
@@ -219,12 +244,32 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public BudgetEnforcer budgetEnforcer(
-      AgentGuardProperties props, BudgetStore store, Clock agentGuardClock) {
+      AgentGuardProperties props,
+      BudgetStore store,
+      Clock agentGuardClock,
+      ObjectProvider<TenantResolver> tenantResolver) {
     List<BudgetLimit> limits =
         props.getBudgets().getLimits().stream()
             .map(l -> new BudgetLimit(l.getScope(), l.getKind(), l.getWindow(), l.getLimit()))
             .toList();
-    return new BudgetEnforcer(limits, store, agentGuardClock);
+    boolean tenantLimits =
+        limits.stream()
+            .anyMatch(l -> l.scope() == com.housedevinci.agentguard.domain.BudgetScope.TENANT);
+    if (tenantLimits && tenantResolver.getIfAvailable() instanceof NoTenantResolver) {
+      log.warn(
+          "agentguard.budgets.limits contains a TENANT limit but no TenantResolver bean is"
+              + " configured: no call carries a tenant, so the limit {} every call"
+              + " (agentguard.budgets.missing-subject)",
+          props.isStrict() ? "denies" : "is skipped for");
+    }
+    var missing =
+        switch (props.getBudgets().getMissingSubject()) {
+          case DEFAULT -> props.isStrict() ? MissingSubjectPolicy.DENY : MissingSubjectPolicy.SKIP;
+          case DENY -> MissingSubjectPolicy.DENY;
+          case FALLBACK_TO_PRINCIPAL -> MissingSubjectPolicy.FALLBACK_TO_PRINCIPAL;
+          case SKIP -> MissingSubjectPolicy.SKIP;
+        };
+    return new BudgetEnforcer(limits, store, agentGuardClock, missing);
   }
 
   @Bean
@@ -232,10 +277,10 @@ public class AgentGuardAutoConfiguration {
   public DecisionResumer decisionResumer(
       DecisionStore store,
       ToolExecutorRegistry executors,
-      BudgetEnforcer budgets,
       AuditRecorder audit,
+      ResumeContextProvider resumeContext,
       Clock agentGuardClock) {
-    return new DecisionResumer(store, executors, budgets, audit, agentGuardClock);
+    return new DecisionResumer(store, executors, audit, resumeContext, agentGuardClock);
   }
 
   @Bean
@@ -263,7 +308,12 @@ public class AgentGuardAutoConfiguration {
       ToolExecutorRegistry executors,
       AuditRecorder audit,
       ArgumentRedactor redactor,
+      AgentGuardProperties props,
       Clock agentGuardClock) {
+    var limits =
+        new ApprovalLimits(
+            props.getApproval().getMaxPendingPerPrincipal(),
+            props.getApproval().getMaxArgumentBytes());
     return new ToolGuard(
         policies,
         evaluator,
@@ -274,6 +324,7 @@ public class AgentGuardAutoConfiguration {
         executors,
         audit,
         redactor,
+        limits,
         agentGuardClock);
   }
 
@@ -286,7 +337,7 @@ public class AgentGuardAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     TenantResolver tenantResolver() {
-      return auth -> Optional.empty();
+      return new NoTenantResolver();
     }
 
     @Bean

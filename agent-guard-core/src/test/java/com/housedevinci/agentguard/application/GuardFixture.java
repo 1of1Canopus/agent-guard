@@ -46,9 +46,13 @@ final class GuardFixture {
     build();
   }
 
+  MissingSubjectPolicy missingSubject = MissingSubjectPolicy.DENY;
+  ApprovalLimits approvalLimits = ApprovalLimits.DEFAULTS;
+
   void build() {
-    var budgets = new BudgetEnforcer(limits, budgetStore, clock);
-    var resumer = new DecisionResumer(decisions, executors, budgets, audit, clock);
+    var budgets = new BudgetEnforcer(limits, budgetStore, clock, missingSubject);
+    var resumer =
+        new DecisionResumer(decisions, executors, audit, ResumeContextProvider.none(), clock);
     approvals =
         new ApprovalService(decisions, notified::add, resumer, audit, clock, Duration.ofHours(1));
     guard =
@@ -62,6 +66,7 @@ final class GuardFixture {
             executors,
             audit,
             ArgumentRedactor.defaults(),
+            approvalLimits,
             clock);
   }
 

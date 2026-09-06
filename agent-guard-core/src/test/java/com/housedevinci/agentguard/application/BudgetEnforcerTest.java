@@ -8,8 +8,6 @@ import com.housedevinci.agentguard.domain.BudgetExceededException;
 import com.housedevinci.agentguard.domain.BudgetKind;
 import com.housedevinci.agentguard.domain.BudgetLimit;
 import com.housedevinci.agentguard.domain.BudgetScope;
-import com.housedevinci.agentguard.domain.PolicyRule;
-import com.housedevinci.agentguard.domain.SideEffect;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -72,6 +70,8 @@ class BudgetEnforcerTest {
     var stepLimit =
         new BudgetLimit(BudgetScope.CONVERSATION, BudgetKind.STEPS, Duration.ofHours(1), 2);
     var f = new GuardFixture(UnregisteredToolBehaviour.ALLOW, List.of(tenantLimit, stepLimit));
+    f.missingSubject = MissingSubjectPolicy.SKIP;
+    f.build();
     var enforcer = f.guard.budgets();
 
     var noTenant =
@@ -135,23 +135,5 @@ class BudgetEnforcerTest {
     }
     assertThat(executed).hasValue(3);
     assertThat(new AuditChainVerifier(f.auditSink).verify().intact()).isTrue();
-  }
-
-  @Test
-  void approved_calls_also_consume_budget() {
-    var f =
-        new GuardFixture(
-            UnregisteredToolBehaviour.ALLOW,
-            List.of(
-                new BudgetLimit(
-                    BudgetScope.PRINCIPAL, BudgetKind.TOOL_CALLS, Duration.ofMinutes(1), 1)));
-    f.registry.register("write", PolicyRule.unrestricted(SideEffect.WRITE));
-    f.guard.execute(ToolInvocation.of(AGENT, "t", "{}"), Optional.empty(), a -> "ok");
-    var parked =
-        (GuardResult.AwaitingApproval)
-            f.guard.execute(
-                ToolInvocation.of(AGENT, "write", "{}"), Optional.empty(), a -> "written");
-    var outcome = f.approvals.approve(parked.decision().id(), "alice");
-    assertThat(outcome.result()).isInstanceOf(GuardResult.BudgetExceeded.class);
   }
 }

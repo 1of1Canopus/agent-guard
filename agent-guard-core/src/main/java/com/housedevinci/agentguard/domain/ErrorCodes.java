@@ -37,8 +37,25 @@ public final class ErrorCodes {
   /** No executor registered for the tool at resume time. */
   public static final String APPROVAL_NO_EXECUTOR = "AG-APPROVAL-007";
 
+  /** Too many decisions already waiting for this principal. */
+  public static final String APPROVAL_TOO_MANY_PENDING = "AG-APPROVAL-008";
+
+  /** Arguments too large to park. */
+  public static final String APPROVAL_ARGS_TOO_LARGE = "AG-APPROVAL-009";
+
+  /** The approver attested a different arguments hash than the decision carries. */
+  public static final String APPROVAL_HASH_MISMATCH = "AG-APPROVAL-010";
+
   /** A budget window is exhausted. */
   public static final String BUDGET_EXCEEDED = "AG-BUDGET-001";
+
+  /**
+   * A configured budget scope has no subject (no conversation id / tenant) and the policy denies.
+   */
+  public static final String BUDGET_SUBJECT_MISSING = "AG-BUDGET-002";
+
+  /** The guard's own infrastructure (store, audit, notifier) failed; the call was not run. */
+  public static final String GUARD_UNAVAILABLE = "AG-GUARD-001";
 
   /** The tool itself threw. */
   public static final String TOOL_FAILED = "AG-TOOL-001";

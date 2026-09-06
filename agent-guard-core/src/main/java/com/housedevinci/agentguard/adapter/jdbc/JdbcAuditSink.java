@@ -3,6 +3,7 @@ package com.housedevinci.agentguard.adapter.jdbc;
 import static com.housedevinci.agentguard.adapter.jdbc.JdbcSupport.instant;
 import static com.housedevinci.agentguard.adapter.jdbc.JdbcSupport.ts;
 
+import com.housedevinci.agentguard.domain.AuditAnchor;
 import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.AuditEvent;
@@ -15,6 +16,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import javax.sql.DataSource;
 
 /**
@@ -22,11 +24,11 @@ import javax.sql.DataSource;
  * advisory lock so the chain is linear even under concurrent writers; the table's trigger refuses
  * UPDATE and DELETE.
  */
-public final class JdbcAuditSink implements AuditSink, AuditReader {
+public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor {
 
   private static final String COLUMNS =
       "seq, ts, principal_id, tenant_id, tool, args_hash, result_hash, latency_ms, decision, "
-          + "correlation_id, decision_id, prev_hash, hash";
+          + "correlation_id, decision_id, actor_id, prev_hash, hash";
   private static final long LOCK_KEY = 0x41474741554449L; // "AGGAUDI"
 
   private final DataSource dataSource;
@@ -45,20 +47,33 @@ public final class JdbcAuditSink implements AuditSink, AuditReader {
             lock.execute();
           }
           String prev = AuditChain.GENESIS;
+          long count = 0;
           try (PreparedStatement last =
                   c.prepareStatement(
-                      "SELECT hash FROM agentguard_audit ORDER BY seq DESC LIMIT 1");
+                      "SELECT head_hash, row_count FROM agentguard_audit_anchor WHERE id = 1");
               ResultSet rs = last.executeQuery()) {
             if (rs.next()) {
               prev = rs.getString(1);
+              count = rs.getLong(2);
             }
           }
           var linked = AuditChain.link(event, prev);
+          try (PreparedStatement anchor =
+              c.prepareStatement(
+                  "INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at) "
+                      + "VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET "
+                      + "head_hash = EXCLUDED.head_hash, row_count = EXCLUDED.row_count, "
+                      + "updated_at = EXCLUDED.updated_at")) {
+            anchor.setString(1, linked.hash());
+            anchor.setLong(2, count + 1);
+            anchor.setObject(3, ts(linked.timestamp()));
+            anchor.executeUpdate();
+          }
           try (PreparedStatement ps =
               c.prepareStatement(
                   "INSERT INTO agentguard_audit (ts, principal_id, tenant_id, tool, args_hash, "
-                      + "result_hash, latency_ms, decision, correlation_id, decision_id, prev_hash, hash) "
-                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
+                      + "result_hash, latency_ms, decision, correlation_id, decision_id, actor_id, prev_hash, hash) "
+                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
             int i = 1;
             ps.setObject(i++, ts(linked.timestamp()));
             ps.setString(i++, linked.principalId());
@@ -70,12 +85,29 @@ public final class JdbcAuditSink implements AuditSink, AuditReader {
             ps.setString(i++, linked.decision().name());
             ps.setString(i++, linked.correlationId());
             ps.setString(i++, linked.decisionId());
+            ps.setString(i++, linked.actorId());
             ps.setString(i++, linked.prevHash());
             ps.setString(i, linked.hash());
             try (ResultSet rs = ps.executeQuery()) {
               rs.next();
               return linked.withSequence(rs.getLong(1));
             }
+          }
+        });
+  }
+
+  @Override
+  public Optional<Anchor> anchor() {
+    return JdbcSupport.withConnection(
+        dataSource,
+        c -> {
+          try (PreparedStatement ps =
+                  c.prepareStatement(
+                      "SELECT head_hash, row_count FROM agentguard_audit_anchor WHERE id = 1");
+              ResultSet rs = ps.executeQuery()) {
+            return rs.next()
+                ? Optional.of(new Anchor(rs.getString(1), rs.getLong(2)))
+                : Optional.empty();
           }
         });
   }
@@ -128,6 +160,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader {
         AuditDecision.valueOf(rs.getString("decision")),
         rs.getString("correlation_id"),
         rs.getString("decision_id"),
+        rs.getString("actor_id"),
         rs.getString("prev_hash"),
         rs.getString("hash"));
   }

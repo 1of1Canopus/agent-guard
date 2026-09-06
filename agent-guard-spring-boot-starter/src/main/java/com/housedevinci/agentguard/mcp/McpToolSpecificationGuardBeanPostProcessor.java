@@ -4,9 +4,8 @@ import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 
 /**
- * Replaces every {@code List<SyncToolSpecification>} bean (Spring AI publishes them from
- * {@code @McpTool} beans and from {@code ToolCallback} beans) with a guarded copy before the MCP
- * server collects them.
+ * Replaces every MCP tool specification bean, single or {@code List}, with a guarded copy before
+ * the MCP server collects them; fails startup on async specifications.
  */
 public final class McpToolSpecificationGuardBeanPostProcessor implements BeanPostProcessor {
 
@@ -19,12 +18,13 @@ public final class McpToolSpecificationGuardBeanPostProcessor implements BeanPos
 
   @Override
   public Object postProcessAfterInitialization(Object bean, String beanName) {
-    if (!(bean instanceof java.util.List<?>)) {
+    if (!(bean instanceof java.util.List<?>)
+        && !bean.getClass().getName().startsWith("io.modelcontextprotocol.server.")) {
       return bean;
     }
     if (mcpToolGuard == null) {
       mcpToolGuard = beanFactory.getBean(McpToolGuard.class);
     }
-    return mcpToolGuard.guardListIfApplicable(bean);
+    return mcpToolGuard.guardBean(bean, beanName);
   }
 }

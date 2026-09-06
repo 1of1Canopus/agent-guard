@@ -1,0 +1,322 @@
+package com.housedevinci.agentguard.autoconfigure;
+
+import com.housedevinci.agentguard.application.UnregisteredToolBehaviour;
+import com.housedevinci.agentguard.domain.ArgumentRedactor;
+import com.housedevinci.agentguard.domain.BudgetKind;
+import com.housedevinci.agentguard.domain.BudgetScope;
+import com.housedevinci.agentguard.domain.SideEffect;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import java.net.URI;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
+
+/** {@code agentguard.*} configuration. Everything is off until {@code agentguard.enabled=true}. */
+@ConfigurationProperties(prefix = "agentguard")
+@Validated
+public class AgentGuardProperties {
+
+  /** Master switch. Off by default: nothing is intercepted until you opt in. */
+  private boolean enabled = false;
+
+  /** Where decisions and audit rows live. JDBC (PostgreSQL) needs a DataSource bean. */
+  @NotNull private StoreType store = StoreType.JDBC;
+
+  @Valid private final Policy policy = new Policy();
+  @Valid private final Approval approval = new Approval();
+  @Valid private final Jdbc jdbc = new Jdbc();
+  @Valid private final Redis redis = new Redis();
+  @Valid private final Budgets budgets = new Budgets();
+  @Valid private final Redaction redaction = new Redaction();
+  @Valid private final Endpoints endpoints = new Endpoints();
+
+  public enum StoreType {
+    JDBC,
+    MEMORY
+  }
+
+  public enum BudgetStoreType {
+    /** Same as {@code agentguard.store}. */
+    DEFAULT,
+    JDBC,
+    REDIS,
+    MEMORY
+  }
+
+  public static class Policy {
+    /** What to do with a tool that has neither @ToolPolicy nor a registry entry. */
+    @NotNull private UnregisteredToolBehaviour unregisteredTools = UnregisteredToolBehaviour.DENY;
+
+    /** Side effects that park the call for human approval. */
+    @NotNull
+    private Set<SideEffect> approvalRequiredFor = EnumSet.of(SideEffect.WRITE, SideEffect.DESTRUCTIVE);
+
+    public UnregisteredToolBehaviour getUnregisteredTools() {
+      return unregisteredTools;
+    }
+
+    public void setUnregisteredTools(UnregisteredToolBehaviour v) {
+      this.unregisteredTools = v;
+    }
+
+    public Set<SideEffect> getApprovalRequiredFor() {
+      return approvalRequiredFor;
+    }
+
+    public void setApprovalRequiredFor(Set<SideEffect> v) {
+      this.approvalRequiredFor = v;
+    }
+  }
+
+  public static class Approval {
+    /** How long a parked call waits before it expires. */
+    @NotNull private Duration ttl = Duration.ofHours(1);
+
+    @Valid private final Notifier notifier = new Notifier();
+
+    public Duration getTtl() {
+      return ttl;
+    }
+
+    public void setTtl(Duration ttl) {
+      this.ttl = ttl;
+    }
+
+    public Notifier getNotifier() {
+      return notifier;
+    }
+  }
+
+  public static class Notifier {
+    /** Log every parked call at WARN. */
+    private boolean logEnabled = true;
+
+    /** POST a JSON payload to this URL for every parked call (Slack-compatible, n8n, ...). */
+    private URI webhookUrl;
+
+    /** Sent as {@code X-AgentGuard-Token} so the receiver can authenticate the webhook. */
+    private String webhookSecret;
+
+    @NotNull private Duration webhookTimeout = Duration.ofSeconds(5);
+
+    public boolean isLogEnabled() {
+      return logEnabled;
+    }
+
+    public void setLogEnabled(boolean v) {
+      this.logEnabled = v;
+    }
+
+    public URI getWebhookUrl() {
+      return webhookUrl;
+    }
+
+    public void setWebhookUrl(URI v) {
+      this.webhookUrl = v;
+    }
+
+    public String getWebhookSecret() {
+      return webhookSecret;
+    }
+
+    public void setWebhookSecret(String v) {
+      this.webhookSecret = v;
+    }
+
+    public Duration getWebhookTimeout() {
+      return webhookTimeout;
+    }
+
+    public void setWebhookTimeout(Duration v) {
+      this.webhookTimeout = v;
+    }
+  }
+
+  public static class Jdbc {
+    /** Run the bundled idempotent PostgreSQL schema at startup. */
+    private boolean initializeSchema = true;
+
+    public boolean isInitializeSchema() {
+      return initializeSchema;
+    }
+
+    public void setInitializeSchema(boolean v) {
+      this.initializeSchema = v;
+    }
+  }
+
+  public static class Redis {
+    /** Redis URI for the REDIS budget store, e.g. {@code redis://localhost:6379}. */
+    private URI uri;
+
+    public URI getUri() {
+      return uri;
+    }
+
+    public void setUri(URI uri) {
+      this.uri = uri;
+    }
+  }
+
+  public static class Budgets {
+    /** Counter store for budgets. DEFAULT follows {@code agentguard.store}. */
+    @NotNull private BudgetStoreType store = BudgetStoreType.DEFAULT;
+
+    /** Limits, all enforced before dispatch. */
+    @Valid private List<Limit> limits = new ArrayList<>();
+
+    public BudgetStoreType getStore() {
+      return store;
+    }
+
+    public void setStore(BudgetStoreType v) {
+      this.store = v;
+    }
+
+    public List<Limit> getLimits() {
+      return limits;
+    }
+
+    public void setLimits(List<Limit> limits) {
+      this.limits = limits;
+    }
+  }
+
+  public static class Limit {
+    @NotNull private BudgetScope scope = BudgetScope.PRINCIPAL;
+    @NotNull private BudgetKind kind = BudgetKind.TOOL_CALLS;
+    @NotNull private Duration window = Duration.ofHours(1);
+
+    @Min(1)
+    private long limit = 100;
+
+    public BudgetScope getScope() {
+      return scope;
+    }
+
+    public void setScope(BudgetScope v) {
+      this.scope = v;
+    }
+
+    public BudgetKind getKind() {
+      return kind;
+    }
+
+    public void setKind(BudgetKind v) {
+      this.kind = v;
+    }
+
+    public Duration getWindow() {
+      return window;
+    }
+
+    public void setWindow(Duration v) {
+      this.window = v;
+    }
+
+    public long getLimit() {
+      return limit;
+    }
+
+    public void setLimit(long v) {
+      this.limit = v;
+    }
+  }
+
+  public static class Redaction {
+    /** Argument keys whose values are masked in previews, logs and webhooks. */
+    private Set<String> sensitiveKeys = ArgumentRedactor.DEFAULT_SENSITIVE_KEYS;
+
+    @Min(16)
+    private int maxPreviewLength = ArgumentRedactor.DEFAULT_MAX_LENGTH;
+
+    public Set<String> getSensitiveKeys() {
+      return sensitiveKeys;
+    }
+
+    public void setSensitiveKeys(Set<String> v) {
+      this.sensitiveKeys = v;
+    }
+
+    public int getMaxPreviewLength() {
+      return maxPreviewLength;
+    }
+
+    public void setMaxPreviewLength(int v) {
+      this.maxPreviewLength = v;
+    }
+  }
+
+  public static class Endpoints {
+    /** Expose the approval and audit REST endpoints. Secure them with Spring Security. */
+    private boolean enabled = false;
+
+    private String basePath = "/agentguard";
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean v) {
+      this.enabled = v;
+    }
+
+    public String getBasePath() {
+      return basePath;
+    }
+
+    public void setBasePath(String v) {
+      this.basePath = v;
+    }
+  }
+
+  public boolean isEnabled() {
+    return enabled;
+  }
+
+  public void setEnabled(boolean enabled) {
+    this.enabled = enabled;
+  }
+
+  public StoreType getStore() {
+    return store;
+  }
+
+  public void setStore(StoreType store) {
+    this.store = store;
+  }
+
+  public Policy getPolicy() {
+    return policy;
+  }
+
+  public Approval getApproval() {
+    return approval;
+  }
+
+  public Jdbc getJdbc() {
+    return jdbc;
+  }
+
+  public Redis getRedis() {
+    return redis;
+  }
+
+  public Budgets getBudgets() {
+    return budgets;
+  }
+
+  public Redaction getRedaction() {
+    return redaction;
+  }
+
+  public Endpoints getEndpoints() {
+    return endpoints;
+  }
+}

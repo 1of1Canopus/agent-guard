@@ -80,6 +80,8 @@ public final class DecisionResumer {
           new GuardResult.Denied(
               ErrorCodes.APPROVAL_NO_EXECUTOR, tool, "no executor registered for tool");
       store.storeResult(decision.id(), failed.toModelText());
+      audit.record(decision.principal(), tool, decision.argumentsJson(), null, 0,
+          AuditDecision.FAILED, decision.correlationId(), decision.id().toString());
       return failed;
     }
     try {

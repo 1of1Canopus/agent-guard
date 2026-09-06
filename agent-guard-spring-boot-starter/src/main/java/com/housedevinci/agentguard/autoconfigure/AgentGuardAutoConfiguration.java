@@ -120,21 +120,16 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean(AuditSink.class)
-  public AuditSink auditSink(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
-    return switch (props.getStore()) {
-      case MEMORY -> new InMemoryAuditSink();
-      case JDBC -> new JdbcAuditSink(jdbc(props, dataSources));
-    };
+  @ConditionalOnProperty(prefix = "agentguard", name = "store", havingValue = "MEMORY")
+  public InMemoryAuditSink inMemoryAuditSink() {
+    return new InMemoryAuditSink();
   }
 
   @Bean
-  @ConditionalOnMissingBean(AuditReader.class)
-  public AuditReader auditReader(AuditSink sink) {
-    if (sink instanceof AuditReader reader) {
-      return reader;
-    }
-    throw new AgentGuardConfigurationException(
-        "The AuditSink bean does not implement AuditReader; also provide an AuditReader bean");
+  @ConditionalOnMissingBean(AuditSink.class)
+  @ConditionalOnProperty(prefix = "agentguard", name = "store", havingValue = "JDBC", matchIfMissing = true)
+  public JdbcAuditSink jdbcAuditSink(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+    return new JdbcAuditSink(jdbc(props, dataSources));
   }
 
   @Bean

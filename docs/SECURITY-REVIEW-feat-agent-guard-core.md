@@ -330,3 +330,136 @@ sample's `hasRole("APPROVER")` line to the starter docs.
    "threat-model the webhook" are done here.
 3. The child-JVM pinning probe adds about 25 s to `agent-guard-core` tests (a deliberate 10 s hang, twice); move it
    behind a profile if CI time matters.
+
+---
+
+# Re-verification — commit `e1ca399` (builder's fixes for H1–H3, M1–M7)
+
+Reviewer: `cipher`, 2026-09-06 (second pass). Method: the **original** probes from `259a23b` were re-run unchanged
+against `e1ca399` (as throwaway `CipherProbeV1*` copies, not committed) so that a fix shows up as an original probe
+failing; the builder's flipped probes were read, not trusted; three new probes were added and committed
+(`adapter/jdbc/CipherProbeReverifyJdbcTest`, `ai/CipherProbeReverifySpringAiTest`,
+`autoconfigure/CipherProbeJedisFactoryTest`). `./mvnw -B clean verify` is green: core 105, starter 29, sample 1.
+
+## Verdict
+
+**Mergeable after two small follow-ups (R1, R2 below), no design change needed.** All three HIGH and all seven MEDIUM
+findings are fixed and confirmed by the original repros. The fixes introduced one behavioural regression (R1: Spring
+AI's tool-call limits are dropped when the guarded default manager wins) and one upgrade gap (R2: an existing trail
+without an anchor row reads as BROKEN after the first append). Both are a few lines. Everything else found on this
+pass is LOW/INFO and can go to the backlog.
+
+## Fix confirmation, item by item
+
+| Id | Original repro against `e1ca399` | Status |
+|---|---|---|
+| H1 wrong identity/context on resume | `probe_executor_registry_is_keyed_by_tool_name…` **fails** (closure of the parking decision ran: `ToolExecutorRegistry` is keyed by `DecisionId`, released after the run); `probe_resume_runs_with_the_last_callers_tool_context…` **fails** (result `tenant=acme runAs=bob`, approver context restored, verified again in `CipherProbeReverifySpringAiTest`) | fixed |
+| H2 silent coverage gaps | inline `ToolCallbacks.from(obj)` is guarded through the `GuardedToolCallingManager` bean (`TOOL_DENIED` for a VIEWER, parked for SUPPORT); single `SyncToolSpecification` beans wrapped (`AG-POLICY-004` for anonymous); a `List<AsyncToolSpecification>` bean **fails startup** (original MCP probe class cannot even build its context); `agentguard.strict=true` refuses to start when an `@ToolPolicy` tool is unreachable | fixed, with residual R3 |
+| H3 Redis + virtual threads | `CipherProbeJedisFactoryTest`: the starter's factory with defaults (`max-total=8`, `min-idle=8`, `prepare-pool=true`) completes 200 virtual threads × 5 increments on a cold start in-process with the default scheduler (count 1000, no errors); `preparePool()` runs on the startup platform thread; Redis down at startup fails with a message naming `agentguard.redis.uri`; the child-JVM probe is behind `-Ppinning-probe` | fixed, with residual R6 |
+| M1 approver not in the chain | `probe_approver_identity_and_time_are_absent…` **fails**: `actor_id` column, `AuditEvent.actorId` in the canonical form, APPROVED/REJECTED/FAILED-on-resume rows carry the approver; forging the actor breaks the hash | fixed |
+| M2 chain weaknesses | canonical form is versioned (`ag1`) and length-prefixed (`<bytes>:<value>`, null as `-`), the original boundary-shift probe **fails**; timestamps truncated to millis in the `AuditEvent` constructor (original sub-millisecond probe **fails**); `BEFORE TRUNCATE` statement trigger (original TRUNCATE probe **errors** with "append-only"); anchor row (`agentguard_audit_anchor`: head hash + row count, written in the same advisory-locked transaction as the append) turns tail deletion and trigger-disabled TRUNCATE into `ANCHOR_MISMATCH`; `Report.status` distinguishes `EMPTY`/`INTACT`/`BROKEN`/`ANCHOR_MISMATCH`; docs describe the two-role setup | fixed, with R2 and residual R4 |
+| M3 conversation/tenant budgets | MCP uses the server-side `exchange.sessionId()`; client `_meta` is ignored; missing subject → `AG-BUDGET-002` under strict (`MissingSubjectPolicy` DENY/FALLBACK_TO_PRINCIPAL/SKIP); startup WARN when TENANT limits exist with `NoTenantResolver`; original probes **fail** | fixed, with residual R7 |
+| M4 unbounded parking, tenant-less dedup | budget reserved before parking (and not charged again at resume), `max-pending-per-principal=20` (`AG-APPROVAL-008`), `max-argument-bytes=64 KiB` (`AG-APPROVAL-009`), `findLatest` keyed on `(principal, tenant, tool, argsHash)` with `IS NOT DISTINCT FROM` and a new index; original probes **fail** | fixed, with residual R8 |
+| M5 lossy preview, id-only attestation | `GET /decisions/{id}/arguments` returns the complete redacted arguments; `POST …/approve?argsHash=` is required, mismatch → 409 `AG-APPROVAL-010` and nothing runs; `ApprovalService.approve(id, approver, hash)`; sample e2e updated | fixed (list preview still capped by design) |
+| M6 guard failures leak | `ToolGuard.execute` catches `RuntimeException` → `AG-GUARD-001` with a correlation id, cause logged at ERROR; both adapters catch around principal resolution too; original Spring AI and MCP probes **fail** (`db.internal` never reaches the model) | fixed, with residual R9 |
+| M7 anonymous approver | every endpoint calls `approver(caller)`; anonymous → 401 `AG-HTTP-401` unless `agentguard.endpoints.allow-anonymous=true`; original probe **fails** (401, decision still PENDING, not executed) | fixed |
+
+## The two things the builder flagged
+
+**`ToolCallingChatOptions.mutate()` rebuild (GuardedToolCallingManager).** Verified by bytecode on the real provider
+artifacts (fetched `spring-ai-openai:2.0.1` and `spring-ai-anthropic:2.0.1`): `OpenAiChatOptions.mutate()` and
+`AnthropicChatOptions.mutate()` both carry the `ToolCallingChatOptions$Builder` bridge (their `Builder` extends an
+`AbstractBuilder` that implements it), and `DefaultToolCallingChatOptions.mutate()` does too. So the
+`options.mutate() instanceof ToolCallingChatOptions.Builder` check holds for the default and for the two providers
+checked, provider-specific fields survive the copy, and a provider that does not implement it fails closed with an
+`IllegalStateException` (caught by `GuardedToolCallback`/adapters only when it happens inside a callback — here it
+happens in the manager before execution, so it surfaces as an exception from `executeToolCalls`; acceptable, but
+see R1 for the better shape). The rebuilt `Prompt` keeps instructions and options only, which is all `Prompt` holds.
+
+**Bean ordering vs Spring AI's `ToolCallingAutoConfiguration`.** The class name in `beforeName` is correct
+(`org.springframework.ai.model.tool.autoconfigure.ToolCallingAutoConfiguration`, present in
+`spring-ai-autoconfigure-model-tool:2.0.1`, its `toolCallingManager` is `@ConditionalOnMissingBean`). Both orders
+were exercised: with Agent Guard's config first (the real order) the guarded default is the only manager; with a
+Spring-AI-like `@ConditionalOnMissingBean ToolCallingManager` registered first (`CipherProbeReverifySpringAiTest`)
+there is still exactly one bean and it is a `GuardedToolCallingManager` wrapping the `DefaultToolCallingManager`,
+because the `BeanPostProcessor` wraps whichever instance wins. Ordering is therefore not load-bearing for security.
+It **is** load-bearing for behaviour, which is R1.
+
+## New findings from the fixes
+
+### R1 — MEDIUM: the guarded default manager drops Spring AI's tool-call limits and resolution fallback
+Spring AI's `ToolCallingAutoConfiguration.toolCallingManager` (bytecode read) builds the manager with
+`spring.ai.tools.limits.*` (`maxCallsPerTool`, `maxTotalToolCalls`, `onLimitExceeded`, exclusions),
+`spring.ai.tools.resolution.fallback.enabled`, the observation registry and the `ToolCallingObservationConvention`.
+`AgentGuardSpringAiAutoConfiguration.agentGuardToolCallingManager` runs **before** it (`beforeName`) and wins the
+`@ConditionalOnMissingBean`, passing only registry/resolver/exception-processor. Result: enabling Agent Guard
+silently disables the loop limit Spring AI 2.0.1 added (the SPEC's own motivation) and the resolution fallback
+setting. **Fix:** do not compete with Spring AI's bean. Remove `beforeName`; let Spring AI create its manager (the
+`BeanPostProcessor` wraps it, proven above) and keep the guarded default only as a fallback with
+`@ConditionalOnMissingClass("org.springframework.ai.model.tool.autoconfigure.ToolCallingAutoConfiguration")` (or
+`afterName` + `@ConditionalOnMissingBean`). Add a probe asserting `maxTotalToolCalls` still applies with the guard on.
+
+### R2 — MEDIUM: trails that predate the anchor row read as BROKEN after the first append
+`CipherProbeReverifyJdbcTest.probe_trail_without_anchor_row_breaks_on_the_next_append`: with rows present and no
+`agentguard_audit_anchor` row (any database created before `e1ca399`, or the row deleted), `JdbcAuditSink.append`
+takes `prev = GENESIS` and `count = 0` from the missing anchor instead of the table's last row, so the new row links
+to GENESIS; the verifier then reports `BROKEN` at that row for ever, and the anchor's row count is wrong from then
+on. The schema is advertised as idempotent at every startup, so this is an upgrade bug, not a theoretical one.
+**Fix:** seed the anchor in the schema
+(`INSERT INTO agentguard_audit_anchor SELECT 1, hash, count(*) OVER (), ts FROM agentguard_audit ORDER BY seq DESC
+LIMIT 1 ON CONFLICT DO NOTHING`, or equivalent), and in `append` fall back to `SELECT hash, count(*) …` when the
+anchor row is absent and the table is not empty (log a WARN once). Add a probe for "rows, no anchor, append, INTACT".
+
+### R3 — LOW: a hand-built `DefaultToolCallingManager` (not a bean) bypasses the chokepoint
+`CipherProbeReverifySpringAiTest.probe_hand_built_manager_outside_the_context_bypasses_the_chokepoint`: code that
+does `OpenAiChatModel.builder().toolCallingManager(DefaultToolCallingManager.builder().build())` never touches the
+bean and runs unguarded tools; `GuardCoverage.springAiChokepointActive()` still reports the chokepoint as active, so
+strict mode does not notice. **Fix:** document ("use the `ToolCallingManager` bean or `AgentGuard.guard(manager)`");
+optionally wrap `ChatModel` beans too (their `toolCallingManager` field is not accessible without reflection, so
+documentation is the honest answer).
+
+### R4 — LOW (documented residual): the anchor row is rewritable by any role with UPDATE on it
+`probe_owner_can_rewrite_the_anchor_to_hide_a_tail_deletion`: after trimming the tail with triggers disabled, an
+`UPDATE agentguard_audit_anchor` makes the verifier report `INTACT` again. The runtime role needs UPDATE on the
+anchor by design, so the anchor raises the bar against the owner role only when roles are split as the docs now
+describe; it does not replace external anchoring (pro). Keep, but say so in SECURITY-NOTES.
+
+### R5 — LOW: nested principal during a resumed call keeps roles and scopes but loses the tenant
+`probe_nested_principal_during_resume_keeps_roles_but_loses_the_tenant`: `RunAsAuthentication` carries `ROLE_*`
+and `SCOPE_*`, and `SecurityContextPrincipalResolver` resolves the tenant through the `TenantResolver`, which does not
+know the run-as token; a tenant-restricted nested tool (or a Tenantify filter) runs tenant-less (denied, fail
+closed; or unfiltered if the host's filter treats "no tenant" as "all"). **Fix:** make the default
+`SecurityContextPrincipalResolver` short-circuit on `RunAsAuthentication` and return `agentGuardPrincipal()`
+verbatim; document for custom `TenantResolver`s.
+
+### R6 — LOW (documented): Redis pool can still grow after connection loss
+The pre-filled pool never grows under a burst, but a Redis restart/failover destroys connections and the next
+borrower triggers `create()` again; the pin is then possible for that window. `max-wait=2s` bounds the wait on the
+deque (virtual-thread friendly) but not the pinned monitor. Note it under "Redis and virtual threads" with the
+JDK 24 pointer; consider running `JedisBudgetStore` calls on a small platform-thread executor as the belt-and-braces
+option.
+
+### R7 — INFO: MCP conversation budget resets per session
+The session id is server-issued (a client cannot choose it) but a client may re-initialise at will; a STEPS limit per
+conversation is a per-session limit. Pair it with a PRINCIPAL limit (docs).
+
+### R8 — INFO: pending-cap lockout and tenant-less count
+A prompt-injected model can fill the 20 pending slots with distinct-argument WRITE calls and lock the principal out of
+legitimate WRITEs until approvers act or the TTL expires (1 h); `countPending` is per principal id across tenants.
+Acceptable trade-off; document, and let operators lower the TTL.
+
+### R9 — INFO: `AgentGuardException` thrown by the tool itself is reported as guard failure without an audit row
+`ToolGuard.dispatch` rethrows `AgentGuardException` from the executor path so real guard failures are not mislabelled
+as tool failures, but a tool that (unusually) throws one is then reported `AG-GUARD-001` and no FAILED row is written
+while the budget was charged. Record a FAILED row before rethrowing.
+
+## Still open from the first pass (unchanged, LOW/INFO)
+L1 self-approval, L2 tamper detection not audited, L3 policy not re-evaluated at resume, L4 permanent dedup,
+L5 regex redactor gaps (now also visible in `GET /decisions/{id}/arguments`), L6 webhook secret/HMAC, L7 validation
+messages, L8 budget-row purge and key length, L9 sample CSRF, L10 DDL at startup (docs now describe the two-role
+setup, default unchanged), I1–I9. The original LOW probes still pass, as the builder noted.
+
+## What the re-verification did not cover
+Real OpenAI/Anthropic `ChatModel` end to end (the provider artifacts were inspected by bytecode only; no API key, no
+network in tests). The `-Ppinning-probe` child-JVM test was not re-run (the code it exercises, `JedisBudgetStore`
+over a raw pool, is unchanged; the fix lives in the factory, which `CipherProbeJedisFactoryTest` covers).

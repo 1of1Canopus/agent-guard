@@ -1,5 +1,6 @@
 package com.housedevinci.agentguard.web;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -7,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.housedevinci.agentguard.application.ApprovalService;
 import com.housedevinci.agentguard.application.ToolInvocation;
+import com.housedevinci.agentguard.domain.DecisionState;
 import com.housedevinci.agentguard.domain.Principal;
 import com.housedevinci.agentguard.domain.SideEffect;
 import com.housedevinci.agentguard.domain.ToolRef;
@@ -19,12 +21,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 
-/**
- * the security review probe: the approval endpoints have no fail-closed check of their own. With the security
- * filter chain absent (no Spring Security on the classpath, a permitAll matcher, or a stdio /
- * internal deployment) an unauthenticated request approves and executes a parked DESTRUCTIVE call
- * as "anonymous".
- */
+/** the security review probe (M7), flipped: with no filter chain the endpoints refuse an anonymous approver. */
 @SpringBootTest(
     properties = {
       "agentguard.enabled=true",
@@ -45,8 +42,7 @@ class CipherProbeEndpointsTest {
   @Autowired ApprovalService approvals;
 
   @Test
-  void probe_anonymous_approver_is_accepted_when_no_filter_chain_protects_the_endpoint()
-      throws Exception {
+  void anonymous_approver_is_refused_with_401_and_nothing_runs() throws Exception {
     var agent = new Principal("agent", Set.of("AGENT"), Set.of(), null);
     var d =
         approvals.park(
@@ -55,15 +51,19 @@ class CipherProbeEndpointsTest {
             "{\"all\":true}");
 
     mvc.perform(get("/agentguard/decisions"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$[0].id").value(d.id().toString()));
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("AG-HTTP-401"));
+    mvc.perform(
+            post("/agentguard/decisions/" + d.id() + "/approve").param("argsHash", d.argsHash()))
+        .andExpect(status().isUnauthorized());
+    mvc.perform(post("/agentguard/decisions/" + d.id() + "/reject"))
+        .andExpect(status().isUnauthorized());
+    mvc.perform(get("/agentguard/decisions/" + d.id() + "/arguments"))
+        .andExpect(status().isUnauthorized());
+    mvc.perform(get("/agentguard/audit")).andExpect(status().isUnauthorized());
 
-    mvc.perform(post("/agentguard/decisions/" + d.id() + "/approve"))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.decision.state").value("APPROVED"))
-        .andExpect(jsonPath("$.decision.decidedBy").value("anonymous"))
-        .andExpect(jsonPath("$.decision.executed").value(true));
-
-    mvc.perform(get("/agentguard/audit")).andExpect(status().isOk());
+    var stored = approvals.find(d.id()).orElseThrow();
+    assertThat(stored.state()).isEqualTo(DecisionState.PENDING);
+    assertThat(stored.executed()).isFalse();
   }
 }

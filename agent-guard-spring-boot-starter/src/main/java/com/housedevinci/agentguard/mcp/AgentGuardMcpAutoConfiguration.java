@@ -2,6 +2,7 @@ package com.housedevinci.agentguard.mcp;
 
 import com.housedevinci.agentguard.application.ToolGuard;
 import com.housedevinci.agentguard.autoconfigure.AgentGuardAutoConfiguration;
+import com.housedevinci.agentguard.autoconfigure.GuardCoverage;
 import com.housedevinci.agentguard.security.PrincipalResolver;
 import io.modelcontextprotocol.server.McpServerFeatures;
 import org.springframework.beans.factory.BeanFactory;
@@ -22,9 +23,12 @@ public class AgentGuardMcpAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public McpToolGuard mcpToolGuard(
-      ToolGuard guard, PrincipalResolver principals, ObjectProvider<JsonMapper> mappers) {
+      ToolGuard guard,
+      PrincipalResolver principals,
+      ObjectProvider<JsonMapper> mappers,
+      GuardCoverage coverage) {
     return new McpToolGuard(
-        guard, principals, mappers.getIfAvailable(() -> JsonMapper.builder().build()));
+        guard, principals, mappers.getIfAvailable(() -> JsonMapper.builder().build()), coverage);
   }
 
   @Bean

@@ -1,5 +1,6 @@
 package com.housedevinci.agentguard.adapter.memory;
 
+import com.housedevinci.agentguard.domain.AuditAnchor;
 import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.domain.AuditEvent;
 import com.housedevinci.agentguard.domain.AuditReader;
@@ -8,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** Append-only, hash-chained, in memory. For tests and development. */
-public final class InMemoryAuditSink implements AuditSink, AuditReader {
+public final class InMemoryAuditSink implements AuditSink, AuditReader, AuditAnchor {
 
   private final List<AuditEvent> events = new ArrayList<>();
 
@@ -30,6 +31,13 @@ public final class InMemoryAuditSink implements AuditSink, AuditReader {
     var copy = new ArrayList<>(events);
     java.util.Collections.reverse(copy);
     return copy.stream().limit(limit).toList();
+  }
+
+  @Override
+  public synchronized java.util.Optional<Anchor> anchor() {
+    return events.isEmpty()
+        ? java.util.Optional.empty()
+        : java.util.Optional.of(new Anchor(events.get(events.size() - 1).hash(), events.size()));
   }
 
   /** Test hook: replaces a row in place to simulate tampering. */

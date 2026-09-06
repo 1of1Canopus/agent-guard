@@ -91,20 +91,40 @@ public final class JdbcDecisionStore implements DecisionStore {
   }
 
   @Override
-  public Optional<PendingDecision> findLatest(String principalId, String tool, String argsHash) {
+  public Optional<PendingDecision> findLatest(
+      String principalId, String tenantId, String tool, String argsHash) {
     return query(
             "SELECT "
                 + COLUMNS
-                + " FROM agentguard_decision WHERE principal_id = ? AND tool = ? "
-                + "AND args_hash = ? ORDER BY created_at DESC LIMIT 1",
+                + " FROM agentguard_decision WHERE principal_id = ? "
+                + "AND tenant_id IS NOT DISTINCT FROM ? AND tool = ? AND args_hash = ? "
+                + "ORDER BY created_at DESC LIMIT 1",
             ps -> {
               ps.setString(1, principalId);
-              ps.setString(2, tool);
-              ps.setString(3, argsHash);
+              ps.setString(2, tenantId);
+              ps.setString(3, tool);
+              ps.setString(4, argsHash);
             },
             1)
         .stream()
         .findFirst();
+  }
+
+  @Override
+  public long countPending(String principalId) {
+    return JdbcSupport.withConnection(
+        dataSource,
+        c -> {
+          try (PreparedStatement ps =
+              c.prepareStatement(
+                  "SELECT count(*) FROM agentguard_decision WHERE principal_id = ? AND state = 'PENDING'")) {
+            ps.setString(1, principalId);
+            try (ResultSet rs = ps.executeQuery()) {
+              rs.next();
+              return rs.getLong(1);
+            }
+          }
+        });
   }
 
   @Override

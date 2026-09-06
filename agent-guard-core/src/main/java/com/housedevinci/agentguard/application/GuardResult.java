@@ -84,6 +84,26 @@ public sealed interface GuardResult {
     }
   }
 
+  /** The guard itself (store, audit, notifier, context) failed; the tool did not run. */
+  record GuardUnavailable(String tool, String correlationId) implements GuardResult {
+    @Override
+    public String toModelText() {
+      return Json.object()
+          .put("status", "ERROR")
+          .put("error", "GUARD_UNAVAILABLE")
+          .put("code", ErrorCodes.GUARD_UNAVAILABLE)
+          .put("tool", tool)
+          .put("correlationId", correlationId)
+          .put("message", "the tool guard is unavailable; the call was not executed")
+          .toString();
+    }
+
+    @Override
+    public boolean isError() {
+      return true;
+    }
+  }
+
   record Failed(String tool, String message) implements GuardResult {
     @Override
     public String toModelText() {

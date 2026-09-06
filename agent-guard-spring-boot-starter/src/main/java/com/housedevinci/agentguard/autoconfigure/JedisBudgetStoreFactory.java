@@ -3,13 +3,39 @@ package com.housedevinci.agentguard.autoconfigure;
 import com.housedevinci.agentguard.adapter.redis.JedisBudgetStore;
 import com.housedevinci.agentguard.domain.BudgetStore;
 import java.net.URI;
+import redis.clients.jedis.ConnectionPoolConfig;
 import redis.clients.jedis.JedisPooled;
 
-/** Loaded only when {@code agentguard.budgets.store=REDIS}, so Jedis stays optional. */
+/**
+ * Loaded only when {@code agentguard.budgets.store=REDIS}, so Jedis stays optional. The pool is
+ * pre-filled from the (platform) startup thread so it never has to grow while virtual threads are
+ * calling: commons-pool2's growth path holds a monitor around the Jedis handshake, which pins JDK
+ * 21-23 virtual threads and can deadlock the JVM under a burst.
+ */
 final class JedisBudgetStoreFactory {
   private JedisBudgetStoreFactory() {}
 
-  static BudgetStore create(URI uri) {
-    return new JedisBudgetStore(new JedisPooled(uri.toString()));
+  static ConnectionPoolConfig poolConfig(AgentGuardProperties.Pool pool) {
+    var config = new ConnectionPoolConfig();
+    config.setMaxTotal(pool.getMaxTotal());
+    config.setMaxIdle(pool.getMaxTotal());
+    config.setMinIdle(pool.effectiveMinIdle());
+    config.setMaxWait(pool.getMaxWait());
+    config.setBlockWhenExhausted(true);
+    return config;
+  }
+
+  static BudgetStore create(URI uri, AgentGuardProperties.Pool pool) {
+    var jedis = new JedisPooled(poolConfig(pool), uri);
+    if (pool.isPreparePool()) {
+      try {
+        jedis.getPool().preparePool();
+      } catch (Exception e) {
+        jedis.close();
+        throw new AgentGuardConfigurationException(
+            "agentguard.redis.uri: cannot open the Redis connection pool: " + e.getMessage());
+      }
+    }
+    return new JedisBudgetStore(jedis);
   }
 }

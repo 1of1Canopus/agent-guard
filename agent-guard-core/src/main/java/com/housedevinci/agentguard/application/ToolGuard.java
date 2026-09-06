@@ -1,8 +1,10 @@
 package com.housedevinci.agentguard.application;
 
+import com.housedevinci.agentguard.domain.AgentGuardException;
 import com.housedevinci.agentguard.domain.ArgumentRedactor;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.BudgetExceededException;
+import com.housedevinci.agentguard.domain.BudgetSubjectMissingException;
 import com.housedevinci.agentguard.domain.DecisionState;
 import com.housedevinci.agentguard.domain.DecisionStore;
 import com.housedevinci.agentguard.domain.ErrorCodes;
@@ -13,16 +15,23 @@ import com.housedevinci.agentguard.domain.PolicyRule;
 import com.housedevinci.agentguard.domain.SideEffect;
 import com.housedevinci.agentguard.domain.ToolPolicyEvaluator;
 import com.housedevinci.agentguard.domain.ToolRef;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The pipeline every intercepted tool call goes through: policy, approval gate, budget, execute,
  * audit. Framework adapters (Spring AI {@code ToolCallback}, MCP {@code SyncToolSpecification})
- * call {@link #execute} and render the {@link GuardResult}.
+ * call {@link #execute} and render the {@link GuardResult}. Any failure of the guard's own
+ * infrastructure becomes {@link GuardResult.GuardUnavailable}: the model never sees an internal
+ * message, the call is not run, and the cause is logged with the correlation id.
  */
 public final class ToolGuard {
+
+  private static final Logger log = LoggerFactory.getLogger(ToolGuard.class);
 
   private final PolicyLookup policies;
   private final ToolPolicyEvaluator evaluator;
@@ -33,6 +42,7 @@ public final class ToolGuard {
   private final ToolExecutorRegistry executors;
   private final AuditRecorder audit;
   private final ArgumentRedactor redactor;
+  private final ApprovalLimits limits;
   private final Clock clock;
 
   public ToolGuard(
@@ -45,6 +55,7 @@ public final class ToolGuard {
       ToolExecutorRegistry executors,
       AuditRecorder audit,
       ArgumentRedactor redactor,
+      ApprovalLimits limits,
       Clock clock) {
     this.policies = Objects.requireNonNull(policies);
     this.evaluator = Objects.requireNonNull(evaluator);
@@ -55,6 +66,7 @@ public final class ToolGuard {
     this.executors = Objects.requireNonNull(executors);
     this.audit = Objects.requireNonNull(audit);
     this.redactor = Objects.requireNonNull(redactor);
+    this.limits = Objects.requireNonNull(limits);
     this.clock = Objects.requireNonNull(clock);
   }
 
@@ -63,9 +75,24 @@ public final class ToolGuard {
    *
    * @param invocation the actual call
    * @param sideEffectHint side effect known from the integration (MCP hints), if any
-   * @param executor the real tool
+   * @param executor the real tool, with the caller's context captured
    */
   public GuardResult execute(
+      ToolInvocation invocation, Optional<SideEffect> sideEffectHint, ToolExecutor executor) {
+    try {
+      return guarded(invocation, sideEffectHint, executor);
+    } catch (RuntimeException e) {
+      log.error(
+          "agentguard: guard unavailable for tool '{}' correlationId={} ({})",
+          invocation.toolName(),
+          invocation.correlationId(),
+          e.toString(),
+          e);
+      return new GuardResult.GuardUnavailable(invocation.toolName(), invocation.correlationId());
+    }
+  }
+
+  private GuardResult guarded(
       ToolInvocation invocation, Optional<SideEffect> sideEffectHint, ToolExecutor executor) {
     var toolName = invocation.toolName();
     var principal = invocation.principal();
@@ -106,17 +133,17 @@ public final class ToolGuard {
   }
 
   private GuardResult gate(ToolInvocation invocation, ToolRef tool, ToolExecutor executor) {
-    executors.register(tool.name(), executor);
+    var principal = invocation.principal();
     var argsHash = Hashes.sha256Hex(invocation.argumentsJson());
     Optional<PendingDecision> existing =
         decisions
-            .findLatest(invocation.principal().id(), tool.name(), argsHash)
+            .findLatest(principal.id(), principal.tenantId().orElse(null), tool.name(), argsHash)
             .flatMap(d -> approvals.find(d.id()));
     if (existing.isPresent()) {
       var d = existing.get();
       if (d.state() == DecisionState.PENDING) {
         audit.record(
-            invocation.principal(),
+            principal,
             tool.name(),
             invocation.argumentsJson(),
             null,
@@ -131,9 +158,46 @@ public final class ToolGuard {
       }
       // EXPIRED: fall through and park again
     }
+    if (invocation.argumentsJson().getBytes(StandardCharsets.UTF_8).length
+        > limits.maxArgumentBytes()) {
+      audit.record(
+          principal,
+          tool.name(),
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.DENIED,
+          invocation.correlationId(),
+          null);
+      return new GuardResult.Denied(
+          ErrorCodes.APPROVAL_ARGS_TOO_LARGE,
+          tool.name(),
+          "arguments exceed " + limits.maxArgumentBytes() + " bytes and cannot be parked");
+    }
+    if (decisions.countPending(principal.id()) >= limits.maxPendingPerPrincipal()) {
+      audit.record(
+          principal,
+          tool.name(),
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.DENIED,
+          invocation.correlationId(),
+          null);
+      return new GuardResult.Denied(
+          ErrorCodes.APPROVAL_TOO_MANY_PENDING,
+          tool.name(),
+          "principal already has " + limits.maxPendingPerPrincipal() + " calls awaiting approval");
+    }
+    // a parked call is a call: reserve the budget now, never again at resume
+    Optional<GuardResult> refused = reserve(invocation);
+    if (refused.isPresent()) {
+      return refused.get();
+    }
     var parked = approvals.park(invocation, tool, redactor.preview(invocation.argumentsJson()));
+    executors.register(parked.id(), executor);
     audit.record(
-        invocation.principal(),
+        principal,
         tool.name(),
         invocation.argumentsJson(),
         null,
@@ -146,19 +210,9 @@ public final class ToolGuard {
 
   private GuardResult dispatch(ToolInvocation invocation, ToolExecutor executor) {
     var tool = invocation.toolName();
-    try {
-      budgets.reserve(invocation);
-    } catch (BudgetExceededException e) {
-      audit.record(
-          invocation.principal(),
-          tool,
-          invocation.argumentsJson(),
-          null,
-          0,
-          AuditDecision.BUDGET_EXCEEDED,
-          invocation.correlationId(),
-          null);
-      return new GuardResult.BudgetExceeded(tool, e.getMessage());
+    Optional<GuardResult> refused = reserve(invocation);
+    if (refused.isPresent()) {
+      return refused.get();
     }
     long start = clock.millis();
     try {
@@ -173,6 +227,8 @@ public final class ToolGuard {
           invocation.correlationId(),
           null);
       return new GuardResult.Executed(output);
+    } catch (AgentGuardException e) {
+      throw e; // guard infrastructure failing inside the executor path: not the tool's fault
     } catch (Exception e) {
       audit.record(
           invocation.principal(),
@@ -184,6 +240,36 @@ public final class ToolGuard {
           invocation.correlationId(),
           null);
       return new GuardResult.Failed(tool, Errors.describe(e));
+    }
+  }
+
+  private Optional<GuardResult> reserve(ToolInvocation invocation) {
+    var tool = invocation.toolName();
+    try {
+      budgets.reserve(invocation);
+      return Optional.empty();
+    } catch (BudgetExceededException e) {
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.BUDGET_EXCEEDED,
+          invocation.correlationId(),
+          null);
+      return Optional.of(new GuardResult.BudgetExceeded(tool, e.getMessage()));
+    } catch (BudgetSubjectMissingException e) {
+      audit.record(
+          invocation.principal(),
+          tool,
+          invocation.argumentsJson(),
+          null,
+          0,
+          AuditDecision.DENIED,
+          invocation.correlationId(),
+          null);
+      return Optional.of(new GuardResult.Denied(e.code(), tool, e.getMessage()));
     }
   }
 

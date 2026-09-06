@@ -23,11 +23,17 @@ public final class ToolPolicyAnnotationScanner implements BeanPostProcessor {
   private static final String MCP_TOOL = "org.springframework.ai.mcp.annotation.McpTool";
 
   private final ToolPolicyRegistry registry;
+  private final GuardCoverage coverage;
   private final Class<? extends Annotation> springAiTool;
   private final Class<? extends Annotation> mcpTool;
 
   public ToolPolicyAnnotationScanner(ToolPolicyRegistry registry) {
+    this(registry, new GuardCoverage());
+  }
+
+  public ToolPolicyAnnotationScanner(ToolPolicyRegistry registry, GuardCoverage coverage) {
     this.registry = registry;
+    this.coverage = coverage;
     this.springAiTool = load(SPRING_AI_TOOL);
     this.mcpTool = load(MCP_TOOL);
   }
@@ -53,7 +59,9 @@ public final class ToolPolicyAnnotationScanner implements BeanPostProcessor {
         m -> {
           ToolPolicy policy = AnnotatedElementUtils.findMergedAnnotation(m, ToolPolicy.class);
           if (policy != null) {
-            registry.register(toolName(m), rule(policy));
+            String name = toolName(m);
+            registry.register(name, rule(policy));
+            coverage.declared(name, declared(m));
           }
         },
         ReflectionUtils.USER_DECLARED_METHODS);
@@ -63,6 +71,16 @@ public final class ToolPolicyAnnotationScanner implements BeanPostProcessor {
   static PolicyRule rule(ToolPolicy p) {
     return new PolicyRule(
         Set.of(p.roles()), Set.of(p.scopes()), Set.of(p.tenants()), p.sideEffect());
+  }
+
+  GuardCoverage.Declared declared(Method m) {
+    if (springAiTool != null && AnnotationUtils.findAnnotation(m, springAiTool) != null) {
+      return GuardCoverage.Declared.TOOL;
+    }
+    if (mcpTool != null && AnnotationUtils.findAnnotation(m, mcpTool) != null) {
+      return GuardCoverage.Declared.MCP_TOOL;
+    }
+    return GuardCoverage.Declared.PLAIN_METHOD;
   }
 
   String toolName(Method m) {

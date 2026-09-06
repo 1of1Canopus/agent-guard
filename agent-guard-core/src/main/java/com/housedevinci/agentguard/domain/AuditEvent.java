@@ -1,11 +1,15 @@
 package com.housedevinci.agentguard.domain;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 /**
  * One row of the append-only audit trail. {@code prevHash} and {@code hash} form the chain (see
- * {@link AuditChain}); they are null until the sink links the event.
+ * {@link AuditChain}); they are null until the sink links the event. {@code actorId} is the human
+ * or system that caused the row when it differs from the calling principal (the approver of an
+ * APPROVED / REJECTED row). Timestamps are truncated to milliseconds so every store round-trips
+ * them unchanged.
  */
 public record AuditEvent(
     long sequence,
@@ -19,6 +23,7 @@ public record AuditEvent(
     AuditDecision decision,
     String correlationId,
     String decisionId,
+    String actorId,
     String prevHash,
     String hash) {
 
@@ -27,6 +32,7 @@ public record AuditEvent(
     Objects.requireNonNull(principalId, "principalId");
     Objects.requireNonNull(tool, "tool");
     Objects.requireNonNull(decision, "decision");
+    timestamp = timestamp.truncatedTo(ChronoUnit.MILLIS);
     argsHash = Objects.requireNonNullElse(argsHash, "");
     resultHash = Objects.requireNonNullElse(resultHash, "");
     correlationId = Objects.requireNonNullElse(correlationId, "");
@@ -49,6 +55,7 @@ public record AuditEvent(
         d,
         correlationId,
         decisionId,
+        actorId,
         prevHash,
         hash);
   }
@@ -66,6 +73,7 @@ public record AuditEvent(
         decision,
         correlationId,
         decisionId,
+        actorId,
         prevHash,
         hash);
   }
@@ -83,6 +91,7 @@ public record AuditEvent(
         decision,
         correlationId,
         decisionId,
+        actorId,
         prevHash,
         hash);
   }
@@ -100,6 +109,7 @@ public record AuditEvent(
         decision,
         correlationId,
         decisionId,
+        actorId,
         prevHash,
         hash);
   }
@@ -117,6 +127,7 @@ public record AuditEvent(
         decision,
         correlationId,
         decisionId,
+        actorId,
         prev,
         h);
   }
@@ -133,6 +144,7 @@ public record AuditEvent(
     private AuditDecision decision;
     private String correlationId;
     private String decisionId;
+    private String actorId;
 
     public Builder timestamp(Instant v) {
       this.timestamp = v;
@@ -184,6 +196,11 @@ public record AuditEvent(
       return this;
     }
 
+    public Builder actorId(String v) {
+      this.actorId = v;
+      return this;
+    }
+
     public AuditEvent build() {
       return new AuditEvent(
           0,
@@ -197,6 +214,7 @@ public record AuditEvent(
           decision,
           correlationId,
           decisionId,
+          actorId,
           null,
           null);
     }

@@ -31,9 +31,32 @@ public final class AuditRecorder {
       AuditDecision decision,
       String correlationId,
       String decisionId) {
+    return record(
+        principal,
+        tool,
+        argumentsJson,
+        result,
+        latencyMillis,
+        decision,
+        correlationId,
+        decisionId,
+        null);
+  }
+
+  /** Same, with the human (or system) actor that caused the row, e.g. the approver. */
+  public AuditEvent record(
+      Principal principal,
+      String tool,
+      String argumentsJson,
+      String result,
+      long latencyMillis,
+      AuditDecision decision,
+      String correlationId,
+      String decisionId,
+      String actorId) {
     var event =
         AuditEvent.builder()
-            .timestamp(clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MILLIS))
+            .timestamp(clock.instant())
             .principalId(principal.id())
             .tenantId(principal.tenantId().orElse(null))
             .tool(tool)
@@ -43,6 +66,7 @@ public final class AuditRecorder {
             .decision(decision)
             .correlationId(correlationId)
             .decisionId(decisionId)
+            .actorId(actorId)
             .build();
     return sink.append(event);
   }

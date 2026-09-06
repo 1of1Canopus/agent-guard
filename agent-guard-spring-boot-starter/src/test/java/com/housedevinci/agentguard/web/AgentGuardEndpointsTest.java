@@ -13,12 +13,15 @@ import com.housedevinci.agentguard.domain.Principal;
 import com.housedevinci.agentguard.domain.SideEffect;
 import com.housedevinci.agentguard.domain.ToolRef;
 import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
@@ -40,22 +43,19 @@ class AgentGuardEndpointsTest {
   @Autowired MockMvc mvc;
   @Autowired ApprovalService approvals;
 
-  @org.junit.jupiter.api.AfterEach
+  @AfterEach
   void clear() {
-    org.springframework.security.core.context.SecurityContextHolder.clearContext();
+    SecurityContextHolder.clearContext();
   }
 
   private static void loginAs(String name) {
-    var auth =
-        new org.springframework.security.authentication.TestingAuthenticationToken(
-            name, "n/a", "ROLE_APPROVER");
+    var auth = new TestingAuthenticationToken(name, "n/a", "ROLE_APPROVER");
     auth.setAuthenticated(true);
-    org.springframework.security.core.context.SecurityContextHolder.getContext()
-        .setAuthentication(auth);
+    SecurityContextHolder.getContext().setAuthentication(auth);
   }
 
   @Test
-  void list_approve_reject_and_audit() throws Exception {
+  void list_arguments_approve_reject_and_audit() throws Exception {
     loginAs("alice");
     var principal = new Principal("agent", Set.of("AGENT"), Set.of(), null);
     var d =
@@ -70,25 +70,40 @@ class AgentGuardEndpointsTest {
         .andExpect(jsonPath("$[0].argsPreview").value("{\"amount\":5}"))
         .andExpect(jsonPath("$[0].argumentsJson").doesNotExist());
 
+    // approving requires the attested arguments hash
+    mvc.perform(post("/agentguard/decisions/" + d.id() + "/approve").with(user("alice")))
+        .andExpect(status().isBadRequest());
     mvc.perform(
             post("/agentguard/decisions/" + d.id() + "/approve")
-                .with(user("alice").roles("APPROVER"))
-                .with(
-                    org.springframework.security.test.web.servlet.request
-                        .SecurityMockMvcRequestPostProcessors.csrf()))
+                .param("argsHash", "0".repeat(64))
+                .with(user("alice")))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("AG-APPROVAL-010"));
+
+    mvc.perform(
+            post("/agentguard/decisions/" + d.id() + "/approve")
+                .param("argsHash", d.argsHash())
+                .with(user("alice")))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.decision.state").value("APPROVED"))
         .andExpect(jsonPath("$.decision.decidedBy").value("alice"))
-        .andExpect(jsonPath("$.error").value(true)); // no executor registered in this bare context
+        .andExpect(jsonPath("$.error").value(true)); // no executor captured in this bare context
 
-    mvc.perform(
-            post("/agentguard/decisions/" + d.id() + "/reject")
-                .with(user("bob").roles("APPROVER"))
-                .with(
-                    org.springframework.security.test.web.servlet.request
-                        .SecurityMockMvcRequestPostProcessors.csrf()))
+    mvc.perform(post("/agentguard/decisions/" + d.id() + "/reject").with(user("bob")))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value("AG-APPROVAL-003"));
+
+    // the full redacted arguments are available to the approver, never the raw ones
+    var d2 =
+        approvals.park(
+            new ToolInvocation(
+                principal, "refund", "{\"amount\":6,\"password\":\"x\"}", null, null),
+            new ToolRef("refund", SideEffect.WRITE),
+            "p");
+    mvc.perform(get("/agentguard/decisions/" + d2.id() + "/arguments").with(user("alice")))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.argsHash").value(d2.argsHash()))
+        .andExpect(jsonPath("$.arguments").value("{\"amount\":6,\"password\":\"***\"}"));
 
     mvc.perform(
             get("/agentguard/decisions/00000000-0000-0000-0000-000000000000").with(user("alice")))
@@ -99,6 +114,7 @@ class AgentGuardEndpointsTest {
     mvc.perform(get("/agentguard/audit").with(user("alice")))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$[0].decision").value("FAILED"))
+        .andExpect(jsonPath("$[0].actorId").value("alice"))
         .andExpect(jsonPath("$[0].hash").isString());
     assertThat(approvals.find(d.id()).orElseThrow().executed()).isTrue();
   }

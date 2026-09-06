@@ -134,6 +134,13 @@ class ToolGuardTest {
 
     var decisions = f.auditSink.latest(10).stream().map(e -> e.decision()).toList();
     assertThat(decisions).contains(AuditDecision.PENDING, AuditDecision.APPROVED);
+    var approvedRow =
+        f.auditSink.latest(10).stream()
+            .filter(e -> e.decision() == AuditDecision.APPROVED)
+            .findFirst()
+            .orElseThrow();
+    assertThat(approvedRow.actorId()).isEqualTo("alice");
+    assertThat(approvedRow.principalId()).isEqualTo(AGENT.id());
   }
 
   @Test

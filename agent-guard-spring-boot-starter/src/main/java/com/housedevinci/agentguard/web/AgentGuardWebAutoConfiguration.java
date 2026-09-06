@@ -2,6 +2,8 @@ package com.housedevinci.agentguard.web;
 
 import com.housedevinci.agentguard.application.ApprovalService;
 import com.housedevinci.agentguard.autoconfigure.AgentGuardAutoConfiguration;
+import com.housedevinci.agentguard.autoconfigure.AgentGuardProperties;
+import com.housedevinci.agentguard.domain.ArgumentRedactor;
 import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.security.PrincipalResolver;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -22,7 +24,12 @@ public class AgentGuardWebAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public AgentGuardEndpoints agentGuardEndpoints(
-      ApprovalService approvals, AuditReader audit, PrincipalResolver principals) {
-    return new AgentGuardEndpoints(approvals, audit, principals);
+      ApprovalService approvals,
+      AuditReader audit,
+      PrincipalResolver principals,
+      ArgumentRedactor redactor,
+      AgentGuardProperties props) {
+    return new AgentGuardEndpoints(
+        approvals, audit, principals, redactor, props.getEndpoints().isAllowAnonymous());
   }
 }

@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
-/** the security review security probes for the audit hash chain canonical form. */
+/**
+ * the security review probe (M2), flipped: the canonical form is length-prefixed, so moving a boundary between
+ * two fields changes the hash.
+ */
 class CipherProbeAuditChainTest {
 
   private static AuditEvent event(
@@ -25,23 +28,33 @@ class CipherProbeAuditChainTest {
   }
 
   @Test
-  void probe_canonical_form_is_ambiguous_across_field_boundaries() {
-    // the boundary between principal and tenant moves, the field count stays the same
+  void canonical_form_is_unambiguous_across_field_boundaries() {
     var a = event("alice|x", "acme", "corr", null);
     var b = event("alice", "x|acme", "corr", null);
-    assertThat(a).isNotEqualTo(b);
-    assertThat(AuditChain.canonical(a)).isEqualTo(AuditChain.canonical(b));
+    assertThat(AuditChain.canonical(a)).isNotEqualTo(AuditChain.canonical(b));
     assertThat(AuditChain.hashOf(a, AuditChain.GENESIS))
-        .isEqualTo(AuditChain.hashOf(b, AuditChain.GENESIS));
+        .isNotEqualTo(AuditChain.hashOf(b, AuditChain.GENESIS));
 
-    // same between correlation id and decision id (the link to the approval record)
     var c = event("alice", "acme", "corr|" + "d".repeat(36), "e".repeat(36));
     var d = event("alice", "acme", "corr", "d".repeat(36) + "|" + "e".repeat(36));
-    assertThat(AuditChain.canonical(c)).isEqualTo(AuditChain.canonical(d));
-    // a row rewritten from (c) to (d) or (a) to (b) keeps the chain intact
+    assertThat(AuditChain.canonical(c)).isNotEqualTo(AuditChain.canonical(d));
     var linkedA = AuditChain.link(a, AuditChain.GENESIS);
     assertThat(
             AuditChain.verify(b.withChain(linkedA.prevHash(), linkedA.hash()), AuditChain.GENESIS))
-        .isTrue();
+        .isFalse();
+
+    // null and empty are different values, the actor is part of the material, timestamps are millis
+    assertThat(AuditChain.canonical(event("p", null, "c", null)))
+        .isNotEqualTo(AuditChain.canonical(event("p", "", "c", null)));
+    var withActor =
+        AuditEvent.builder()
+            .timestamp(Instant.EPOCH)
+            .principalId("p")
+            .tool("t")
+            .decision(AuditDecision.APPROVED)
+            .actorId("alice")
+            .build();
+    assertThat(AuditChain.canonical(withActor)).contains("5:alice");
+    assertThat(event("p", null, "c", null).timestamp().getNano() % 1_000_000).isZero();
   }
 }

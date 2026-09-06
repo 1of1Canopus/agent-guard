@@ -79,53 +79,55 @@ class CipherProbeJdbcTest {
     }
   }
 
-  @Test
+  @Test // M2 flipped
   @Order(1)
-  void probe_sub_millisecond_timestamp_breaks_verification_after_storage() {
+  void sub_millisecond_timestamps_round_trip_and_verify() {
     var sink = new JdbcAuditSink(ds);
     var appended = sink.append(event(Instant.parse("2026-09-06T10:00:00.123456789Z")));
     var stored = sink.readAfter(0, 10).get(0);
-    assertThat(stored.timestamp()).isNotEqualTo(appended.timestamp()); // micros in Postgres
+    assertThat(stored.timestamp()).isEqualTo(appended.timestamp());
+    assertThat(stored.timestamp()).isEqualTo(Instant.parse("2026-09-06T10:00:00.123Z"));
     var report = new AuditChainVerifier(sink).verify();
-    assertThat(report.intact()).isFalse();
-    assertThat(report.brokenAtSequence()).isEqualTo(appended.sequence());
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
   }
 
-  @Test
+  @Test // M2 flipped
   @Order(2)
-  void probe_truncate_is_not_blocked_by_the_row_trigger_and_the_verifier_reports_intact()
-      throws SQLException {
-    var sink = new JdbcAuditSink(ds);
+  void truncate_is_refused_like_update_and_delete() throws SQLException {
     assertThatThrownBy(() -> sql("DELETE FROM agentguard_audit"))
         .hasMessageContaining("append-only");
     assertThatThrownBy(() -> sql("UPDATE agentguard_audit SET tool = 'x'"))
         .hasMessageContaining("append-only");
-
-    sql("TRUNCATE agentguard_audit");
-    assertThat(count("agentguard_audit")).isZero();
-    var report = new AuditChainVerifier(sink).verify();
-    assertThat(report.intact()).isTrue();
-    assertThat(report.verified()).isZero();
+    assertThatThrownBy(() -> sql("TRUNCATE agentguard_audit")).hasMessageContaining("append-only");
+    assertThat(count("agentguard_audit")).isEqualTo(1);
   }
 
-  @Test
+  @Test // M2 flipped: the owner can still disable triggers, but the anchor exposes the deletion
   @Order(3)
-  void probe_the_schema_owner_can_disable_the_trigger_and_tail_deletion_is_undetectable()
-      throws SQLException {
+  void tail_deletion_by_the_schema_owner_is_reported_as_anchor_mismatch() throws SQLException {
     var sink = new JdbcAuditSink(ds);
     var t0 = Instant.parse("2026-09-06T10:00:00Z");
     sink.append(event(t0));
-    sink.append(event(t0.plusSeconds(1)));
-    var last = sink.append(event(t0.plusSeconds(2)));
+    var last = sink.append(event(t0.plusSeconds(1)));
     assertThat(new AuditChainVerifier(sink).verify().verified()).isEqualTo(3);
+    assertThat(sink.anchor())
+        .contains(new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(last.hash(), 3));
 
     sql("ALTER TABLE agentguard_audit DISABLE TRIGGER agentguard_audit_append_only");
     sql("DELETE FROM agentguard_audit WHERE seq = " + last.sequence());
     sql("ALTER TABLE agentguard_audit ENABLE TRIGGER agentguard_audit_append_only");
 
     var report = new AuditChainVerifier(sink).verify();
-    assertThat(report.intact()).isTrue();
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
+    assertThat(report.intact()).isFalse();
     assertThat(report.verified()).isEqualTo(2);
+
+    // the same owner truncating with triggers disabled: rows gone, anchor says otherwise
+    sql("ALTER TABLE agentguard_audit DISABLE TRIGGER ALL");
+    sql("TRUNCATE agentguard_audit");
+    sql("ALTER TABLE agentguard_audit ENABLE TRIGGER ALL");
+    assertThat(new AuditChainVerifier(sink).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.ANCHOR_MISMATCH);
   }
 
   @Test

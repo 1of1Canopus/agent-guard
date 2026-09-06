@@ -1,7 +1,6 @@
 package com.housedevinci.agentguard.ai;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.housedevinci.agentguard.api.ToolPolicy;
 import com.housedevinci.agentguard.application.ApprovalService;
@@ -23,8 +22,8 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.DefaultToolCallingManager;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingManager;
 import org.springframework.ai.support.ToolCallbacks;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
@@ -38,7 +37,7 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
-/** Cipher probes for the Spring AI integration seam. */
+/** Cipher probes for the Spring AI integration seam, flipped: H1, H2 and M6 are fixed. */
 class CipherProbeSpringAiTest {
 
   static final AtomicInteger REFUNDS = new AtomicInteger();
@@ -121,8 +120,16 @@ class CipherProbeSpringAiTest {
     SecurityContextHolder.getContext().setAuthentication(auth);
   }
 
+  /**
+   * What a ChatModel does after the LLM asked for a tool: run it through the ToolCallingManager
+   * bean.
+   */
   private static String runToolCall(
-      ToolCallback[] callbacks, String tool, String argsJson, Map<String, Object> toolContext) {
+      ToolCallingManager manager,
+      ToolCallback[] callbacks,
+      String tool,
+      String argsJson,
+      Map<String, Object> toolContext) {
     var options =
         ToolCallingChatOptions.builder().toolCallbacks(callbacks).toolContext(toolContext).build();
     var prompt = new Prompt(new UserMessage("do it"), options);
@@ -131,52 +138,68 @@ class CipherProbeSpringAiTest {
             .content("")
             .toolCalls(List.of(new AssistantMessage.ToolCall("call-1", "function", tool, argsJson)))
             .build();
-    var response = new ChatResponse(List.of(new Generation(assistant)));
-    var result = DefaultToolCallingManager.builder().build().executeToolCalls(prompt, response);
+    var result =
+        manager.executeToolCalls(prompt, new ChatResponse(List.of(new Generation(assistant))));
     var last =
         (ToolResponseMessage)
             result.conversationHistory().get(result.conversationHistory().size() - 1);
     return last.getResponses().get(0).responseData();
   }
 
-  @Test
-  void probe_inline_tool_objects_bypass_the_guard_although_their_policy_was_scanned() {
+  @Test // H2 flipped: the ToolCallingManager chokepoint guards inline tools too
+  void inline_tool_objects_are_guarded_through_the_tool_calling_manager() {
     runner.run(
         ctx -> {
           REFUNDS.set(0);
-          // the scanner saw @ToolPolicy on the bean...
           assertThat(ctx.getBean(ToolPolicyRegistry.class).find("refundOrder")).isPresent();
-          // ...but ChatClient.prompt().tools(obj) builds callbacks like this, outside the bean
-          // lifecycle: no policy, no approval, no budget, no audit
+          var manager = ctx.getBean(ToolCallingManager.class);
+          assertThat(manager).isInstanceOf(GuardedToolCallingManager.class);
           ToolCallback[] inline = ToolCallbacks.from(new OrderTools());
           assertThat(inline).noneMatch(c -> c instanceof GuardedToolCallback);
 
           loginAs("eve", "VIEWER");
           var out =
-              runToolCall(inline, "refundOrder", "{\"orderId\":\"42\"}", Map.of("tenantId", "x"));
-          assertThat(out).contains("refunded 42");
-          assertThat(REFUNDS).hasValue(1);
-          assertThat(ctx.getBean(ApprovalService.class).pending(10)).isEmpty();
-          assertThat(ctx.getBean(AuditReader.class).latest(10)).isEmpty();
+              runToolCall(
+                  manager, inline, "refundOrder", "{\"orderId\":\"42\"}", Map.of("tenantId", "x"));
+          assertThat(out).contains("TOOL_DENIED").contains("AG-POLICY-001");
+          assertThat(REFUNDS).hasValue(0);
+
+          loginAs("bob", "SUPPORT");
+          var parked =
+              runToolCall(
+                  manager, inline, "refundOrder", "{\"orderId\":\"42\"}", Map.of("tenantId", "x"));
+          assertThat(parked).contains("AWAITING_APPROVAL");
+          assertThat(REFUNDS).hasValue(0);
+          assertThat(ctx.getBean(ApprovalService.class).pending(10)).hasSize(1);
+          assertThat(ctx.getBean(AuditReader.class).latest(10)).hasSize(2);
         });
   }
 
-  @Test
-  void probe_resume_runs_with_the_last_callers_tool_context_and_the_approvers_security_context() {
+  @Test // H1 flipped: resume runs the parking caller's ToolContext under the parking caller's
+  // identity
+  void resume_runs_with_the_parking_callers_tool_context_and_identity() {
     runner.run(
         ctx -> {
           REFUNDS.set(0);
+          var manager = ctx.getBean(ToolCallingManager.class);
           var callbacks = ctx.getBean(ToolCallbackProvider.class).getToolCallbacks();
 
           loginAs("bob", "SUPPORT");
-          var bobParked =
-              runToolCall(
-                  callbacks, "refundOrder", "{\"orderId\":\"1\"}", Map.of("tenantId", "acme"));
-          assertThat(bobParked).contains("AWAITING_APPROVAL");
-
+          assertThat(
+                  runToolCall(
+                      manager,
+                      callbacks,
+                      "refundOrder",
+                      "{\"orderId\":\"1\"}",
+                      Map.of("tenantId", "acme")))
+              .contains("AWAITING_APPROVAL");
           loginAs("carol", "SUPPORT");
           runToolCall(
-              callbacks, "refundOrder", "{\"orderId\":\"2\"}", Map.of("tenantId", "globex"));
+              manager,
+              callbacks,
+              "refundOrder",
+              "{\"orderId\":\"2\"}",
+              Map.of("tenantId", "globex"));
 
           var approvals = ctx.getBean(ApprovalService.class);
           var bobs =
@@ -186,27 +209,38 @@ class CipherProbeSpringAiTest {
                   .orElseThrow();
 
           loginAs("alice", "APPROVER");
-          var outcome = approvals.approve(bobs.id(), "alice");
-          // bob's approved refund ran inside carol's ToolContext, as alice
+          var outcome = approvals.approve(bobs.id(), "alice", bobs.argsHash());
           assertThat(outcome.result().toModelText())
               .contains("refunded 1")
-              .contains("tenant=globex")
-              .contains("runAs=alice");
+              .contains("tenant=acme")
+              .contains("runAs=bob");
+          // the approver's own context is restored afterwards
+          assertThat(SecurityContextHolder.getContext().getAuthentication().getName())
+              .isEqualTo("alice");
+          assertThat(REFUNDS).hasValue(1);
         });
   }
 
-  @Test
-  void probe_guard_infrastructure_failure_escapes_unstructured_to_the_chat_call() {
+  @Test // M6 flipped: guard failures are structured, internal details stay server-side
+  void guard_infrastructure_failure_is_a_structured_error_without_internal_details() {
     runner
         .withUserConfiguration(BrokenAuditConfig.class)
         .run(
             ctx -> {
+              REFUNDS.set(0);
+              var manager = ctx.getBean(ToolCallingManager.class);
               var callbacks = ctx.getBean(ToolCallbackProvider.class).getToolCallbacks();
               loginAs("bob", "SUPPORT");
-              assertThatThrownBy(
-                      () -> runToolCall(callbacks, "refundOrder", "{\"orderId\":\"1\"}", Map.of()))
-                  .isInstanceOf(IllegalStateException.class)
-                  .hasMessageContaining("db.internal:5432");
+              var out =
+                  runToolCall(manager, callbacks, "refundOrder", "{\"orderId\":\"1\"}", Map.of());
+              assertThat(out)
+                  .contains("GUARD_UNAVAILABLE")
+                  .contains("AG-GUARD-001")
+                  .contains("correlationId")
+                  .doesNotContain("db.internal")
+                  .doesNotContain("agentguard)")
+                  .doesNotContain("Exception");
+              assertThat(REFUNDS).hasValue(0);
             });
   }
 }

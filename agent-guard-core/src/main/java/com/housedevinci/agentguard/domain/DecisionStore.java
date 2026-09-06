@@ -11,8 +11,15 @@ public interface DecisionStore {
 
   Optional<PendingDecision> findById(DecisionId id);
 
-  /** Latest decision for the same principal, tool and arguments, newest first. */
-  Optional<PendingDecision> findLatest(String principalId, String tool, String argsHash);
+  /**
+   * Latest decision for the same principal, tenant, tool and arguments. {@code tenantId} may be
+   * null (single-tenant); a null tenant never matches a decision that has one.
+   */
+  Optional<PendingDecision> findLatest(
+      String principalId, String tenantId, String tool, String argsHash);
+
+  /** Number of PENDING decisions parked by this principal (any tenant). */
+  long countPending(String principalId);
 
   List<PendingDecision> findByState(DecisionState state, int limit);
 

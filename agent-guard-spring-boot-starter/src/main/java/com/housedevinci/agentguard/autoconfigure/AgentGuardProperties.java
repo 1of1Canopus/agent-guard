@@ -28,6 +28,12 @@ public class AgentGuardProperties {
   /** Where decisions and audit rows live. JDBC (PostgreSQL) needs a DataSource bean. */
   @NotNull private StoreType store = StoreType.JDBC;
 
+  /**
+   * Fail startup when a tool that carries @ToolPolicy is not reachable through a guarded path, and
+   * deny calls whose configured budget scope has no subject. Off = warn instead.
+   */
+  private boolean strict = true;
+
   @Valid private final Policy policy = new Policy();
   @Valid private final Approval approval = new Approval();
   @Valid private final Jdbc jdbc = new Jdbc();
@@ -39,6 +45,14 @@ public class AgentGuardProperties {
   public enum StoreType {
     JDBC,
     MEMORY
+  }
+
+  public enum MissingSubject {
+    /** DENY when agentguard.strict=true, SKIP otherwise. */
+    DEFAULT,
+    DENY,
+    FALLBACK_TO_PRINCIPAL,
+    SKIP
   }
 
   public enum BudgetStoreType {
@@ -79,7 +93,31 @@ public class AgentGuardProperties {
     /** How long a parked call waits before it expires. */
     @NotNull private Duration ttl = Duration.ofHours(1);
 
+    /** Decisions one principal may have waiting at once; further WRITE calls are refused. */
+    @Min(1)
+    private int maxPendingPerPrincipal = 20;
+
+    /** Largest arguments (UTF-8 bytes) a parked call may carry. */
+    @Min(1)
+    private int maxArgumentBytes = 64 * 1024;
+
     @Valid private final Notifier notifier = new Notifier();
+
+    public int getMaxPendingPerPrincipal() {
+      return maxPendingPerPrincipal;
+    }
+
+    public void setMaxPendingPerPrincipal(int v) {
+      this.maxPendingPerPrincipal = v;
+    }
+
+    public int getMaxArgumentBytes() {
+      return maxArgumentBytes;
+    }
+
+    public void setMaxArgumentBytes(int v) {
+      this.maxArgumentBytes = v;
+    }
 
     public Duration getTtl() {
       return ttl;
@@ -156,12 +194,74 @@ public class AgentGuardProperties {
     /** Redis URI for the REDIS budget store, e.g. {@code redis://localhost:6379}. */
     private URI uri;
 
+    @Valid private final Pool pool = new Pool();
+
     public URI getUri() {
       return uri;
     }
 
     public void setUri(URI uri) {
       this.uri = uri;
+    }
+
+    public Pool getPool() {
+      return pool;
+    }
+  }
+
+  /**
+   * Jedis connection pool. On JDK 21-23 a virtual thread blocked on the pool's growth lock pins its
+   * carrier; with more concurrent tool calls than carriers the JVM deadlocks. The pool is therefore
+   * filled at startup ({@code min-idle = max-total}, {@code prepare-pool=true}) so it never grows
+   * under load. Size {@code max-total} at or above your peak concurrent tool calls.
+   */
+  public static class Pool {
+    @Min(1)
+    private int maxTotal = 8;
+
+    /** Idle connections kept open. Null = same as max-total (never grow under load). */
+    @Min(0)
+    private Integer minIdle;
+
+    @NotNull private Duration maxWait = Duration.ofSeconds(2);
+
+    /** Open all min-idle connections at startup, from a platform thread. */
+    private boolean preparePool = true;
+
+    public int getMaxTotal() {
+      return maxTotal;
+    }
+
+    public void setMaxTotal(int v) {
+      this.maxTotal = v;
+    }
+
+    public Integer getMinIdle() {
+      return minIdle;
+    }
+
+    public void setMinIdle(Integer v) {
+      this.minIdle = v;
+    }
+
+    public int effectiveMinIdle() {
+      return minIdle == null ? maxTotal : Math.min(minIdle, maxTotal);
+    }
+
+    public Duration getMaxWait() {
+      return maxWait;
+    }
+
+    public void setMaxWait(Duration v) {
+      this.maxWait = v;
+    }
+
+    public boolean isPreparePool() {
+      return preparePool;
+    }
+
+    public void setPreparePool(boolean v) {
+      this.preparePool = v;
     }
   }
 
@@ -171,6 +271,17 @@ public class AgentGuardProperties {
 
     /** Limits, all enforced before dispatch. */
     @Valid private List<Limit> limits = new ArrayList<>();
+
+    /** What a TENANT / CONVERSATION limit does when the call carries no such id. */
+    @NotNull private MissingSubject missingSubject = MissingSubject.DEFAULT;
+
+    public MissingSubject getMissingSubject() {
+      return missingSubject;
+    }
+
+    public void setMissingSubject(MissingSubject v) {
+      this.missingSubject = v;
+    }
 
     public BudgetStoreType getStore() {
       return store;
@@ -260,6 +371,20 @@ public class AgentGuardProperties {
 
     private String basePath = "/agentguard";
 
+    /**
+     * Accept an unauthenticated ("anonymous") approver. Trial only: without Spring Security in
+     * front of the endpoints anyone who can reach them approves DESTRUCTIVE calls.
+     */
+    private boolean allowAnonymous = false;
+
+    public boolean isAllowAnonymous() {
+      return allowAnonymous;
+    }
+
+    public void setAllowAnonymous(boolean v) {
+      this.allowAnonymous = v;
+    }
+
     public boolean isEnabled() {
       return enabled;
     }
@@ -287,6 +412,14 @@ public class AgentGuardProperties {
 
   public StoreType getStore() {
     return store;
+  }
+
+  public boolean isStrict() {
+    return strict;
+  }
+
+  public void setStrict(boolean strict) {
+    this.strict = strict;
   }
 
   public void setStore(StoreType store) {

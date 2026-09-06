@@ -75,7 +75,9 @@ class JdbcAdaptersIntegrationTest {
     var d = decision("{\"a\":1}");
     store.save(d);
     assertThat(store.findById(d.id())).contains(d);
-    assertThat(store.findLatest("u1", "write", d.argsHash())).contains(d);
+    assertThat(store.findLatest("u1", "acme", "write", d.argsHash())).contains(d);
+    assertThat(store.findLatest("u1", "other", "write", d.argsHash())).isEmpty();
+    assertThat(store.countPending("u1")).isGreaterThanOrEqualTo(1);
     assertThat(store.findByState(DecisionState.PENDING, 100)).contains(d);
     assertThat(store.findById(d.id()).orElseThrow().principal().roles())
         .containsExactlyInAnyOrder("AGENT", "OPS");

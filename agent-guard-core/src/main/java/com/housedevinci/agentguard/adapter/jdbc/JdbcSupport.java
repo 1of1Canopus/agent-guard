@@ -12,7 +12,7 @@ import java.time.ZoneOffset;
 import javax.sql.DataSource;
 
 /** Plain-JDBC helpers shared by the adapters. No Spring. */
-final class JdbcSupport {
+public final class JdbcSupport {
 
   private JdbcSupport() {}
 

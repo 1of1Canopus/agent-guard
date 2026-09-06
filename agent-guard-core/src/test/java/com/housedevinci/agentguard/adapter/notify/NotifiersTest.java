@@ -50,7 +50,7 @@ class NotifiersTest {
       var url = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/hook");
       new WebhookNotifier(url, "s3cret", Duration.ofSeconds(2)).notify(decision());
       assertThat(body.get()).contains("\"event\":\"agentguard.approval.requested\"").contains("\"tool\":\"refund\"")
-          .contains("\"password\":\\\"***\\\"").doesNotContain("\"x\"");
+          .contains("\\\"password\\\":\\\"***\\\"").doesNotContain("hunter").doesNotContain("\\\"x\\\"");
       assertThat(token.get()).isEqualTo("s3cret");
     } finally {
       server.stop(0);

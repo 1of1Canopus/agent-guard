@@ -7,11 +7,13 @@ import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.DecisionId;
 import com.housedevinci.agentguard.domain.DecisionNotFoundException;
 import com.housedevinci.agentguard.domain.IllegalDecisionTransitionException;
+import com.housedevinci.agentguard.security.PrincipalResolver;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,16 +27,19 @@ import org.springframework.web.bind.annotation.ResponseBody;
  * when {@code agentguard.endpoints.enabled=true}. Protect it with Spring Security: the approver name
  * is taken from the authenticated request principal.
  */
+@Controller
 @ResponseBody
 @RequestMapping("${agentguard.endpoints.base-path:/agentguard}")
 public class AgentGuardEndpoints {
 
   private final ApprovalService approvals;
   private final AuditReader audit;
+  private final PrincipalResolver principals;
 
-  public AgentGuardEndpoints(ApprovalService approvals, AuditReader audit) {
+  public AgentGuardEndpoints(ApprovalService approvals, AuditReader audit, PrincipalResolver principals) {
     this.approvals = approvals;
     this.audit = audit;
+    this.principals = principals;
   }
 
   @GetMapping("/decisions")
@@ -64,8 +69,13 @@ public class AgentGuardEndpoints {
     return audit.latest(Math.max(1, Math.min(limit, 500)));
   }
 
-  private static String name(Principal p) {
-    return p == null || p.getName() == null ? "anonymous" : p.getName();
+  /** The approver: the resolved security principal, else the servlet principal, else anonymous. */
+  private String name(Principal p) {
+    var resolved = principals.resolve();
+    if (!com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID.equals(resolved.id())) {
+      return resolved.id();
+    }
+    return p == null || p.getName() == null ? com.housedevinci.agentguard.domain.Principal.ANONYMOUS_ID : p.getName();
   }
 
   @ExceptionHandler(DecisionNotFoundException.class)

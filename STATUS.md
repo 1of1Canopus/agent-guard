@@ -352,3 +352,6 @@ C11 has no dedicated `CipherProbe*` test (the finding table lists its probe as "
   Boot's `@ServiceConnection` refuses the tag+digest form altogether; the sample uses `postgres@sha256:…`.
 - The JSON parser in the domain is ~200 lines of hand-written code so the core stays free of Jackson; it is strict
   RFC 8259 and depth-limited (64), and unparseable arguments are masked whole rather than guessed at.
+
+## Parked: Jedis 8 migration (2026-09-08)
+Dependabot PR #6 (jedis 7.5.2 -> 8.0.1) fails test compilation: `JedisPooled` removed, `Connection` API changed. Affects `JedisBudgetStore`, `JedisBudgetStoreFactory`, `CipherProbeJedisPinningMain`, `CipherProbeCleanRedisTest`, `JedisBudgetStoreIntegrationTest`. To do as its own branch by Thor with Cipher review after module C: re-verify the virtual-thread pinning fix (R6) and pool bounding (C7/V5) against the Jedis 8 pool. Dependabot told to ignore the major until then.

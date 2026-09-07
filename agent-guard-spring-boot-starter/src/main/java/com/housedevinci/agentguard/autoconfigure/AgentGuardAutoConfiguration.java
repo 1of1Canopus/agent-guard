@@ -105,6 +105,13 @@ public class AgentGuardAutoConfiguration {
   @ConditionalOnMissingBean
   public AuditChain auditChain(AgentGuardProperties props) {
     String secret = props.getAudit().getHmacSecret();
+    if (secret != null && !secret.isBlank() && props.getAudit().isUnkeyed()) {
+      throw new AgentGuardConfigurationException(
+          "agentguard.audit.unkeyed=true contradicts agentguard.audit.hmac-secret (set): a trail is"
+              + " keyed from row 1 or unkeyed forever, so both cannot be asked for at once. Remove"
+              + " agentguard.audit.hmac-secret to run unkeyed, or remove agentguard.audit.unkeyed to"
+              + " run keyed.");
+    }
     if (secret == null || secret.isBlank()) {
       if (!props.getAudit().isUnkeyed()) {
         throw new AgentGuardConfigurationException(
@@ -156,6 +163,17 @@ public class AgentGuardAutoConfiguration {
                         + " must be at least "
                         + AuditChain.MIN_KEY_BYTES
                         + " bytes");
+              }
+              if (auditChain.isKeyed()
+                  && id.equals(auditChain.keyId())
+                  && !java.util.Arrays.equals(bytes, keyring.get(id))) {
+                throw new AgentGuardConfigurationException(
+                    "agentguard.audit.hmac-keys."
+                        + id
+                        + " reuses the appending key id (agentguard.audit.hmac-key-id="
+                        + id
+                        + ") with a different secret than agentguard.audit.hmac-secret. Give the"
+                        + " new key its own id instead of retiring it under the id still in use.");
               }
               keyring.put(id, bytes);
             });

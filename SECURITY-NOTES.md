@@ -82,9 +82,10 @@ does about it, and what still needs a reviewer's eye.
   (`ag1|<len>:<value>|…`, nulls as `-`), so no rewrite can move a boundary between fields (the security review M2); the approver
   is part of the material (`actor_id`, the security review M1); timestamps are truncated to milliseconds in `AuditEvent` so every
   store round-trips them; appends are serialised by a PostgreSQL transaction-scoped advisory lock; triggers refuse
-  UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash + row count) is
-  written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `BROKEN` /
-  `ANCHOR_MISMATCH` — tail deletion or truncation by a role that can disable triggers is detected.
+  UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash, row count and
+  `keyed_from_seq`, the security review V2) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` /
+  `INTACT` / `BROKEN` / `ANCHOR_MISMATCH` / `UNKEYED` — tail deletion, truncation, or a downgraded keyed chain, by
+  a role that can disable triggers, is detected.
 - **Residual (the security review R4):** the runtime role needs UPDATE on the anchor row, so anyone with that grant (or the
   owner) can reset the anchor after trimming the tail; the anchor raises the bar only when roles are split as
   described below. A role that owns the tables can rewrite chain **and** anchor consistently. Run the application with a
@@ -103,12 +104,34 @@ does about it, and what still needs a reviewer's eye.
 - **Version labels are trusted only forward, not backward (the security review V2):** `chain_version` is a column an attacker
   with table-write access can also rewrite, so `AuditChainVerifier.verify` tracks whether a `KEYED_VERSION` row has
   verified while walking the trail; once it has, a later row claiming `CANONICAL_VERSION` is `BROKEN` at its own
-  sequence, not silently re-verified with plain SHA-256. This closes a *partial* downgrade — some rows genuinely
-  keyed, a later row or the tail stamped back down to `ag1`. **It does not close a downgrade of the entire trail**
-  back to GENESIS: that row shape is byte-for-byte the same as a deployment that has never used HMAC, which the
-  verifier must still report `INTACT` (the case directly above). No purely row-embedded version scheme can tell
-  those two apart; closing it needs an external, attacker-unwritable anchor, which is the same R4 residual already
-  named above ("An HMAC-keyed chain and external anchoring stay pro items"). See QUESTIONS.md #20.
+  sequence, not silently re-verified with plain SHA-256. On its own this closes only a *partial* downgrade — some
+  rows genuinely keyed, a later row or the tail stamped back down to `ag1` — and **not** a downgrade of the entire
+  trail back to GENESIS, which is byte-for-byte the same row data as a deployment that has never used HMAC. No
+  purely row-embedded version scheme can tell those two apart. Kept as a fallback for readers that do not
+  implement `AuditAnchor`.
+- **V2 closed in full with the external anchor (the maintainers's ruling, QUESTIONS.md #20):** `agentguard_audit_anchor`
+  carries a `keyed_from_seq` column — `null` until the sink appends the first row written under a keyed chain,
+  then that row's sequence, set in the same transaction as the append. The anchor's monotonic trigger (the security review R4)
+  is extended so `keyed_from_seq` may move from `null` to a value exactly once and never change or return to
+  `null`; a runtime role limited to `UPDATE` on the anchor (the least-privilege setup recommended above) cannot
+  move it, the same way it cannot reset `head_hash`/`row_count`. `AuditChainVerifier.verify`, given a key, requires
+  every row before `keyed_from_seq` to be unkeyed and every row from it onward to be keyed — anything else,
+  including a keyed row observed while `keyed_from_seq` is still `null`, is `BROKEN`. A key given to the verifier
+  when `keyed_from_seq` is `null` and no keyed row exists reports `Status.UNKEYED` (distinct from `INTACT`), so an
+  operator who has just set `agentguard.audit.hmac-secret` and expects it to already be protecting this trail sees
+  that it is not. This closes the security review's original whole-trail repro (a keyed trail rewritten entirely to
+  `ag1`/GENESIS, re-verified with the key): the attacker's row-level rewrite cannot also move `keyed_from_seq`,
+  which lives outside the rows they rewrite — it is not part of `agentguard_audit`. `InMemoryAuditSink` carries
+  the same bookkeeping (plus a seeding constructor that models a new sink instance continuing an existing trail,
+  the in-memory analogue of a restarted app with the key now set) so the verifier's logic is store-independent.
+  **Residual, unchanged from R4:** a role that *owns* the tables can disable the anchor's trigger and rewrite
+  `keyed_from_seq` along with everything else — this closes the runtime-role attack, not the table-owner one; run
+  the application with a role that does not own the tables (see "Database roles" below).
+- **Test:** `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed`,
+  `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (partial downgrade),
+  `CipherProbeReverifyTest.probe_a_fully_downgraded_trail_verifies_as_broken_not_intact` (the security review's original
+  whole-trail repro), `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`
+  (C6, unaffected).
 - **Two `args_hash` domains (the security review V3):** `ArgumentCanonicalizer.hash` (used for every decision and normal audit
   row) hashes `"agcanon1:" + canonical(argumentsJson)`; `AuditRecorder.recordOversized` (the size-cap denial)
   hashes `"agraw1:" + argumentsJson`. Before this, both landed in the same SHA-256 space with no domain separation,
@@ -161,12 +184,13 @@ the security review's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-c
 fixed and re-verified; under the no-allowance rule every LOW and INFO of the first four passes (L1–L10, I1–I9, R3,
 R4, R6–R11) and every finding of the clean-verdict pass (C4 MEDIUM; C1, C2, C5, C7, C9, C11 LOW; C3, C6, C8, C10,
 C12 INFO) is fixed on the branch with its probe flipped. The re-verification round (V1 MEDIUM, V2 MEDIUM, V3 LOW,
-V4 LOW, V5 LOW) is fixed on the branch, with its probes flipped, except V2 which is scoped to the detectable
-(partial-downgrade) form of the attack — see QUESTIONS.md #20 and the audit-tampering section above. Documented
-residuals that remain by design: a role that *owns* the tables can drop the append-only and anchor triggers (split
-roles, see docs "Database roles"; external anchoring and the keyed chain reduce what such a role can do silently,
-but cannot detect a full-trail rewrite from GENESIS — the security review R4/V2); a `ToolCallingManager` built by hand and
-handed to a `ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23
+V4 LOW, V5 LOW) is fixed on the branch, with its probes flipped, including V2 in full: the maintainers's ruling on
+QUESTIONS.md #20 added the external `agentguard_audit_anchor.keyed_from_seq` anchor field, so both the partial
+(keyed-prefix, downgraded-tail) and the security review's original whole-trail-downgrade repro are now `BROKEN`, not `INTACT`
+— see QUESTIONS.md #20 and the audit-tampering section above. Documented residuals that remain by design: a role
+that *owns* the tables can drop the append-only and anchor triggers, rewriting the trail, the anchor's head/count
+*and* `keyed_from_seq` consistently (split roles, see docs "Database roles"); a `ToolCallingManager` built by hand
+and handed to a `ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23
 Redis calls run on platform threads so the pool's growth lock is never touched by a virtual thread; a burst past
 `agentguard.redis.pool.max-total` concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing
 unboundedly, by design (the security review C7) — size the pool at or above real peak concurrency, and size

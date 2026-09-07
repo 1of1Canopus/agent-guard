@@ -83,55 +83,68 @@ does about it, and what still needs a reviewer's eye.
   is part of the material (`actor_id`, the security review M1); timestamps are truncated to milliseconds in `AuditEvent` so every
   store round-trips them; appends are serialised by a PostgreSQL transaction-scoped advisory lock; triggers refuse
   UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash, row count and
-  `keyed_from_seq`, the security review V2) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` /
-  `INTACT` / `BROKEN` / `ANCHOR_MISMATCH` / `UNKEYED` — tail deletion, truncation, or a downgraded keyed chain, by
-  a role that can disable triggers, is detected.
-- **Residual (the security review R4):** the runtime role needs UPDATE on the anchor row, so anyone with that grant (or the
-  owner) can reset the anchor after trimming the tail; the anchor raises the bar only when roles are split as
-  described below. A role that owns the tables can rewrite chain **and** anchor consistently. Run the application with a
-  least-privilege role (INSERT + SELECT on `agentguard_audit`, UPDATE on the anchor row only, no DDL, not the table
-  owner) and keep `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the
-  head hash periodically. An HMAC-keyed chain and external anchoring stay pro items.
-- **Enabling the HMAC key is a one-way step, safely (the security review C6):** each row records the chain version it was written
-  with (`agentguard_audit.chain_version`, `ag1` unkeyed / `ag2h` keyed; backfilled `ag1` for rows written before this
-  column existed). `AuditChainVerifier` recomputes every row with the version *it* carries, not with whichever chain
-  the verifier happens to be constructed with today — so turning on `agentguard.audit.hmac-secret` on a running
-  installation does not make the pre-key trail report `BROKEN`. A row that claims `ag2h` but the verifier was not
-  given the matching secret still fails to recompute: that is a real break, not a version mismatch, and is reported
-  as one.
-- **Test:** `JdbcAdaptersIntegrationTest.audit_*`, `AuditChainVerifierTest`, `CipherProbeJdbcTest`,
-  `CipherProbeAuditChainTest`, `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`.
-- **Version labels are trusted only forward, not backward (the security review V2):** `chain_version` is a column an attacker
-  with table-write access can also rewrite, so `AuditChainVerifier.verify` tracks whether a `KEYED_VERSION` row has
-  verified while walking the trail; once it has, a later row claiming `CANONICAL_VERSION` is `BROKEN` at its own
-  sequence, not silently re-verified with plain SHA-256. On its own this closes only a *partial* downgrade — some
-  rows genuinely keyed, a later row or the tail stamped back down to `ag1` — and **not** a downgrade of the entire
-  trail back to GENESIS, which is byte-for-byte the same row data as a deployment that has never used HMAC. No
-  purely row-embedded version scheme can tell those two apart. Kept as a fallback for readers that do not
-  implement `AuditAnchor`.
-- **V2 closed in full with the external anchor (the maintainers's ruling, QUESTIONS.md #20):** `agentguard_audit_anchor`
-  carries a `keyed_from_seq` column — `null` until the sink appends the first row written under a keyed chain,
-  then that row's sequence, set in the same transaction as the append. The anchor's monotonic trigger (the security review R4)
-  is extended so `keyed_from_seq` may move from `null` to a value exactly once and never change or return to
-  `null`; a runtime role limited to `UPDATE` on the anchor (the least-privilege setup recommended above) cannot
-  move it, the same way it cannot reset `head_hash`/`row_count`. `AuditChainVerifier.verify`, given a key, requires
-  every row before `keyed_from_seq` to be unkeyed and every row from it onward to be keyed — anything else,
-  including a keyed row observed while `keyed_from_seq` is still `null`, is `BROKEN`. A key given to the verifier
-  when `keyed_from_seq` is `null` and no keyed row exists reports `Status.UNKEYED` (distinct from `INTACT`), so an
-  operator who has just set `agentguard.audit.hmac-secret` and expects it to already be protecting this trail sees
-  that it is not. This closes the security review's original whole-trail repro (a keyed trail rewritten entirely to
-  `ag1`/GENESIS, re-verified with the key): the attacker's row-level rewrite cannot also move `keyed_from_seq`,
-  which lives outside the rows they rewrite — it is not part of `agentguard_audit`. `InMemoryAuditSink` carries
-  the same bookkeeping (plus a seeding constructor that models a new sink instance continuing an existing trail,
-  the in-memory analogue of a restarted app with the key now set) so the verifier's logic is store-independent.
-  **Residual, unchanged from R4:** a role that *owns* the tables can disable the anchor's trigger and rewrite
-  `keyed_from_seq` along with everything else — this closes the runtime-role attack, not the table-owner one; run
-  the application with a role that does not own the tables (see "Database roles" below).
-- **Test:** `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed`,
+  `keyed`) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `BROKEN` /
+  `ANCHOR_MISMATCH` / `NO_ANCHOR` — tail deletion, truncation, or a downgraded keyed chain, by a role that can
+  disable triggers, is detected; a missing anchor is reported, not silently guessed past.
+- **Residual (the security review R4):** a role that owns the tables can disable the append-only and anchor triggers and rewrite
+  chain, anchor **and** `keyed` consistently — run the application with a least-privilege role (INSERT + SELECT on
+  `agentguard_audit`, INSERT/SELECT/UPDATE on the anchor, no DDL, not the table owner) and keep
+  `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the head hash
+  periodically. The anchor's `agentguard_audit_anchor_no_delete`/`_no_truncate` triggers (the security review F3(a)) mean that
+  role cannot lose the anchor row even by accident.
+- **Keyed-from-birth (design change, QUESTIONS.md #20, superseding the earlier per-row-version design and the security review
+  C6/V2/F1–F4):** a trail is keyed from row 1 or unkeyed forever — no mixing, no later switch.
+  `agentguard.audit.hmac-secret` is **required by default**; missing, startup fails naming the property and the
+  remedy (`openssl rand -base64 32`). The explicit local-dev opt-out, `agentguard.audit.unkeyed=true`, starts
+  unkeyed but warns at every startup, not only the first. Which mode a trail is in is recorded once, at the first
+  append, on `agentguard_audit_anchor.keyed` (a plain boolean, immutable afterwards via the anchor's existing
+  monotonic trigger — the same protection `head_hash`/`row_count` already had). Every later append, from this
+  instance or any other, must agree with it or is refused with `AG-AUDIT-001`, naming the property and the remedy
+  (start a new trail — see below). This is what makes a **rolling restart that changes
+  `agentguard.audit.hmac-secret` unsafe by itself**: stop every instance before starting the first one with the
+  new setting, or the mismatched instance is refused rather than silently corrupting the trail (the earlier
+  per-row-version design could not detect this at all).
+- **Key rotation, from row 1 (amendment, the maintainers, after the security review's design review):** the key id
+  (`agentguard.audit.hmac-key-id`, default `k1`) is baked into every row's hashed material — the canonical form is
+  `version|key_id|timestamp|…`, so relabelling a row's `key_id` without the matching secret still fails to
+  recompute the hash. This makes rotation data, not a chain-format break: `agentguard_audit.key_id` records which
+  key signed each row (`'none'`/`AuditChain.UNKEYED_KEY_ID` for unkeyed rows); `AuditChainVerifier` holds a
+  keyring (the current key plus every id in `agentguard.audit.hmac-keys.<id>`) and picks the right secret per row
+  by its `key_id`. A row claiming an id the keyring does not hold is `BROKEN`, not skipped or treated as unkeyed.
+  This is not a second mode switch on top of keyed-from-birth: `keyed` still only says whether the trail is keyed
+  at all (immutable); `key_id` says which already-trusted key signed a given row within that mode, and a
+  table-owning attacker can only relabel to an id whose secret they also hold.
+- **Anchor-missing refused, never guessed (amendment, superseding the F1/F2 sequence-position mechanism and the
+  prior schema-seed-from-an-existing-trail behaviour):** `JdbcAuditSink` no longer re-derives a lost anchor's
+  state from the trail head — that was exactly the kind of guess the anchor exists to make unnecessary, the same
+  class of gap the retired `keyed_from_seq` findings were about. A trail with rows but no anchor row is refused
+  with `AG-AUDIT-002`, on both the next append and at the next startup; the schema step's seed only ever creates
+  the anchor row for a genuinely empty trail (`INSERT … WHERE NOT EXISTS (SELECT 1 FROM agentguard_audit)`), never
+  by deriving `keyed`/`head_hash`/`row_count` from existing rows. Recovery is an owner-run procedure — see
+  "Starting a new trail" in docs/index.md — not something an application instance does for itself.
+- **`NO_ANCHOR` unconditionally, keyed or unkeyed (amendment, widening the security review F3(a)):** the first version of this
+  fix only refused to render `INTACT` when a key was *given* to the verifier; an unkeyed verification against an
+  unanchored reader still silently fell back to the old in-trail rule. `AuditChainVerifier.verify` now reports the
+  distinct `Status.NO_ANCHOR` whenever the reader is not an `AuditAnchor`, or has no anchor row, and the trail is
+  not empty — regardless of whether a key was configured. The `Report` also now carries the trail's mode
+  (`anchored`, `keyed`, `keyIds`), and an unkeyed trail's clean result renders as the distinct `Status.INTACT_UNKEYED`,
+  never plain `INTACT` — an operator glancing at a status word can no longer mistake "nothing is signing this
+  trail" for "the signature checked out". A table-owning attacker's row-level rewrite (even a whole-trail
+  downgrade to `ag1`/GENESIS from a genuinely keyed trail — the security review's original V2 repro) cannot also flip `keyed`,
+  which lives outside the rows they rewrite.
+  **Residual, unchanged from R4:** the table owner can disable the anchor's trigger and rewrite `keyed` along with
+  everything else; run the application with a role that does not own the tables (see "Database roles" below).
+- **Test:** `AuditChainVerifierTest.a_key_given_with_no_anchor_reports_no_anchor_never_intact`,
+  `AuditChainVerifierTest.an_unkeyed_trail_never_renders_plain_intact`,
   `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (partial downgrade),
   `CipherProbeReverifyTest.probe_a_fully_downgraded_trail_verifies_as_broken_not_intact` (the security review's original
-  whole-trail repro), `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`
-  (C6, unaffected).
+  whole-trail repro), `CipherProbeAnchorKeyingJdbcTest` (F1–F4 replacements: mismatched instances refused at
+  startup and on append, anchor DELETE/TRUNCATE refused, `NO_ANCHOR`, an orphaned keyed trail refusing to append,
+  mixed-key rows verifying `INTACT` with both keys in the keyring, an unknown key id reporting `BROKEN`, a
+  stale-key second instance during a rotation), `CipherProbeReverifyJdbcTest
+  .a_trail_without_an_anchor_row_refuses_to_append_and_reports_no_anchor`,
+  `AgentGuardAutoConfigurationTest.missing_hmac_secret_fails_startup_naming_the_property_and_the_remedy`,
+  `AgentGuardAutoConfigurationTest.unkeyed_opt_out_starts_but_warns_every_time`.
 - **Two `args_hash` domains (the security review V3):** `ArgumentCanonicalizer.hash` (used for every decision and normal audit
   row) hashes `"agcanon1:" + canonical(argumentsJson)`; `AuditRecorder.recordOversized` (the size-cap denial)
   hashes `"agraw1:" + argumentsJson`. Before this, both landed in the same SHA-256 space with no domain separation,
@@ -180,22 +193,30 @@ does about it, and what still needs a reviewer's eye.
   (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
 ## Review status
-the security review's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, six passes): H1–H3, M1–M7, R1, R2, R5
+the security review's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, seven passes): H1–H3, M1–M7, R1, R2, R5
 fixed and re-verified; under the no-allowance rule every LOW and INFO of the first four passes (L1–L10, I1–I9, R3,
 R4, R6–R11) and every finding of the clean-verdict pass (C4 MEDIUM; C1, C2, C5, C7, C9, C11 LOW; C3, C6, C8, C10,
 C12 INFO) is fixed on the branch with its probe flipped. The re-verification round (V1 MEDIUM, V2 MEDIUM, V3 LOW,
-V4 LOW, V5 LOW) is fixed on the branch, with its probes flipped, including V2 in full: the maintainers's ruling on
-QUESTIONS.md #20 added the external `agentguard_audit_anchor.keyed_from_seq` anchor field, so both the partial
-(keyed-prefix, downgraded-tail) and the security review's original whole-trail-downgrade repro are now `BROKEN`, not `INTACT`
-— see QUESTIONS.md #20 and the audit-tampering section above. Documented residuals that remain by design: a role
-that *owns* the tables can drop the append-only and anchor triggers, rewriting the trail, the anchor's head/count
-*and* `keyed_from_seq` consistently (split roles, see docs "Database roles"); a `ToolCallingManager` built by hand
-and handed to a `ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23
-Redis calls run on platform threads so the pool's growth lock is never touched by a virtual thread; a burst past
-`agentguard.redis.pool.max-total` concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing
-unboundedly, by design (the security review C7) — size the pool at or above real peak concurrency, and size
-`platform-thread-count`/`platform-thread-queue-size` (the security review V5) at or above real peak concurrent tool calls
-independently of `max-total` if the connection pool itself is deliberately smaller.
+V4 LOW, V5 LOW) is fixed on the branch, with its probes flipped. V2's first fix (the `keyed_from_seq` anchor field,
+QUESTIONS.md #20) was itself re-verified and found to have its own plumbing wrong (F1/F2 MEDIUM: written from the
+wrong sequence, forgotten by the schema seed) and its silent-fallback gap unclosed (F3 MEDIUM: no DELETE/TRUNCATE
+guard on the anchor, no distinct status for an unanchored verification) and a rolling-restart hole (F4 LOW). Rather
+than patch the sequence-position mechanism further, the design changed: **keyed-from-birth** (QUESTIONS.md #20,
+same question, later ruling) — a trail is keyed from row 1 or unkeyed forever, recorded once as a plain
+`agentguard_audit_anchor.keyed` boolean, `agentguard.audit.hmac-secret` required by default. This closes V2 in
+full (including the security review's original whole-trail repro) more simply than the sequence-position design did, and closes
+F3(a) (the anchor DELETE/TRUNCATE guard, independent of the migration) directly; F1/F2/F4 against the old mechanism
+no longer apply (there is no sequence arithmetic and no accommodating-a-later-key-enable left to get wrong) — see
+QUESTIONS.md #20, the audit-tampering section above, and `docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Design
+change: keyed-from-birth". Documented residuals that remain by design: a role that *owns* the tables can drop the
+append-only and anchor triggers, rewriting the trail, the anchor's head/count *and* `keyed` consistently (split
+roles, see docs "Database roles"); a `ToolCallingManager` built by hand and handed to a `ChatModel` builder is
+outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23 Redis calls run on platform threads so
+the pool's growth lock is never touched by a virtual thread; a burst past `agentguard.redis.pool.max-total`
+concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing unboundedly, by design (the security review C7) — size
+the pool at or above real peak concurrency, and size `platform-thread-count`/`platform-thread-queue-size` (the security review
+V5) at or above real peak concurrent tool calls independently of `max-total` if the connection pool itself is
+deliberately smaller.
 
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.

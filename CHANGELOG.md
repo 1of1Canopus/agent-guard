@@ -157,6 +157,58 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   scenario) with `platform-thread-count`/`platform-thread-queue-size=200`, so the burst still passes without
   inflating the connection pool.
 
+### Security (the security review final verification + the maintainers's design change: keyed-from-birth; QUESTIONS.md #20)
+the security review's final-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, `25da6af`) found the
+`keyed_from_seq` mechanism above had its own plumbing wrong (F1/F2 MEDIUM), its silent-fallback gap unclosed
+(F3 MEDIUM) and a rolling-restart hole (F4 LOW). Rather than iterate that mechanism again, the maintainers and the maintainer
+ruled the design itself, then amended it once more after the security review's design review.
+- **Breaking (a trail is keyed from row 1 or unkeyed forever):** no mixing, no later switch, no accommodating
+  "enabling the key on a running installation" (the C6 goal, invalid by design now). `agentguard.audit.hmac-secret`
+  is **required by default**; missing, startup fails naming the property and the remedy (`openssl rand -base64 32`).
+  `agentguard.audit.unkeyed=true` is the explicit, WARN-at-every-startup local-dev opt-out.
+- `agentguard_audit_anchor.keyed_from_seq` (nullable bigint) is replaced by `agentguard_audit_anchor.keyed`
+  (`boolean NOT NULL`): set once, at the first append, immutable afterwards via the anchor's existing monotonic
+  trigger. Every append after that, from any instance, must agree with it or is refused with a structured
+  `AgentGuardException` (`AG-AUDIT-001`), naming the property and the remedy — this is what actually closes F4
+  (fail-closed, not detectable-after-the-fact).
+- `AuditChainVerifier.verify` checks every row's `chain_version` against what `keyed` says the whole trail must
+  be — a table-owning attacker's row-level rewrite (even a whole-trail downgrade, the security review's original V2 repro)
+  cannot flip `keyed`, which lives outside the rows they rewrite. F1/F2 do not carry forward: both were about
+  deriving a sequence position correctly, and the new design has no sequence position left to derive.
+- `agentguard_audit_anchor` gets `BEFORE DELETE`/`BEFORE TRUNCATE` triggers (F3(a), independent of the migration):
+  nothing previously refused deleting the anchor row, which silently reopened the exact whole-trail-downgrade
+  attack the anchor exists to close.
+- **Amendment, after the security review's design review:**
+  - **Key rotation from v1:** `agentguard.audit.hmac-key-id` (default `k1`) is baked into every row's hashed
+    material (`agentguard_audit.key_id`, `'none'` for unkeyed rows). `AuditChainVerifier` holds a keyring
+    (current key plus every `agentguard.audit.hmac-keys.<id>`); a row's `key_id` absent from the keyring is
+    `BROKEN`, not skipped. Rotation is a config change, not a trail migration; `keyed` still governs *whether* a
+    key is required (immutable), `key_id` only *which* already-trusted key signed a row.
+  - **Anchor-missing refuses, never guesses:** a trail with rows but no anchor row is refused (`AG-AUDIT-002`),
+    on both the next append and at the next startup. The "re-anchor from the trail head" fallback and its
+    one-time-warn guard are removed; the schema seed's `INSERT … ON CONFLICT DO NOTHING` no longer derives values
+    from an existing, non-empty trail — it only ever matches a genuinely empty one.
+  - **`NO_ANCHOR` unconditionally:** reported whenever the reader is not an `AuditAnchor`, or has no anchor row,
+    and the trail is not empty — keyed or unkeyed, not only when a key was given (widening the security review F3(a)).
+  - **`Report` carries the trail's mode** (`anchored`, `keyed`, `keyIds`). `Status.INTACT_UNKEYED` replaces the
+    deleted `Status.UNKEYED` (a different, now-impossible situation): an unkeyed trail's clean result never
+    renders with the same word as a keyed trail's.
+  - "Start a new trail" is documented as an owner-run procedure (archive `agentguard_audit`/
+    `agentguard_audit_anchor`, re-run the schema step); the secret must not live in the same store as the
+    datasource credentials.
+- **Interface changes (breaking):** `AuditEvent` gains a `keyId` component (after `version`, before `prevHash`);
+  `AuditChain.canonical`/`hashOfEvent` include it in the hashed material, so this is a chain-format addition —
+  every row written by this version carries a `key_id`, and `AuditChain.keyed(byte[])` now defaults key id `k1`
+  (use `keyed(byte[], String)` to choose one). `AuditAnchor.Anchor.keyedFromSeq` (`Long`) is replaced by
+  `Anchor.keyed` (`boolean`). `AuditChainVerifier.Status.UNKEYED` is removed; `Status.INTACT_UNKEYED` is added.
+  `AuditChainVerifier` gains a `Map<String, byte[]>`-keyring constructor/factory alongside the existing
+  single-`AuditChain` ones (unchanged). `ErrorCodes.AUDIT_KEY_MISMATCH` (`AG-AUDIT-001`) and
+  `ErrorCodes.AUDIT_ANCHOR_MISSING` (`AG-AUDIT-002`) are new.
+- **Test:** `CipherProbeAnchorKeyingJdbcTest` replaces the security review's F1–F4 probes in full (see
+  `docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Design change: keyed-from-birth", for the old-probe →
+  new-probe map); `AuditChainVerifierTest`, `CipherProbeReverifyJdbcTest`, `CipherProbeFinalJdbcTest`,
+  `AgentGuardAutoConfigurationTest` updated or extended alongside it.
+
 ### Added
 - `agent-guard-core` (Apache-2.0, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable

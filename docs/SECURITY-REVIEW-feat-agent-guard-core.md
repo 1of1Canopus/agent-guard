@@ -1017,3 +1017,180 @@ Old-probe → new-probe map, additions to the table above (`CipherProbeAnchorKey
 | *(new)* | `a_stale_key_second_instance_appends_but_only_verifies_with_its_own_id_in_the_keyring` | Point 1: a rotation window (two keyed instances, different ids) appends fine on both; verifying with only the new key reports `BROKEN` at the old instance's row, naming the sequence. |
 | `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed` (`Status.UNKEYED`, already replaced above) | `AuditChainVerifierTest.an_unkeyed_trail_never_renders_plain_intact` (new) | Point 4: the deleted `UNKEYED` status is not reused; a genuinely unkeyed, by-design trail gets its own honest status instead. |
 | all `Status.INTACT` assertions against an unkeyed sink across `CipherProbeJdbcTest`, `CipherProbeReverifyJdbcTest`, `CipherProbeFinalJdbcTest`, `AuditChainVerifierTest` | `Status.INTACT_UNKEYED` | Point 4, mechanical rename following the `Report` widening; `Status.INTACT` on a keyed sink is unchanged. |
+
+## Verification of keyed-from-birth (722e9a5)
+
+Cipher, 2026-09-08. Branch `feat/agent-guard-core`, HEAD `722e9a5`, diffed against `25da6af`.
+Full `./mvnw clean verify`, Docker up, no skipped module.
+
+**Verdict: MERGE WITH FIXES.** No HIGH. Two MEDIUM (both in the schema step, both reproduced),
+two LOW and two INFO. The keyed-from-birth design itself holds: every point of the ruling and of the
+amendment is implemented as described, and every attack against the runtime path failed.
+
+### Numbers
+
+| | Isis reported (722e9a5) | Cipher measured (722e9a5) | With Cipher's probes |
+|---|---|---|---|
+| Tests run | 190 | 190 | 206 |
+| Failed | 0 | 0 | 0 |
+| Skipped | 1 | 1 (`CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on`, `assumeTrue` on the Spring AI tool autoconfiguration) | 1 |
+| Line coverage (`agent-guard-core/target/site/jacoco/jacoco.csv`) | 90.48% | 90.48% (1550/1713) | 90.60% (1552/1713) |
+| Branch coverage | 78.14% | 78.14% (461/590) | 78.14% (461/590) |
+| JaCoCo 80% line gate | — | met (`All coverage checks have been met`) | met |
+
+All 20 `CipherProbe*` classes green, none narrowed. New this pass:
+`CipherProbeKeyedBirthJdbcTest` (7), `CipherProbeKeyringTest` (6), `CipherProbeMemoryParityTest` (3).
+
+### Probe map walk
+
+Every removed probe has its replacement and every replacement tests the equivalent property under
+the new rule, not a weaker one:
+
+- F1's removal is correct: `git grep keyed_from_seq` returns only the schema's `DROP COLUMN IF
+  EXISTS` line. There is no sequence position left to derive, so there is nothing for the old probe
+  to assert.
+- F2 → `an_orphaned_keyed_trail_without_an_anchor_refuses_to_append` is **stronger**: the old probe
+  asserted the seed derived a value correctly; the new one asserts it derives nothing and refuses.
+- F3(a) → `anchor_delete_and_truncate_are_refused`: same property, now enforced. Independently
+  re-confirmed — my own probes had to `DISABLE TRIGGER` to remove an anchor row at all.
+- F3(b) → `a_key_given_with_no_anchor_reader_reports_no_anchor_never_intact` plus
+  `AuditChainVerifierTest.a_key_given_with_no_anchor_reports_no_anchor_never_intact`: wider than the
+  deleted `UNKEYED` probe, because `NO_ANCHOR` is now returned before the key is even consulted.
+- F4 → `an_unkeyed_instance_is_refused_once_the_trail_is_keyed`, plus its mirror
+  `a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed` and
+  `the_mismatch_is_also_refused_on_append_not_only_at_construction`: three refusals where the old
+  probe asserted one corruption. Stronger.
+- C6's replacement is legitimate. C6's premise (a key enabled later on an existing unkeyed trail)
+  is invalid under keyed-from-birth; asserting the refusal and its remedy text is the right
+  successor, not a narrowing.
+- `CipherProbeReverifyJdbcTest.trail_without_anchor_row_continues_from_the_real_head` (R2) →
+  `a_trail_without_an_anchor_row_refuses_to_append_and_reports_no_anchor`: the old behaviour was the
+  hole; refusing is strictly stronger.
+- The `INTACT` → `INTACT_UNKEYED` sweep across `CipherProbeJdbcTest`,
+  `CipherProbeReverifyJdbcTest`, `CipherProbeFinalJdbcTest` and `AuditChainVerifierTest` is a
+  mechanical rename; no keyed-sink `INTACT` assertion was weakened.
+
+### Design points verified in code
+
+| Point | Verified |
+|---|---|
+| Secret required by default, exact startup message | `AgentGuardAutoConfiguration.auditChain` throws `AgentGuardConfigurationException` naming `agentguard.audit.hmac-secret`, `agentguard.audit.unkeyed` and `openssl rand -base64 32`. Yes |
+| `audit.unkeyed=true` WARNs every startup | WARN is unconditional on the branch, not guarded by a one-time flag; `unkeyed_opt_out_starts_but_warns_every_time` counts ≥2 occurrences across two context starts. Yes |
+| Anchor `keyed` set at first append under the advisory lock | `JdbcAuditSink.append` takes `pg_advisory_xact_lock(LOCK_KEY)` first, then INSERTs the anchor with `keyed`; `ON CONFLICT DO UPDATE` deliberately does not list `keyed`. Yes |
+| `keyed` immutable via trigger | `agentguard_audit_anchor_monotonic` raises on `NEW.keyed IS DISTINCT FROM OLD.keyed`. Yes |
+| Mismatch refused at construction AND every append (`AG-AUDIT-001`) | `refuseIfMismatched` is called from the constructor and from inside the append transaction, after the lock. Yes |
+| Missing anchor on non-empty trail refuses (`AG-AUDIT-002`) | Both call sites; the schema's `ON CONFLICT DO NOTHING` seed is gone entirely. Yes for the runtime |
+| No re-derivation path anywhere, including the schema seed | **No** — see G2: the schema still derives `keyed` from the trail head. |
+| `key_id` inside `canonical()` and the hashed material | `canonical(e, version, keyId)` appends `keyId` as the first length-prefixed field, before the timestamp; `hashOfEvent` signs that string. Yes |
+| Keyring verification; unknown id → BROKEN; `none` only on unkeyed trails | `chainForRow` returns `null` for an unknown id, for `none` on a keyed trail, and for a real id on an unkeyed trail; `null` → `BROKEN`. Yes |
+| `NO_ANCHOR` unconditional; `of` never renders a non-anchor reader INTACT | `verify()` returns `NO_ANCHOR` before reading the keyring at all; `of` falls back to `Optional::empty`, which is the `NO_ANCHOR` path. Yes |
+| `INTACT_UNKEYED` never rendered as `INTACT` | Distinct enum constant; `AuditChainVerifier` is not exposed by any endpoint, so there is no second rendering to check. Yes |
+| DELETE/TRUNCATE guards on the anchor | `agentguard_audit_anchor_no_delete` / `_no_truncate`. Yes |
+| Schema idempotent on an existing database | **No** — see G1 and G2. Idempotent on a *current* non-empty database (`confirms_the_schema_step_is_idempotent_on_a_current_non_empty_database`), but it aborts on one written before `key_id`/`keyed` existed. |
+
+### Attacks that failed (kept as regression cover)
+
+- **Two-instance stale key.** Two keyed sinks, ids `k1` and `k2`, both append to the same trail;
+  rows carry the id that wrote them; the full keyring verifies `INTACT`, a keyring missing `k1`
+  reports `BROKEN` at seq 1, never `INTACT`.
+  (`confirms_two_keyed_instances_with_different_ids_both_append_and_verify_together`.)
+- **Key id relabel by a table owner.** With the append-only trigger disabled, relabelling a row's
+  `key_id` to another id the verifier *does* hold still fails to recompute (the id is inside the
+  signed material): `BROKEN` at exactly that sequence. Relabelling to an unheld id is `BROKEN` too.
+  (`confirms_a_key_id_relabel_to_a_held_key_still_breaks_the_hash`,
+  `confirms_a_key_id_relabel_to_an_unheld_key_is_broken`.)
+- **`hmac-keys` parsing.** A short secret in the ring fails startup naming the id and not the value;
+  the reserved id `none` is refused both as `hmac-key-id` and as a ring entry; a blank
+  `hmac-key-id` is refused. (`confirms_a_short_retired_key_is_refused`,
+  `confirms_the_reserved_none_id_is_refused`, `confirms_a_blank_key_id_is_refused`.)
+- **Secret and key id present but the ring missing the appending id.** Not reachable:
+  `auditKeyring` always seeds the appending id from `hmac-secret` before adding the retired ones.
+- **Message leakage.** No `AG-AUDIT-001`/`AG-AUDIT-002` message, no startup failure and no captured
+  log line contains secret bytes; the length-validation message names the property, not the value.
+  (`confirms_no_refusal_message_carries_key_material`,
+  `confirms_no_startup_message_carries_the_secret`.)
+- **`InMemoryAuditSink` parity on the refusals.** It has no persisted state, so neither
+  `AG-AUDIT-001` nor `AG-AUDIT-002` has a reachable analogue; it does carry `key_id` per row and
+  reports `INTACT_UNKEYED` for an unkeyed trail. Parity accepted, with the H7 caveat below.
+  (`confirms_an_unkeyed_memory_trail_is_intact_unkeyed`,
+  `confirms_a_keyed_memory_trail_carries_the_key_id`.)
+
+### Findings
+
+**G1 — MEDIUM — the schema step cannot run against a database written before `key_id` existed.**
+`ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS key_id …` is followed by
+`UPDATE agentguard_audit SET key_id = CASE … WHERE key_id IS NULL`. On any database that already
+ran an earlier build of this branch, `agentguard_audit_append_only` (BEFORE UPDATE, FOR EACH ROW) is
+already present, so that UPDATE raises `agentguard_audit is append-only (attempted UPDATE)` and the
+whole schema transaction aborts — the module cannot start at all. Repro:
+`CipherProbeKeyedBirthJdbcTest.probe_an_existing_database_with_rows_cannot_run_the_new_schema_step`.
+Fix (Isis): delete the backfill and the `ADD COLUMN`/`SET NOT NULL` pair; declare
+`key_id varchar(64) NOT NULL` in the `CREATE TABLE agentguard_audit` body. There is no backward
+compatibility to keep on an unreleased branch, and guessing `'k1'` for historical keyed rows is the
+same "invent a value for rows we did not write" the amendment removed from the anchor seed. The
+existing "start a new trail" procedure in `docs/index.md` is the documented answer for a database
+written by an earlier build.
+
+**G2 — MEDIUM — the anchor's `keyed` backfill is both refused by its own trigger and a surviving
+re-derivation path.** `UPDATE agentguard_audit_anchor a SET keyed = COALESCE((SELECT
+t.chain_version = 'ag2h' … ORDER BY t.seq DESC LIMIT 1), false) WHERE a.id = 1 AND a.keyed IS NULL`
+does not advance `row_count`, so `agentguard_audit_anchor_monotonic` raises
+`agentguard_audit_anchor only advances by one row` and the schema step aborts. Repro:
+`CipherProbeKeyedBirthJdbcTest.probe_an_existing_anchor_row_cannot_be_backfilled_with_keyed`.
+Separately from the abort, this statement is the re-derivation of `keyed` from row data —
+specifically from `chain_version`, the column the design explicitly calls untrustworthy — that
+amendment point 2 and `ErrorCodes.AUDIT_ANCHOR_MISSING`'s javadoc both state no longer exists
+anywhere. Fix (Isis): delete the `UPDATE`, delete `ALTER TABLE … ADD COLUMN IF NOT EXISTS keyed` /
+`ALTER COLUMN keyed SET NOT NULL`, and declare `keyed boolean NOT NULL` in the
+`CREATE TABLE agentguard_audit_anchor` body. Keep the `DROP COLUMN IF EXISTS keyed_from_seq` line
+only if the intent is to let an owner clean up by hand; it is inert either way.
+
+**H1 — LOW — a retired key entry can silently shadow the appending key.**
+`AgentGuardAutoConfiguration.auditKeyring` puts the appending key first and then lets every
+`agentguard.audit.hmac-keys.<id>` overwrite it. `hmac-key-id=k1` with `hmac-keys.k1=<a different
+secret>` leaves the verifier holding the wrong secret for `k1`, so every row this instance writes
+verifies `BROKEN` — an integrity alarm caused by configuration, exactly the false positive that
+trains an operator to ignore the real one. It is a plausible slip: `docs/index.md`'s rotation recipe
+tells the operator to add `hmac-keys.k1=<old secret>` and change `hmac-key-id`; forgetting the
+second half produces this. The properties javadoc's "redundant, not an error" is only true when the
+secrets are identical, which nothing checks. Repro:
+`CipherProbeKeyringTest.probe_a_retired_key_entry_can_shadow_the_appending_key`. Fix (Isis): in
+`auditKeyring`, throw `AgentGuardConfigurationException` when an `hmac-keys` entry uses the
+appending `hmac-key-id` with different bytes, naming the id and telling the operator to give the new
+key a new id; an entry with identical bytes may stay a no-op.
+
+**H2 — LOW — `agentguard.audit.unkeyed=true` together with `hmac-secret` is silently resolved.**
+`auditChain` tests the secret first, so the secret wins and the `unkeyed` flag is never read: the
+context starts keyed with no WARN and no failure. The direction is the safe one, but an operator who
+believes they are running unkeyed gets a keyed trail — or, against an existing unkeyed trail, an
+`AG-AUDIT-001` refusal whose message tells them to check a property they did set. Repro:
+`CipherProbeKeyringTest.probe_unkeyed_true_with_a_secret_is_silently_ignored`. Fix (Isis): fail
+startup on the contradiction — `agentguard.audit.unkeyed=true` with a non-blank
+`agentguard.audit.hmac-secret` is a configuration error; say which two properties conflict and that
+one of them must go.
+
+**H3 — INFO — `InMemoryAuditSink` implements `AuditAnchor` by deriving it from the list it
+anchors.** `keyed` comes from the live chain and `headHash`/`rowCount` from the last element, so a
+memory trail that has lost its tail reports `INTACT` with `anchored()` true, where the JDBC sink
+would report `ANCHOR_MISMATCH`. Development-only store, so this is not a runtime risk; it is a
+claim the class makes that it does not keep. Repro:
+`CipherProbeMemoryParityTest.probe_a_memory_trail_has_no_external_anchor`. Fix (Isis): one sentence
+in the class javadoc and in `SECURITY-NOTES.md` — the memory store has no external anchor and
+therefore no tail-deletion detection; it is not a substitute for the JDBC store in any deployment
+where the audit trail matters.
+
+**H4 — INFO — `SECURITY-NOTES.md` line 86 lists the verifier's statuses as `EMPTY` / `INTACT` /
+`BROKEN` / `ANCHOR_MISMATCH` / `NO_ANCHOR` and omits `INTACT_UNKEYED`,** which the same document
+introduces 45 lines later. Fix (Isis): add it to the list.
+
+### Not verified
+
+- PostgreSQL 16 only (the pinned Testcontainers digest). No other server version, and no test
+  against a managed Postgres where the runtime role's grants differ from the documented ones.
+- The rolling-restart scenarios are same-JVM, different `JdbcAuditSink` instances against one
+  database. That exercises the refusal logic exactly, but not the surrounding deployment.
+- G1/G2 were reproduced by removing the new column from a current database rather than by checking
+  out `25da6af`, initialising, and upgrading. The mechanism (a pre-existing trigger versus the
+  backfill statement) is identical and the raised messages are the schema's own.
+- The sample app runs with `agentguard.audit.unkeyed=true`; its end-to-end test therefore covers the
+  unkeyed path only.

@@ -43,6 +43,16 @@ public final class AgentGuardStartupCheck implements SmartInitializingSingleton 
       log.warn(
           "agentguard.redaction.sensitive-keys is empty: nothing is masked in previews, logs and webhooks");
     }
+    if (props.getEndpoints().isEnabled() && !props.getEndpoints().isTenantScoped()) {
+      log.warn(
+          "agentguard.endpoints.tenant-scoped=false: approvers see and decide every tenant's"
+              + " decisions and audit rows");
+    }
+    if (props.getEndpoints().isEnabled() && !props.getEndpoints().isRequireTenant()) {
+      log.warn(
+          "agentguard.endpoints.require-tenant=false: an approver with no tenant sees and decides"
+              + " every tenant's decisions and audit rows instead of being refused");
+    }
     var gaps = coverage.unguardedPolicies();
     if (gaps.isEmpty()) {
       return;

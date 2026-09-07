@@ -176,17 +176,15 @@ class CipherProbeCleanVerdictJdbcTest {
   }
 
   /**
-   * J1. The predates guard reads {@code information_schema} with no schema filter, while every
-   * other statement in the step is search_path-relative: a pre-redesign copy of the table in
-   * ANOTHER schema the role can see blocks a fresh install in the current one, permanently, with a
-   * message telling the operator to archive a table they already archived. Asserted here as it
-   * behaves today (the reproduction); the fix inverts it to {@code doesNotThrowAnyException}.
+   * J1 (fixed). The predates guard now resolves the table via {@code to_regclass}, search_path-
+   * relative like every other statement in the step, and checks the column against that same oid
+   * via {@code pg_attribute}: a pre-redesign copy of the table in ANOTHER schema the role can see
+   * no longer blocks a fresh install in the current one.
    */
   @Test
   void probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install() throws Exception {
     sql("CREATE SCHEMA oldcopy");
     sql("CREATE TABLE oldcopy.agentguard_audit (seq bigserial PRIMARY KEY, hash char(64))");
-    assertThatThrownBy(() -> JdbcSupport.initializeSchema(ds))
-        .hasMessageContaining("audit schema predates keyed-from-birth");
+    assertThatCode(() -> JdbcSupport.initializeSchema(ds)).doesNotThrowAnyException();
   }
 }

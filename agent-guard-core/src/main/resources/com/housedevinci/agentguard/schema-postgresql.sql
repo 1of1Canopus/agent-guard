@@ -10,15 +10,22 @@ SELECT pg_advisory_xact_lock(18374244850549833);
 -- pre-redesign anchor (no keyed column) is refused here, with a clear message, rather than left to
 -- fail later on the append-only trigger, the anchor's monotonic trigger, or a missing-column error
 -- from an INSERT.
+-- J1 (the security review): resolved search_path-relative via to_regclass, the same way every other statement in
+-- this step resolves the table, instead of scanning information_schema across every schema the role
+-- can see. A pre-redesign copy sitting in another visible schema (e.g. after an operator followed
+-- docs/index.md's "rename or drop" and did `ALTER TABLE ... SET SCHEMA archive`) no longer blocks a
+-- fresh install in the current schema.
 DO $$ BEGIN
-  IF (EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'agentguard_audit')
+  IF (to_regclass('agentguard_audit') IS NOT NULL
       AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'agentguard_audit' AND column_name = 'key_id'))
-     OR (EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'agentguard_audit_anchor')
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('agentguard_audit')
+          AND attname = 'key_id' AND attnum > 0 AND NOT attisdropped))
+     OR (to_regclass('agentguard_audit_anchor') IS NOT NULL
       AND NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'agentguard_audit_anchor' AND column_name = 'keyed')) THEN
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('agentguard_audit_anchor')
+          AND attname = 'keyed' AND attnum > 0 AND NOT attisdropped)) THEN
     RAISE EXCEPTION
       'audit schema predates keyed-from-birth; archive the table and start a new trail (see SECURITY-NOTES)';
   END IF;

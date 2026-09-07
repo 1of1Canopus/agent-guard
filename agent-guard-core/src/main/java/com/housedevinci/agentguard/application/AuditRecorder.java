@@ -1,5 +1,6 @@
 package com.housedevinci.agentguard.application;
 
+import com.housedevinci.agentguard.domain.ArgumentCanonicalizer;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.AuditEvent;
 import com.housedevinci.agentguard.domain.AuditSink;
@@ -60,13 +61,40 @@ public final class AuditRecorder {
             .principalId(principal.id())
             .tenantId(principal.tenantId().orElse(null))
             .tool(tool)
-            .argsHash(Hashes.sha256Hex(argumentsJson))
+            .argsHash(ArgumentCanonicalizer.hash(argumentsJson))
             .resultHash(result == null ? "" : Hashes.sha256Hex(result))
             .latencyMillis(latencyMillis)
             .decision(decision)
             .correlationId(correlationId)
             .decisionId(decisionId)
             .actorId(actorId)
+            .build();
+    return sink.append(event);
+  }
+
+  /**
+   * Records a denial for arguments the guard refused to canonicalise (over {@code
+   * maxArgumentBytes}): hashes the raw text directly instead of routing it through {@link
+   * ArgumentCanonicalizer}, which parses the whole payload into a tree. A call rejected at this
+   * boundary never reaches a decision row, so there is no canonical hash for this event to join
+   * against (C4: the size cap must bound every parse of untrusted text, including the audit trail
+   * of its own rejection).
+   */
+  public AuditEvent recordOversized(
+      Principal principal, String tool, String argumentsJson, String correlationId) {
+    var event =
+        AuditEvent.builder()
+            .timestamp(clock.instant())
+            .principalId(principal.id())
+            .tenantId(principal.tenantId().orElse(null))
+            .tool(tool)
+            .argsHash(Hashes.sha256Hex(argumentsJson))
+            .resultHash("")
+            .latencyMillis(0)
+            .decision(AuditDecision.DENIED)
+            .correlationId(correlationId)
+            .decisionId(null)
+            .actorId(null)
             .build();
     return sink.append(event);
   }

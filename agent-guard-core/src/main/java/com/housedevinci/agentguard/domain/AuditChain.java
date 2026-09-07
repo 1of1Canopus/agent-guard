@@ -94,9 +94,9 @@ public final class AuditChain {
     }
   }
 
-  /** Returns the event with {@code prevHash} and {@code hash} filled in. */
+  /** Returns the event with {@code version}, {@code prevHash} and {@code hash} filled in. */
   public AuditEvent linkEvent(AuditEvent e, String prevHash) {
-    return e.withChain(prevHash, hashOfEvent(e, prevHash));
+    return e.withChain(prevHash, version(), hashOfEvent(e, prevHash));
   }
 
   /** True if the event's stored hash matches a recomputation from {@code expectedPrev}. */

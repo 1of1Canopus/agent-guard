@@ -73,7 +73,7 @@ public final class AuditChainVerifier {
         break;
       }
       for (AuditEvent e : page) {
-        if (!chain.verifyEvent(e, prev)) {
+        if (!chainFor(e).verifyEvent(e, prev)) {
           return new Report(Status.BROKEN, count, e.sequence(), prev);
         }
         prev = e.hash();
@@ -89,5 +89,18 @@ public final class AuditChainVerifier {
       return new Report(Status.EMPTY, 0, -1, prev);
     }
     return new Report(Status.INTACT, count, -1, prev);
+  }
+
+  /**
+   * C6: a row is verified with the chain that actually produced its hash, not with whatever chain
+   * is configured today. Rows written before {@code agentguard.audit.hmac-secret} was ever set
+   * carry {@link AuditChain#CANONICAL_VERSION} (or no recorded version at all, on installations
+   * that predate this column — the schema step backfills it to {@code ag1}) and are always verified
+   * unkeyed; rows carrying {@link AuditChain#KEYED_VERSION} are verified with the chain this
+   * verifier was constructed with (which must be keyed with the same secret they were written with,
+   * or they will not recompute — that is a real break, not a version mismatch).
+   */
+  private AuditChain chainFor(AuditEvent e) {
+    return AuditChain.KEYED_VERSION.equals(e.version()) ? chain : AuditChain.unkeyed();
   }
 }

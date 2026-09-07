@@ -1,5 +1,7 @@
 package com.housedevinci.agentguard.architecture;
 
+import static com.tngtech.archunit.base.DescribedPredicate.not;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAnyPackage;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -19,21 +21,24 @@ class HexagonalArchitectureTest {
           .that()
           .resideInAPackage("..domain..")
           .should()
-          .dependOnClassesThat()
-          .resideInAnyPackage(
-              "org.springframework..",
-              "jakarta..",
-              "javax.sql..",
-              "javax.inject..",
-              "javax.annotation..",
-              "java.sql..",
-              "redis.clients..",
-              "org.slf4j..",
-              "com.fasterxml..",
-              "tools.jackson..",
-              "io.modelcontextprotocol..",
-              "..application..",
-              "..adapter..");
+          .dependOnClassesThat(
+              // the blanket "javax.." ban is restored (C11); the keyed audit chain's use of
+              // javax.crypto.Mac / SecretKeySpec (java.base since JDK 9) is the only carve-out —
+              // javax.naming, javax.management, javax.net and javax.xml (XXE) stay forbidden
+              resideInAnyPackage("javax..")
+                  .and(not(resideInAnyPackage("javax.crypto..")))
+                  .or(
+                      resideInAnyPackage(
+                          "org.springframework..",
+                          "jakarta..",
+                          "java.sql..",
+                          "redis.clients..",
+                          "org.slf4j..",
+                          "com.fasterxml..",
+                          "tools.jackson..",
+                          "io.modelcontextprotocol..",
+                          "..application..",
+                          "..adapter..")));
 
   @ArchTest
   static final ArchRule application_depends_only_on_domain_and_jdk =

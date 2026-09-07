@@ -63,7 +63,8 @@ class AuditChainVerifierTest {
         new com.housedevinci.agentguard.domain.AuditAnchor() {
           @Override
           public java.util.Optional<Anchor> anchor() {
-            return java.util.Optional.of(new Anchor(last.hash(), 3)); // anchor says three rows
+            return java.util.Optional.of(
+                new Anchor(last.hash(), 3, null)); // anchor says three rows
           }
         };
     var report = new AuditChainVerifier(sink, anchorOnly).verify();
@@ -94,5 +95,27 @@ class AuditChainVerifierTest {
     org.assertj.core.api.Assertions.assertThatThrownBy(
             () -> com.housedevinci.agentguard.domain.AuditChain.keyed("short".getBytes()))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  /**
+   * V2 (QUESTIONS.md #20): a key configured on the verifier but never used by the sink (no row was
+   * ever appended under a keyed chain, so the anchor's {@code keyed_from_seq} stays {@code null})
+   * must not report INTACT — that would look identical to a genuinely keyed trail to an operator
+   * who has just set {@code agentguard.audit.hmac-secret} and expects it to already be protecting
+   * this trail.
+   */
+  @Test
+  void a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed() {
+    var sink = new InMemoryAuditSink(); // unkeyed chain, never keyed
+    sink.append(event("a"));
+    sink.append(event("b"));
+
+    var key = "0123456789abcdef0123456789abcdef".getBytes();
+    var report =
+        AuditChainVerifier.of(sink, com.housedevinci.agentguard.domain.AuditChain.keyed(key))
+            .verify();
+
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.UNKEYED);
+    assertThat(report.intact()).isFalse();
   }
 }

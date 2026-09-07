@@ -126,7 +126,7 @@ class CipherProbeReverifyJdbcTest {
     assertThat(sink.anchor())
         .contains(
             new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(
-                appended.hash(), after.verified()));
+                appended.hash(), after.verified(), null));
     assertThat(new AuditChainVerifier(sink).verify().status())
         .isEqualTo(AuditChainVerifier.Status.INTACT);
   }

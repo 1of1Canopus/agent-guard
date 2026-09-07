@@ -86,23 +86,21 @@ class CipherProbeReverifyTest {
    * can DISABLE TRIGGER"), and per-row version trust hands that residual back — the whole trail can
    * be rewritten and still verify INTACT.
    *
-   * <p>Fix: the version may only move forward. Track the highest version seen while walking; once a
-   * {@code KEYED_VERSION} row has verified, a later {@code CANONICAL_VERSION} row is BROKEN, not
-   * unkeyed-verified. The migration case C6 was about (an unkeyed prefix, then keyed rows) still
-   * verifies, and rewriting the prefix still breaks the first keyed row's {@code prevHash}, which
-   * is under the HMAC. Test: {@code
-   * CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_ rewritten_as_unkeyed}.
-   *
-   * <p><b>Scope note (see QUESTIONS.md V2):</b> the version-monotonicity fix detects a
-   * <em>partial</em> downgrade — some rows genuinely keyed, a later row (or the whole tail)
-   * downgraded to {@code ag1} — because a {@code KEYED_VERSION} row was observed first. It cannot
-   * detect a downgrade of <em>every</em> row back to GENESIS: that trail is byte-for-byte what
-   * {@code CipherProbeCleanGuardTest
-   * .enabling_the_audit_hmac_secret_does_not_break_the_existing_trail} requires to stay INTACT (a
-   * deployment that has never used HMAC, verified after a key is configured). No purely
-   * row-embedded version scheme can tell those two apart; it is the same table-owner residual
-   * already documented as the security review R4. This probe therefore rewrites the trail's <em>tail</em>, not
-   * its head, so it exercises the case the fix actually closes.
+   * <p><b>Ruling on QUESTIONS.md #20 (the maintainers):</b> a row-embedded version scheme can never tell a
+   * whole-trail downgrade to GENESIS/{@code ag1} apart from a trail that has genuinely never used
+   * HMAC — that is what {@code
+   * CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail}
+   * (C6) requires to stay INTACT. The fix uses the external anchor instead: {@code
+   * agentguard_audit_anchor.keyed_from_seq}, set once — in the same transaction as the first row
+   * appended under a keyed chain — and never movable afterwards (the anchor's monotonic trigger,
+   * the security review R4). {@link AuditChainVerifier#verify()} requires every row before {@code
+   * keyed_from_seq} to be unkeyed and every row from it onward to be keyed; anything else,
+   * including a keyed row when {@code keyed_from_seq} is still {@code null}, is BROKEN. This closes
+   * both the partial downgrade below ({@code
+   * probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed}) and the security review's original
+   * whole-trail repro ({@code probe_a_fully_downgraded_trail_verifies_as_broken_not_intact}): the
+   * attacker's row-level rewrite cannot touch the anchor's {@code keyed_from_seq}, which is not
+   * part of the trail it rewrites.
    */
   @Test
   void probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed() {
@@ -136,6 +134,49 @@ class CipherProbeReverifyTest {
     assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
     assertThat(report.verified()).isEqualTo(1L);
     assertThat(report.brokenAtSequence()).isEqualTo(2L);
+  }
+
+  /**
+   * V2, the security review's original repro restored (the maintainers's ruling, QUESTIONS.md #20): not a downgraded tail
+   * but the <em>whole</em> trail, including the genuinely keyed head, rewritten to {@code ag1}
+   * relinked from GENESIS. Row data alone cannot tell this apart from a trail that never used HMAC
+   * — the anchor's {@code keyed_from_seq} can: it is set once, at the first keyed append, and lives
+   * outside the rows an attacker with table-write access rewrites, so it still says row 1 must be
+   * keyed even after every row's own claim says otherwise.
+   */
+  @Test
+  void probe_a_fully_downgraded_trail_verifies_as_broken_not_intact() {
+    var key = new byte[32];
+    Arrays.fill(key, (byte) 7);
+    var sink = new InMemoryAuditSink(AuditChain.keyed(key));
+    var recorder = new AuditRecorder(sink, Clock.systemUTC());
+    var principal = new Principal("agent-1", Set.of("AGENT"), Set.of(), "acme");
+    recorder.record(
+        principal, "refund", "{\"amount\":1}", null, 0, AuditDecision.ALLOWED, "c1", null);
+    recorder.record(
+        principal, "refund", "{\"amount\":2}", null, 0, AuditDecision.ALLOWED, "c2", null);
+    assertThat(AuditChainVerifier.of(sink, AuditChain.keyed(key)).verify().status())
+        .isEqualTo(AuditChainVerifier.Status.INTACT);
+
+    // an attacker with write access to the table and no key rewrites every row, including the
+    // genuinely keyed head, relinking from GENESIS with plain SHA-256 and stamping chain_version
+    // 'ag1' throughout — the security review's exact repro ("write a keyed trail, rewrite every row relinked
+    // unkeyed, verify with the keyed chain")
+    var rows = sink.readAfter(0, 100);
+    String prev = AuditChain.GENESIS;
+    for (int i = 0; i < rows.size(); i++) {
+      var forged = AuditChain.unkeyed().linkEvent(rows.get(i).withTool("read-only"), prev);
+      sink.tamper(i, forged);
+      prev = forged.hash();
+    }
+
+    var report = AuditChainVerifier.of(sink, AuditChain.keyed(key)).verify();
+
+    // V2 fixed via the external anchor: keyed_from_seq (1, set at the first keyed append and
+    // untouched by the row-level tamper above) says row 1 must be keyed; it now claims 'ag1', so
+    // the whole-trail downgrade is BROKEN at its very first row, not silently re-verified INTACT.
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
+    assertThat(report.brokenAtSequence()).isEqualTo(1L);
   }
 
   /**

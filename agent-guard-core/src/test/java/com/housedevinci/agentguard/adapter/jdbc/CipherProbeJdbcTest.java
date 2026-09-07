@@ -116,7 +116,7 @@ class CipherProbeJdbcTest {
     var last = sink.append(event(t0.plusSeconds(1)));
     assertThat(new AuditChainVerifier(sink).verify().verified()).isEqualTo(3);
     assertThat(sink.anchor())
-        .contains(new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(last.hash(), 3));
+        .contains(new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(last.hash(), 3, null));
 
     sql("ALTER TABLE agentguard_audit DISABLE TRIGGER agentguard_audit_append_only");
     sql("DELETE FROM agentguard_audit WHERE seq = " + last.sequence());

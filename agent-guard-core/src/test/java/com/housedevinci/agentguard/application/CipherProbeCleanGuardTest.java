@@ -124,6 +124,13 @@ class CipherProbeCleanGuardTest {
    * <p>Fix: record the chain version per row ({@code ag1}/{@code ag2h}) in a column, verify each
    * row with the version it was written with, and document that enabling the key is a one-way step
    * that must be taken with the trail's verification report attached.
+   *
+   * <p><b>Updated for the V2 anchor fix (QUESTIONS.md #20):</b> "enabling the key" is modelled as
+   * it happens in production — a new sink instance (a restarted app with {@code
+   * agentguard.audit.hmac-secret} now set) continuing the same persisted trail, not merely a
+   * differently-configured verifier reading rows nothing ever appended to. The unkeyed prefix stays
+   * legitimately unkeyed because {@code keyed_from_seq} is still {@code null} when it is written;
+   * the first row appended under the new, keyed sink sets it, in the same transaction as that row.
    */
   @Test
   void enabling_the_audit_hmac_secret_does_not_break_the_existing_trail() {
@@ -138,13 +145,18 @@ class CipherProbeCleanGuardTest {
 
     var key = new byte[32];
     java.util.Arrays.fill(key, (byte) 7);
-    // the two rows above were written unkeyed (version ag1); verifying with a keyed chain must
-    // still recognise them as intact, since the verifier now applies the version each row was
-    // actually written with instead of the chain it happens to be configured with today
-    var afterKey = AuditChainVerifier.of(unkeyed, AuditChain.keyed(key)).verify();
+    // "enabling the key" = restarting the app with the secret set: a new sink instance over the
+    // same trail. keyed_from_seq is still null until this sink's first append sets it, so the two
+    // rows above stay a legitimately-unkeyed prefix, not a downgrade.
+    var keyed = new InMemoryAuditSink(unkeyed.readAfter(0, 100), AuditChain.keyed(key));
+    var keyedRecorder = new AuditRecorder(keyed, java.time.Clock.systemUTC());
+    keyedRecorder.record(
+        principal, "read", "{\"a\":3}", "ok", 1, AuditDecision.ALLOWED, "c3", null);
+
+    var afterKey = AuditChainVerifier.of(keyed, AuditChain.keyed(key)).verify();
 
     assertThat(afterKey.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
-    assertThat(afterKey.verified()).isEqualTo(2L);
+    assertThat(afterKey.verified()).isEqualTo(3L);
   }
 
   /** Delegating store that records the dedup lookup the canonical hash feeds. */

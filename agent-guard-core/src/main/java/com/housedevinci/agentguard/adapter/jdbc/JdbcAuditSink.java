@@ -58,14 +58,17 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
           }
           String prev = AuditChain.GENESIS;
           long count = 0;
+          Long keyedFromSeq = null;
           boolean anchored = false;
           try (PreparedStatement last =
                   c.prepareStatement(
-                      "SELECT head_hash, row_count FROM agentguard_audit_anchor WHERE id = 1");
+                      "SELECT head_hash, row_count, keyed_from_seq FROM agentguard_audit_anchor"
+                          + " WHERE id = 1");
               ResultSet rs = last.executeQuery()) {
             if (rs.next()) {
               prev = rs.getString(1);
               count = rs.getLong(2);
+              keyedFromSeq = (Long) rs.getObject(3);
               anchored = true;
             }
           }
@@ -88,17 +91,33 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
                 }
               }
             }
+            // re-derive when the keyed chain first appeared in the existing trail, so a lost or
+            // pre-anchor row does not silently forget it (V2)
+            try (PreparedStatement first =
+                c.prepareStatement(
+                    "SELECT min(seq) FROM agentguard_audit WHERE chain_version = ?")) {
+              first.setString(1, AuditChain.KEYED_VERSION);
+              try (ResultSet rs = first.executeQuery()) {
+                if (rs.next()) {
+                  keyedFromSeq = (Long) rs.getObject(1);
+                }
+              }
+            }
           }
           var linked = chain.linkEvent(event, prev);
+          if (keyedFromSeq == null && AuditChain.KEYED_VERSION.equals(linked.version())) {
+            keyedFromSeq = count + 1;
+          }
           try (PreparedStatement anchor =
               c.prepareStatement(
-                  "INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at) "
-                      + "VALUES (1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET "
+                  "INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at,"
+                      + " keyed_from_seq) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET "
                       + "head_hash = EXCLUDED.head_hash, row_count = EXCLUDED.row_count, "
-                      + "updated_at = EXCLUDED.updated_at")) {
+                      + "updated_at = EXCLUDED.updated_at, keyed_from_seq = EXCLUDED.keyed_from_seq")) {
             anchor.setString(1, linked.hash());
             anchor.setLong(2, count + 1);
             anchor.setObject(3, ts(linked.timestamp()));
+            anchor.setObject(4, keyedFromSeq);
             anchor.executeUpdate();
           }
           try (PreparedStatement ps =
@@ -137,10 +156,11 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
         c -> {
           try (PreparedStatement ps =
                   c.prepareStatement(
-                      "SELECT head_hash, row_count FROM agentguard_audit_anchor WHERE id = 1");
+                      "SELECT head_hash, row_count, keyed_from_seq FROM agentguard_audit_anchor"
+                          + " WHERE id = 1");
               ResultSet rs = ps.executeQuery()) {
             return rs.next()
-                ? Optional.of(new Anchor(rs.getString(1), rs.getLong(2)))
+                ? Optional.of(new Anchor(rs.getString(1), rs.getLong(2), (Long) rs.getObject(3)))
                 : Optional.empty();
           }
         });

@@ -96,6 +96,14 @@ public final class ToolGuard {
       ToolInvocation invocation, Optional<SideEffect> sideEffectHint, ToolExecutor executor) {
     var toolName = invocation.toolName();
     var principal = invocation.principal();
+    // V1: the raw byte cap must be the first thing on every path into the guard, including the
+    // unregistered-tool and policy-denial paths below, both reachable with no role and no policy at
+    // all. Otherwise the cheapest path to the guard is the one that parses unbounded model-supplied
+    // text into a JsonNode tree (via the audit call's ArgumentCanonicalizer.hash).
+    Optional<GuardResult> tooLarge = rejectIfTooLarge(invocation, toolName);
+    if (tooLarge.isPresent()) {
+      return tooLarge.get();
+    }
     Optional<PolicyRule> rule = policies.resolve(toolName, sideEffectHint);
     if (rule.isEmpty()) {
       audit.record(
@@ -258,14 +266,27 @@ public final class ToolGuard {
   /**
    * C4: bounds the raw text before anything parses it (canonicalisation, redaction). Must run
    * before {@link ArgumentCanonicalizer#hash} on every path that reaches it.
+   *
+   * <p>V3: canonicalisation is not size-preserving (an unpaired surrogate is one raw UTF-8 byte and
+   * six after the escape), so a payload under the raw cap can still produce a canonical form over
+   * it. The raw check above already bounds the cost of parsing here, so it is safe to canonicalise
+   * once and check its byte length too; either check failing is the same oversized denial.
    */
   private Optional<GuardResult> rejectIfTooLarge(ToolInvocation invocation, String toolName) {
-    if (invocation.argumentsJson().getBytes(StandardCharsets.UTF_8).length
-        <= options.maxArgumentBytes()) {
+    String argumentsJson = invocation.argumentsJson();
+    boolean rawTooLarge =
+        argumentsJson.getBytes(StandardCharsets.UTF_8).length > options.maxArgumentBytes();
+    boolean canonicalTooLarge =
+        !rawTooLarge
+            && ArgumentCanonicalizer.canonical(argumentsJson)
+                    .getBytes(StandardCharsets.UTF_8)
+                    .length
+                > options.maxArgumentBytes();
+    if (!rawTooLarge && !canonicalTooLarge) {
       return Optional.empty();
     }
     audit.recordOversized(
-        invocation.principal(), toolName, invocation.argumentsJson(), invocation.correlationId());
+        invocation.principal(), toolName, argumentsJson, invocation.correlationId());
     return Optional.of(
         new GuardResult.Denied(
             ErrorCodes.APPROVAL_ARGS_TOO_LARGE,

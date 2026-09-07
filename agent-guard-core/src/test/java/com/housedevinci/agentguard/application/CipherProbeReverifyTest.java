@@ -52,15 +52,17 @@ class CipherProbeReverifyTest {
             Optional.empty(),
             i -> "never");
 
+    // V1 fixed: the raw byte cap runs before the unregistered-tool lookup, so an oversized call
+    // to an unregistered tool is refused as oversized, not as unregistered.
     assertThat(unregistered).isInstanceOf(GuardResult.Denied.class);
     assertThat(((GuardResult.Denied) unregistered).code())
-        .isEqualTo(ErrorCodes.POLICY_UNREGISTERED); // not APPROVAL_ARGS_TOO_LARGE
+        .isEqualTo(ErrorCodes.APPROVAL_ARGS_TOO_LARGE);
     var row = f.auditSink.latest(null, 1).get(0);
-    // the whole payload was parsed and canonicalised despite being far over the cap
-    assertThat(row.argsHash()).isEqualTo(ArgumentCanonicalizer.hash(oversized));
-    assertThat(row.argsHash()).isNotEqualTo(Hashes.sha256Hex(oversized));
+    // the payload was never parsed: the audit row carries the raw hash, not the canonical one
+    assertThat(row.argsHash()).isNotEqualTo(ArgumentCanonicalizer.hash(oversized));
+    assertThat(row.argsHash()).isNotEqualTo(Hashes.sha256Hex(oversized)); // V3: domain-separated
 
-    // same on the policy-denial path: the caller has no matching role
+    // same on the policy-denial path: the caller has no matching role, but the cap still runs first
     f.registry.register(
         "write", new PolicyRule(Set.of("NOBODY"), Set.of(), Set.of(), SideEffect.WRITE));
     var denied =
@@ -70,10 +72,9 @@ class CipherProbeReverifyTest {
             i -> "never");
 
     assertThat(denied).isInstanceOf(GuardResult.Denied.class);
-    assertThat(((GuardResult.Denied) denied).code())
-        .isNotEqualTo(ErrorCodes.APPROVAL_ARGS_TOO_LARGE);
+    assertThat(((GuardResult.Denied) denied).code()).isEqualTo(ErrorCodes.APPROVAL_ARGS_TOO_LARGE);
     assertThat(f.auditSink.latest(null, 1).get(0).argsHash())
-        .isEqualTo(ArgumentCanonicalizer.hash(oversized));
+        .isNotEqualTo(ArgumentCanonicalizer.hash(oversized));
   }
 
   /**
@@ -91,6 +92,17 @@ class CipherProbeReverifyTest {
    * verifies, and rewriting the prefix still breaks the first keyed row's {@code prevHash}, which
    * is under the HMAC. Test: {@code
    * CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_ rewritten_as_unkeyed}.
+   *
+   * <p><b>Scope note (see QUESTIONS.md V2):</b> the version-monotonicity fix detects a
+   * <em>partial</em> downgrade — some rows genuinely keyed, a later row (or the whole tail)
+   * downgraded to {@code ag1} — because a {@code KEYED_VERSION} row was observed first. It cannot
+   * detect a downgrade of <em>every</em> row back to GENESIS: that trail is byte-for-byte what
+   * {@code CipherProbeCleanGuardTest
+   * .enabling_the_audit_hmac_secret_does_not_break_the_existing_trail} requires to stay INTACT (a
+   * deployment that has never used HMAC, verified after a key is configured). No purely
+   * row-embedded version scheme can tell those two apart; it is the same table-owner residual
+   * already documented as Cipher R4. This probe therefore rewrites the trail's <em>tail</em>, not
+   * its head, so it exercises the case the fix actually closes.
    */
   @Test
   void probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed() {
@@ -106,11 +118,12 @@ class CipherProbeReverifyTest {
     assertThat(AuditChainVerifier.of(sink, AuditChain.keyed(key)).verify().status())
         .isEqualTo(AuditChainVerifier.Status.INTACT);
 
-    // an attacker with write access to the table and no key rewrites every row, relinks the chain
-    // with plain SHA-256 and stamps chain_version='ag1'
+    // an attacker with write access to the table and no key leaves the genuinely keyed head alone
+    // (rewriting it would break its own hash) and rewrites the tail, relinking with plain SHA-256
+    // and stamping chain_version='ag1'
     var rows = sink.readAfter(0, 100);
-    String prev = AuditChain.GENESIS;
-    for (int i = 0; i < rows.size(); i++) {
+    String prev = rows.get(0).hash();
+    for (int i = 1; i < rows.size(); i++) {
       var forged = AuditChain.unkeyed().linkEvent(rows.get(i).withTool("read-only"), prev);
       sink.tamper(i, forged);
       prev = forged.hash();
@@ -118,9 +131,11 @@ class CipherProbeReverifyTest {
 
     var report = AuditChainVerifier.of(sink, AuditChain.keyed(key)).verify();
 
-    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
-    assertThat(report.verified()).isEqualTo(2L);
-    assertThat(sink.readAfter(0, 100).get(0).tool()).isEqualTo("read-only");
+    // V2 fixed: chain_version may only move forward. Once the genuine keyed head has verified, the
+    // downgraded row is BROKEN at its own sequence, not silently re-verified with plain SHA-256.
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
+    assertThat(report.verified()).isEqualTo(1L);
+    assertThat(report.brokenAtSequence()).isEqualTo(2L);
   }
 
   /**
@@ -148,7 +163,8 @@ class CipherProbeReverifyTest {
     // payload the cap accepted is itself over the cap
     assertThat(canonical.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(cap);
 
-    // replayed as raw text it is refused as oversized, and recordOversized hashes it raw
-    assertThat(Hashes.sha256Hex(canonical)).isEqualTo(ArgumentCanonicalizer.hash(underTheCap));
+    // V3 fixed: the raw and canonical hashes are domain-separated, so an oversized denial can never
+    // share args_hash with an allowed call even when the raw and canonical text coincide.
+    assertThat(Hashes.sha256Hex(canonical)).isNotEqualTo(ArgumentCanonicalizer.hash(underTheCap));
   }
 }

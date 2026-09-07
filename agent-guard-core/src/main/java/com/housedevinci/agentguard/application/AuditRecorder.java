@@ -80,6 +80,14 @@ public final class AuditRecorder {
    * against (C4: the size cap must bound every parse of untrusted text, including the audit trail
    * of its own rejection).
    */
+  /**
+   * V3: {@code "agraw1:"} domain-separates this hash from {@link ArgumentCanonicalizer#hash}'s
+   * {@code "agcanon1:"}-prefixed one, so an oversized denial can never share {@code args_hash} with
+   * an allowed call — the two are hashed over disjoint material even when the underlying text
+   * coincides.
+   */
+  private static final String RAW_HASH_DOMAIN = "agraw1:";
+
   public AuditEvent recordOversized(
       Principal principal, String tool, String argumentsJson, String correlationId) {
     var event =
@@ -88,7 +96,7 @@ public final class AuditRecorder {
             .principalId(principal.id())
             .tenantId(principal.tenantId().orElse(null))
             .tool(tool)
-            .argsHash(Hashes.sha256Hex(argumentsJson))
+            .argsHash(Hashes.sha256Hex(RAW_HASH_DOMAIN + argumentsJson))
             .resultHash("")
             .latencyMillis(0)
             .decision(AuditDecision.DENIED)

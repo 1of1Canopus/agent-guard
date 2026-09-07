@@ -67,14 +67,24 @@ public final class AuditChainVerifier {
     String prev = AuditChain.GENESIS;
     long after = 0;
     long count = 0;
+    // V2: chain_version is part of what a table-owning attacker can rewrite, so once a row has
+    // verified keyed, no later row may fall back to an unkeyed version and still be trusted — that
+    // would let a rewritten, downgraded trail verify INTACT with a key that never touched it.
+    boolean keyedSeen = false;
     while (true) {
       List<AuditEvent> page = reader.readAfter(after, PAGE);
       if (page.isEmpty()) {
         break;
       }
       for (AuditEvent e : page) {
+        if (keyedSeen && !AuditChain.KEYED_VERSION.equals(e.version())) {
+          return new Report(Status.BROKEN, count, e.sequence(), prev);
+        }
         if (!chainFor(e).verifyEvent(e, prev)) {
           return new Report(Status.BROKEN, count, e.sequence(), prev);
+        }
+        if (AuditChain.KEYED_VERSION.equals(e.version())) {
+          keyedSeen = true;
         }
         prev = e.hash();
         after = e.sequence();

@@ -149,6 +149,18 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     new-probe map: `docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Design change: keyed-from-birth" and its
     "Amendment" subsection.
 
+    **Cipher's verification of keyed-from-birth (`722e9a5`), all six closed by Isis:** G1/G2 (MEDIUM, the schema
+    step's backfills were both refused by their own triggers, and the anchor backfill was a re-derivation of
+    `keyed` from `chain_version` — exactly what the amendment removed) — no backfill added back, since this branch
+    is unreleased and has no upgrade path from a pre-redesign database; `key_id`/`keyed` are declared `NOT NULL`
+    directly in `CREATE TABLE`, and the schema step now fails startup with a clear message on a table that
+    predates them. H1 (LOW, an `hmac-keys` entry could silently shadow the appending key) and H2 (LOW,
+    `unkeyed=true` + `hmac-secret` silently resolved to keyed) both now fail startup naming the two properties.
+    H3/H4 (INFO) were doc-only: `InMemoryAuditSink` javadoc + SECURITY-NOTES now say its anchor is self-derived
+    and cannot detect tail deletion; SECURITY-NOTES' status list now includes `INTACT_UNKEYED`. No pushback filed
+    — every fix matched Dollar's ruling as given. Full write-up: CHANGELOG "Cipher verification of keyed-from-birth
+    (722e9a5)"; STATUS.md run 9.
+
 ## Build
 13. **[decided]** Error Prone 2.50 on JDK 21 needs `.mvn/jvm.config` (add-exports) and
     `-XDaddTypeAnnotationsToSymbol=true`; both are in place. `maven-enforcer` `dependencyConvergence` is on.

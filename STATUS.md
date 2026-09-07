@@ -1,7 +1,42 @@
-# STATUS.md — Module B · Agent Guard, free core (run 8: keyed-from-birth design change + amendment)
+# STATUS.md — Module B · Agent Guard, free core (run 9: Isis closes Cipher's keyed-from-birth verification)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
+
+## Summary (run 9)
+**Done.** Isis closed all six findings from Cipher's verification of keyed-from-birth (`722e9a5`,
+`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Verification of keyed-from-birth"): G1/G2 MEDIUM, H1/H2 LOW,
+H3/H4 INFO. Dollar's ruling: this branch is unreleased, so there is no upgrade path from a pre-redesign database —
+G1/G2's backfills are deleted, not repaired.
+
+- **G1/G2:** `agentguard_audit.key_id` and `agentguard_audit_anchor.keyed` are now `NOT NULL` in the `CREATE TABLE`
+  bodies, no backfill. The schema step checks up front whether either table exists without its keyed-from-birth
+  column and fails startup with "audit schema predates keyed-from-birth; archive the table and start a new trail
+  (see SECURITY-NOTES)" instead of aborting later on a trigger or a missing-column INSERT error. Still idempotent
+  on a database created by this version.
+- **H1:** `auditKeyring` fails startup when an `agentguard.audit.hmac-keys.<id>` entry reuses the appending
+  `hmac-key-id` with a different secret, naming both properties; the identical-secret case stays a no-op.
+- **H2:** `auditChain` fails startup when `agentguard.audit.unkeyed=true` and `agentguard.audit.hmac-secret` are
+  both set, naming both properties.
+- **H3:** `InMemoryAuditSink` javadoc + SECURITY-NOTES now say plainly that its anchor is self-derived and cannot
+  detect its own tail being trimmed. Doc-only, no behaviour change.
+- **H4:** SECURITY-NOTES' status list now includes `INTACT_UNKEYED`.
+
+`./mvnw -B clean verify` is green: **207 tests** (core 151, starter 55 + 1 self-skipping — needs Spring AI's real
+`ToolCallingAutoConfiguration` on the test classpath — sample 1 end-to-end), 0 failures. Core line coverage
+**90.60%** / branch **78.14%** (gate 80% line, held; unchanged from Cipher's measurement — these are SQL/message
+fixes plus one new regression test, not new production branches). Cipher's `CipherProbeKeyedBirthJdbcTest` (G1/G2)
+and `CipherProbeKeyringTest` (H1/H2) probes updated in place to assert the new refusal instead of the old bug;
+`CipherProbeMemoryParityTest` (H3) unchanged and still green (doc-only fix). Full table below the run-8 summary.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| G1 | MEDIUM | `agentguard_audit.key_id NOT NULL` in `CREATE TABLE`, no backfill; schema-predates guard fails startup with a clear message. | `CipherProbeKeyedBirthJdbcTest.probe_an_existing_database_with_rows_cannot_run_the_new_schema_step` |
+| G2 | MEDIUM | `agentguard_audit_anchor.keyed NOT NULL` in `CREATE TABLE`, no backfill; same guard covers the anchor. | `CipherProbeKeyedBirthJdbcTest.probe_an_existing_anchor_row_cannot_be_backfilled_with_keyed` |
+| H1 | LOW | `auditKeyring` fails startup on an id/secret mismatch with the appending key, naming both properties. | `CipherProbeKeyringTest.probe_a_retired_key_entry_can_shadow_the_appending_key`, `.confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop` |
+| H2 | LOW | `auditChain` fails startup on `unkeyed=true` + `hmac-secret` set, naming both properties. | `CipherProbeKeyringTest.probe_unkeyed_true_with_a_secret_is_silently_ignored` |
+| H3 | INFO | Javadoc + SECURITY-NOTES: `InMemoryAuditSink`'s anchor is self-derived, no tail-deletion detection. | `CipherProbeMemoryParityTest.probe_a_memory_trail_has_no_external_anchor` (unchanged, still documents the behaviour) |
+| H4 | INFO | SECURITY-NOTES status list now lists `INTACT_UNKEYED`. | Manual doc review |
 
 ## Summary (run 8)
 **Done.** Cipher's final-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, `25da6af`) found run 7's

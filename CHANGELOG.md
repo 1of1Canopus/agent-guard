@@ -4,6 +4,40 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Security (Cipher verification of keyed-from-birth, `722e9a5`: G1/G2 MEDIUM, H1/H2 LOW, H3/H4 INFO closed)
+Cipher's verification pass on the keyed-from-birth design (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`,
+"Verification of keyed-from-birth") found two MEDIUM in the schema step and two LOW/two INFO in configuration and
+docs. Dollar ruled: this branch is unreleased, so there is no upgrade path from a pre-redesign database — no
+backfill is added back.
+- **G1/G2 (MEDIUM):** the schema step's backfills of `agentguard_audit.key_id` and `agentguard_audit_anchor.keyed`
+  were both refused by the tables' own triggers (an UPDATE against the append-only trigger; a plain UPDATE that
+  does not advance the anchor's `row_count`), aborting startup on any database written by an earlier build of this
+  branch — and the anchor backfill was itself a re-derivation of `keyed` from `chain_version`, the exact guess the
+  amendment removed. Both backfills, and their `ADD COLUMN IF NOT EXISTS`/`ALTER COLUMN … SET NOT NULL` pairs, are
+  deleted; `agentguard_audit.key_id` and `agentguard_audit_anchor.keyed` are declared `NOT NULL` directly in the
+  `CREATE TABLE` bodies (still idempotent — `CREATE TABLE IF NOT EXISTS` is a no-op on a database created by this
+  version). The schema step now checks up front whether either table exists without its keyed-from-birth column
+  and fails startup with a clear, actionable message ("audit schema predates keyed-from-birth; archive the table
+  and start a new trail (see SECURITY-NOTES)") instead of aborting later on a trigger or a missing-column INSERT
+  error.
+- **H1 (LOW):** an `agentguard.audit.hmac-keys.<id>` entry reusing the appending `hmac-key-id` with a different
+  secret used to silently replace the appending key in `AuditChainVerifier`'s keyring — every row this instance
+  writes would then fail to verify, an integrity alarm caused by configuration. `auditKeyring` now fails startup
+  when this happens, naming both properties; an entry with the identical secret is still accepted as a no-op.
+- **H2 (LOW):** `agentguard.audit.unkeyed=true` together with a non-blank `agentguard.audit.hmac-secret` used to
+  resolve silently to keyed (the safe direction, but with no WARN and no failure). `auditChain` now fails startup
+  on the contradiction, naming both properties.
+- **H3 (INFO, doc-only):** `InMemoryAuditSink`'s `AuditAnchor` is derived from the very event list it anchors
+  (`headHash`/`rowCount` from the last event, `keyed` from the instance's `AuditChain`), so it cannot detect its
+  own tail being trimmed — unlike `JdbcAuditSink`'s separate, append-only-guarded anchor row. Documented in the
+  class javadoc and SECURITY-NOTES; development/test store only, behaviour unchanged.
+- **H4 (INFO, doc-only):** SECURITY-NOTES' status list is missing `INTACT_UNKEYED`; added.
+- **Test:** `CipherProbeKeyedBirthJdbcTest.probe_an_existing_database_with_rows_cannot_run_the_new_schema_step` /
+  `.probe_an_existing_anchor_row_cannot_be_backfilled_with_keyed` now assert the new clear-message refusal instead
+  of the old trigger-abort message; `CipherProbeKeyringTest.probe_a_retired_key_entry_can_shadow_the_appending_key`
+  / `.probe_unkeyed_true_with_a_secret_is_silently_ignored` now assert startup failure naming both properties,
+  plus a new `confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop` regression test.
+
 ### Security (Cipher review of `feat/agent-guard-core`, all HIGH and MEDIUM fixed)
 - H1: executors are registered per decision id and released after the run; approved calls execute inside a
   security context rebuilt from the stored principal (`ResumeContextProvider` SPI, `RunAsAuthentication`), with the

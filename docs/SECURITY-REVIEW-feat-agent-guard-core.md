@@ -1194,3 +1194,144 @@ introduces 45 lines later. Fix (Isis): add it to the list.
   backfill statement) is identical and the raised messages are the schema's own.
 - The sample app runs with `agentguard.audit.unkeyed=true`; its end-to-end test therefore covers the
   unkeyed path only.
+
+## Clean verdict (f27c45e)
+
+Cipher, 2026-09-08. Branch `feat/agent-guard-core`, HEAD `f27c45e`, diffed against `79d05be`.
+Full `./mvnw clean verify`, Docker up, no module skipped.
+
+**Verdict: MERGE WITH FIXES.** All six prior findings (G1, G2, H1, H2, H3, H4) are closed — verified
+in the code and each one re-attacked with a probe. No HIGH, no MEDIUM. One new LOW, **J1**, in the
+schema guard that the G1/G2 fix introduced: it is not schema-scoped, so a stale copy of the table in
+another PostgreSQL schema blocks a fresh install. Under the no-allowance rule that is a fix list,
+not a merge.
+
+### Numbers
+
+| | Isis reported (f27c45e) | Cipher measured (f27c45e) | With Cipher's probes |
+|---|---|---|---|
+| Tests run | 207 | 207 (151 core + 55 starter + 1 sample) | 215 (156 + 58 + 1) |
+| Failed | 0 | 0 | 0 |
+| Skipped | 1 | 1 (`CipherProbeFinalSpringAiTest`, `assumeTrue` on the Spring AI tool autoconfiguration) | 1 |
+| Line coverage (`agent-guard-core/target/site/jacoco/jacoco.csv`) | 90.60% | 90.60% (1552/1713) | 90.60% (1552/1713) |
+| Branch coverage | 78.14% | 78.14% (461/590) | 78.14% (461/590) |
+| JaCoCo 80% line gate | — | met (`All coverage checks have been met`) | met |
+
+All 23 `CipherProbe*` classes green (89 probe tests). Probe-method diff `79d05be..f27c45e`: two
+additions, **zero deletions**, no narrowing. `probe_a_retired_key_entry_can_shadow_the_appending_key`
+and `probe_unkeyed_true_with_a_secret_is_silently_ignored` were inverted from "asserts the hole" to
+"asserts the refusal", which is the correct direction, and H1 gained
+`confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop` as cover for the no-op the
+fix must not break. New this pass: `CipherProbeCleanVerdictJdbcTest` (5),
+`CipherProbeCleanVerdictStartupTest` (3).
+
+### The six, verified
+
+| Finding | Fix | Verified in code | Verified by probe |
+|---|---|---|---|
+| G1 MEDIUM — `key_id` backfill refused by the append-only trigger | `5d627ce` | `key_id varchar(64) NOT NULL` is in the `CREATE TABLE agentguard_audit` body; the `ADD COLUMN` / `UPDATE … WHERE key_id IS NULL` / `SET NOT NULL` trio is gone (`git grep` finds no backfill of either column) | `CipherProbeKeyedBirthJdbcTest.probe_an_existing_database_with_rows_cannot_run_the_new_schema_step` now asserts the new message, green |
+| G2 MEDIUM — anchor `keyed` backfill re-derived from `chain_version` | `5d627ce` | `keyed boolean NOT NULL` in the `CREATE TABLE agentguard_audit_anchor` body; the `UPDATE agentguard_audit_anchor … chain_version = 'ag2h'` statement is deleted. **No re-derivation path is left anywhere** — this was the one "No" in the design table of the previous pass, and it is now Yes | `probe_an_existing_anchor_row_cannot_be_backfilled_with_keyed`, green |
+| H1 LOW — a retired key entry shadows the appending key | `488fdcd` | `auditKeyring` throws `AgentGuardConfigurationException` when an `hmac-keys` entry uses the appending `hmac-key-id` with different bytes; identical bytes still fall through as a no-op | `probe_a_retired_key_entry_can_shadow_the_appending_key` (fails startup naming both properties) and `confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop`, both green; my own `probe_a_same_secret_ring_duplicate_is_a_no_op` confirms the ring still holds the appending secret under `k1` alongside a genuine retired `k0` |
+| H2 LOW — `unkeyed=true` + `hmac-secret` silently resolved | `488fdcd` | the contradiction is the **first** statement in `auditChain`, before the secret-required branch | `probe_unkeyed_true_with_a_secret_is_silently_ignored` (inverted), green |
+| H3 INFO — `InMemoryAuditSink`'s self-derived anchor | `b311974` | class javadoc "No external anchor (Cipher H3)" plus a `SECURITY-NOTES.md` bullet, both saying the trail cannot detect its own tail being trimmed and is not a substitute for the JDBC store | doc-only; `CipherProbeMemoryParityTest` unchanged and green |
+| H4 INFO — `INTACT_UNKEYED` missing from the status list | `b311974` | `SECURITY-NOTES.md` line 86 now lists `EMPTY / INTACT / INTACT_UNKEYED / BROKEN / ANCHOR_MISMATCH / NO_ANCHOR` | n/a |
+
+### G1/G2 — the four extra checks
+
+- **Idempotent three times.** `JdbcSupport.initializeSchema` three times on a fresh database created
+  by this version, then two keyed appends, then three more times: row count, `head_hash` and
+  `keyed` are byte-identical after the last run.
+  (`probe_schema_step_is_idempotent_three_times_empty_and_non_empty`.)
+- **Concurrent starts on an empty database.** Twelve threads released together against one empty
+  database: zero failures, one table set, and a first append lands normally afterwards — the
+  `pg_advisory_xact_lock(18374244850549833)` at the top of the script still serialises the whole
+  step, and the new `DO $$` guard sits inside that lock, not before it.
+  (`probe_concurrent_schema_steps_on_an_empty_database_all_succeed`.)
+- **A fresh empty database never trips the detection.** The guard fires only when the table exists
+  *and* the column does not; on an empty database neither `EXISTS` clause holds.
+  (`probe_a_fresh_empty_database_never_trips_the_predates_guard`.)
+- **The message offers no in-place upgrade.** `audit schema predates keyed-from-birth; archive the
+  table and start a new trail (see SECURITY-NOTES)` — asserted to contain "archive the table and
+  start a new trail" and to contain none of "upgrade", "migrate", "add column", "backfill".
+  (`probe_the_predates_message_offers_no_in_place_upgrade`.)
+
+### Final attack on what changed
+
+- **Startup-check ordering.** The unkeyed+secret contradiction fires before anything touches the
+  database. Proven, not argued from bean declaration order: a context with a real `DataSource`,
+  `agentguard.store=JDBC`, `unkeyed=true` and a secret fails, and `to_regclass('agentguard_audit')`
+  is still null afterwards — the schema step never ran.
+  (`probe_the_unkeyed_contradiction_fires_before_the_database_is_touched`.)
+- **Same-secret ring duplicate.** A pure no-op: startup succeeds, the ring holds exactly `{k1, k0}`
+  and `k1` is the appending secret. (`probe_a_same_secret_ring_duplicate_is_a_no_op`.)
+- **Secret bytes in messages.** Neither new message carries key material, and neither does the full
+  stack trace behind it: the H2 contradiction, the H1 shadowing refusal and the short-retired-key
+  refusal were each rendered to a string and asserted not to contain the secret or the short value.
+  Both new messages name property *names* and the key *id* only.
+  (`probe_no_startup_failure_message_carries_key_material`.)
+
+### Finding
+
+**J1 — LOW — the pre-redesign guard is not schema-scoped, so a stale copy in another schema blocks a
+fresh install.** The new `DO $$` block matches `information_schema.tables WHERE table_name =
+'agentguard_audit'` with no `table_schema` filter, while every other statement in the step
+(`CREATE TABLE IF NOT EXISTS agentguard_audit`, the triggers, the anchor) is unqualified and
+therefore search_path-relative. The two disagree. Create a schema `oldcopy` holding a pre-redesign
+`agentguard_audit` and run the step against a completely empty `public`: it raises `audit schema
+predates keyed-from-birth` and the module cannot start, even though the schema it would actually
+write is fresh. Repro:
+`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`
+(written green, asserting today's behaviour — the fix inverts it to `doesNotThrowAnyException`).
+Two ways an operator reaches this: `docs/index.md` tells them to archive by "rename or drop", and
+`ALTER TABLE agentguard_audit SET SCHEMA archive` is a rename most DBAs would reach for — after
+which the guard permanently refuses startup, telling them to do the thing they just did; or a
+schema-per-tenant database where one tenant has been migrated and another has not. No integrity
+impact — it is a denial of startup, and it fires in the safe direction — hence LOW.
+Fix (Isis): resolve the table through the search_path instead of scanning every schema. Replace both
+`EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = …)` tests with
+`to_regclass('agentguard_audit') IS NOT NULL` / `to_regclass('agentguard_audit_anchor') IS NOT NULL`,
+and both column tests with a lookup against that same oid — `EXISTS (SELECT 1 FROM pg_attribute WHERE
+attrelid = to_regclass('agentguard_audit') AND attname = 'key_id' AND NOT attisdropped)` and the
+equivalent for `agentguard_audit_anchor` / `keyed`. That is the same object the rest of the script
+creates and alters, so the guard and the script can no longer disagree. Invert the probe named above
+to `assertThatCode(...).doesNotThrowAnyException()` and keep the four G1/G2 checks as they are.
+
+### Not verified
+
+- Unchanged from the previous pass: PostgreSQL 16 only (the pinned Testcontainers digest); no
+  managed-Postgres run where the runtime role's grants differ; the rolling-restart scenarios remain
+  same-JVM, different sink instances against one database; the sample app still runs
+  `agentguard.audit.unkeyed=true`, so its end-to-end test covers the unkeyed path only.
+- The G1/G2 pre-redesign scenarios are still reproduced by dropping the new column from a current
+  database rather than by checking out `25da6af`, initialising, and starting this build against it.
+  The condition the guard tests (table present, column absent) is identical either way.
+- The concurrency check is twelve threads in one JVM against one database, which exercises the
+  advisory lock exactly; it is not twelve separate processes or pods.
+
+### What the audit trail guarantees today, in plain words
+
+Once J1 is fixed this is ready to merge, and here is what it will mean. Every audit row is signed
+with a secret the database never sees, and each row's signature covers the row before it, so the
+trail is a chain: change one row, or delete one from the middle, and the next row stops matching. A
+separate anchor row — which the database itself refuses to let anyone update backwards, delete, or
+truncate — records the head of the chain and its length, so cutting rows off the *end*, the one
+attack a chain alone cannot see, is caught too. The decision the last two rounds settled is that a
+trail is keyed from its very first row or unkeyed forever: there is no switching, no guessing, and
+no code path anywhere that infers whether a trail was keyed by looking at the rows themselves —
+that inference was the last hole and it is now gone. An instance configured differently from the
+trail it finds refuses to start and refuses to append, rather than quietly writing rows nobody can
+verify later. Rotating the signing key is ordinary data, not a break: each row records which key id
+signed it, the verifier holds the old keys as well as the new one, and a row naming a key nobody
+holds reads as broken rather than being skipped. Running without a key at all is still possible for
+local development, but it is now an explicit property that warns at every single startup, and
+asking for both at once is refused outright.
+The documented residuals, unchanged and accepted: a database role that *owns* these tables can turn
+the guard triggers off and rewrite the chain and its anchor together — so run the application with a
+narrower role that can only insert and read; a role with only that narrow grant can still append one
+hand-written, correctly-linked row, which is detected at the next verification rather than
+prevented; a point-in-time restore of the trail and its anchor together is invisible from inside the
+database, so the head hash should be exported off-box on a schedule; and the in-memory store, for
+tests and development only, derives its anchor from the very list it anchors and therefore cannot
+detect its own tail being trimmed. There is no upgrade path from a database written by an earlier
+build of this unreleased branch: such a database is refused at startup and the operator archives it
+and starts a new trail, deliberately, by hand.

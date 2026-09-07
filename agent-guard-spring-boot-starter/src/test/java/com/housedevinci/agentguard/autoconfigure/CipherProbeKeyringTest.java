@@ -3,7 +3,6 @@ package com.housedevinci.agentguard.autoconfigure;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.housedevinci.agentguard.ai.AgentGuardSpringAiAutoConfiguration;
-import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.mcp.AgentGuardMcpAutoConfiguration;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -35,10 +34,10 @@ class CipherProbeKeyringTest {
   }
 
   /**
-   * H1. A retired-key entry that reuses the appending key's id with a different secret silently
-   * replaces the appending key in the verifier's keyring: every row this instance writes then fails
-   * to verify. The properties javadoc calls the same id "redundant, not an error"; it is only
-   * redundant when the secret is identical, which nothing checks.
+   * H1. A retired-key entry that reuses the appending key's id with a different secret must fail
+   * startup naming both properties, rather than silently replacing the appending key in the
+   * verifier's keyring (which would make every row this instance writes fail to verify — an
+   * integrity alarm caused by configuration).
    */
   @Test
   void probe_a_retired_key_entry_can_shadow_the_appending_key() {
@@ -49,33 +48,48 @@ class CipherProbeKeyringTest {
             "agentguard.audit.hmac-keys.k1=" + S2)
         .run(
             ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.audit.hmac-keys.k1")
+                  .hasMessageContaining("agentguard.audit.hmac-key-id");
+            });
+  }
+
+  /**
+   * An `hmac-keys` entry reusing the appending id with the SAME secret is a no-op, not an error.
+   */
+  @Test
+  void confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop() {
+    runner
+        .withPropertyValues(
+            "agentguard.audit.hmac-secret=" + S1,
+            "agentguard.audit.hmac-key-id=k1",
+            "agentguard.audit.hmac-keys.k1=" + S1)
+        .run(
+            ctx -> {
               assertThat(ctx).hasNotFailed();
-              assertThat(keyring(ctx).get("k1")).isEqualTo(S2.getBytes(StandardCharsets.UTF_8));
-              // i.e. NOT the secret the sink is appending with
-              assertThat(keyring(ctx).get("k1"))
-                  .isNotEqualTo(
-                      ctx.getBean(AuditChain.class) != null
-                          ? S1.getBytes(StandardCharsets.UTF_8)
-                          : null);
+              assertThat(keyring(ctx).get("k1")).isEqualTo(S1.getBytes(StandardCharsets.UTF_8));
             });
   }
 
   /**
    * H2. {@code agentguard.audit.unkeyed=true} together with a real {@code hmac-secret} is a
-   * contradiction. The secret wins (the safe direction) but nothing says so: no WARN, no failure,
-   * and the operator who believes they are running unkeyed gets a keyed trail (or, on an existing
-   * unkeyed trail, an AG-AUDIT-001 refusal they did not ask for).
+   * contradiction and must fail startup naming both properties, rather than silently resolving to
+   * keyed (the operator who believes they are running unkeyed would otherwise get a keyed trail, or
+   * an AG-AUDIT-001 refusal on an existing unkeyed trail they did not ask for).
    */
   @Test
-  void probe_unkeyed_true_with_a_secret_is_silently_ignored(
-      org.springframework.boot.test.system.CapturedOutput output) {
+  void probe_unkeyed_true_with_a_secret_is_silently_ignored() {
     runner
         .withPropertyValues("agentguard.audit.unkeyed=true", "agentguard.audit.hmac-secret=" + S1)
         .run(
             ctx -> {
-              assertThat(ctx).hasNotFailed();
-              assertThat(ctx.getBean(AuditChain.class).isKeyed()).isTrue();
-              assertThat(output).doesNotContain("unkeyed");
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.audit.unkeyed")
+                  .hasMessageContaining("agentguard.audit.hmac-secret");
             });
   }
 

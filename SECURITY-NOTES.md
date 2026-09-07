@@ -55,6 +55,11 @@ does about it, and what still needs a reviewer's eye.
   again), pending decisions are capped per principal (`agentguard.approval.max-pending-per-principal`, default 20,
   `AG-APPROVAL-008`), arguments are capped (`max-argument-bytes`, default 64 KiB, `AG-APPROVAL-009`), and the
   dedup key includes the tenant so `admin@tenant-2` never receives `admin@tenant-1`'s stored result.
+- **The size cap is first on every path, including the two that need no policy at all (Cipher V1):**
+  `ToolGuard.guarded` applies `rejectIfTooLarge` before `policies.resolve`, so an unregistered tool or a rule with
+  no matching role — both reachable by any caller — are refused as oversized before anything canonicalises
+  (parses) the arguments. Previously only `gate`/`dispatch` (the policy-matched paths) capped first; the two
+  denial paths above them canonicalised the full payload for their audit row regardless of size.
 - **Coverage is checked (Cipher H2):** Spring AI tools are guarded at the `ToolCallingManager` chokepoint (inline
   `.tools(obj)` / `ToolCallbacks.from` / resolver-by-name included); MCP single and list specification beans are
   wrapped; async (WebFlux) specifications fail startup; `agentguard.strict=true` fails startup when a scanned
@@ -64,7 +69,11 @@ does about it, and what still needs a reviewer's eye.
   misconfigured resolver) is refused (403, `AG-HTTP-403`) instead of silently seeing and deciding every tenant's
   decisions and audit rows. A genuinely single-tenant deployment (no `TenantResolver`, as in the sample) should set
   `agentguard.endpoints.tenant-scoped=false` explicitly; set `require-tenant=false` only for a deliberate
-  cross-tenant approver role. The tenant filter is also pushed into the store query
+  cross-tenant approver role. **The opt-out is no longer silent (Cipher V4):** `AgentGuardStartupCheck` warns at
+  startup when `endpoints.enabled` and either `tenant-scoped=false` or `require-tenant=false`, naming the property
+  and the consequence, alongside its existing warnings for an empty `approval-required-for`, an empty
+  `sensitive-keys`, `store=MEMORY`, a missing notifier, a missing `TenantResolver` and a runtime role that owns the
+  audit table. The tenant filter is also pushed into the store query
   (`DecisionStore.findByState(state, tenantId, limit)`, `AuditReader.latest(tenantId, limit)`, Cipher C10) instead of
   applied after the page's `limit`, so a busy neighbour tenant cannot hide a tenant's own pending work.
 
@@ -91,6 +100,22 @@ does about it, and what still needs a reviewer's eye.
   as one.
 - **Test:** `JdbcAdaptersIntegrationTest.audit_*`, `AuditChainVerifierTest`, `CipherProbeJdbcTest`,
   `CipherProbeAuditChainTest`, `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`.
+- **Version labels are trusted only forward, not backward (Cipher V2):** `chain_version` is a column an attacker
+  with table-write access can also rewrite, so `AuditChainVerifier.verify` tracks whether a `KEYED_VERSION` row has
+  verified while walking the trail; once it has, a later row claiming `CANONICAL_VERSION` is `BROKEN` at its own
+  sequence, not silently re-verified with plain SHA-256. This closes a *partial* downgrade — some rows genuinely
+  keyed, a later row or the tail stamped back down to `ag1`. **It does not close a downgrade of the entire trail**
+  back to GENESIS: that row shape is byte-for-byte the same as a deployment that has never used HMAC, which the
+  verifier must still report `INTACT` (the case directly above). No purely row-embedded version scheme can tell
+  those two apart; closing it needs an external, attacker-unwritable anchor, which is the same R4 residual already
+  named above ("An HMAC-keyed chain and external anchoring stay pro items"). See QUESTIONS.md #20.
+- **Two `args_hash` domains (Cipher V3):** `ArgumentCanonicalizer.hash` (used for every decision and normal audit
+  row) hashes `"agcanon1:" + canonical(argumentsJson)`; `AuditRecorder.recordOversized` (the size-cap denial)
+  hashes `"agraw1:" + argumentsJson`. Before this, both landed in the same SHA-256 space with no domain separation,
+  and canonicalisation is not size-preserving (an unpaired surrogate is 1 raw UTF-8 byte, 6 after the `\u` escape),
+  so a payload under the cap could have a canonical form over it — replayed raw, it hashed identically to its own
+  denial. `ToolGuard.rejectIfTooLarge` also checks the canonicalised length once the raw check has already bounded
+  the parse cost, so that payload is refused as oversized on the canonical check too, not silently allowed through.
 
 ## Operational hazards
 - **Redis + virtual threads on JDK 21–23 (Cipher H3).** The pin is not in Jedis itself but in commons-pool2's growth
@@ -115,6 +140,12 @@ does about it, and what still needs a reviewer's eye.
   implements `AutoCloseable` and its `close()` shuts the pool down; the auto-configured bean is picked up by
   Spring's default inferred destroy method, so a context that rebuilds it (devtools restart, `@DirtiesContext`) does
   not leak `agentguard-redis` threads.
+- **Platform-thread pool sizing is decoupled from the Redis connection pool (Cipher V5):**
+  `agentguard.redis.pool.platform-thread-count` and `.platform-thread-queue-size` (both default `max-total` when
+  unset) size the worker pool and its bounded queue independently of `max-total` (the Jedis connection pool). A
+  small, deliberately contended connection pool (to exercise H3/R6-style contention) and a large burst of
+  concurrent virtual-thread callers are two different numbers: workers just block on the connection pool, the way
+  a virtual thread must never be allowed to.
 - **Hand-built managers (Cipher R3):** a `DefaultToolCallingManager` built in code and handed to a `ChatModel`
   builder never passes through the context, so it is not guarded and strict mode cannot see it. Use the
   `ToolCallingManager` bean or wrap yours with `AgentGuard.guard(manager)`.
@@ -126,16 +157,21 @@ does about it, and what still needs a reviewer's eye.
   (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
 ## Review status
-Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, five passes): H1–H3, M1–M7, R1, R2, R5
+Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, six passes): H1–H3, M1–M7, R1, R2, R5
 fixed and re-verified; under the no-allowance rule every LOW and INFO of the first four passes (L1–L10, I1–I9, R3,
 R4, R6–R11) and every finding of the clean-verdict pass (C4 MEDIUM; C1, C2, C5, C7, C9, C11 LOW; C3, C6, C8, C10,
-C12 INFO) is fixed on the branch with its probe flipped. Documented residuals that remain by design: a role that
-*owns* the tables can drop the append-only and anchor triggers (split roles, see docs "Database roles"; external
-anchoring and the keyed chain reduce what such a role can do silently); a `ToolCallingManager` built by hand and
+C12 INFO) is fixed on the branch with its probe flipped. The re-verification round (V1 MEDIUM, V2 MEDIUM, V3 LOW,
+V4 LOW, V5 LOW) is fixed on the branch, with its probes flipped, except V2 which is scoped to the detectable
+(partial-downgrade) form of the attack — see QUESTIONS.md #20 and the audit-tampering section above. Documented
+residuals that remain by design: a role that *owns* the tables can drop the append-only and anchor triggers (split
+roles, see docs "Database roles"; external anchoring and the keyed chain reduce what such a role can do silently,
+but cannot detect a full-trail rewrite from GENESIS — Cipher R4/V2); a `ToolCallingManager` built by hand and
 handed to a `ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23
 Redis calls run on platform threads so the pool's growth lock is never touched by a virtual thread; a burst past
 `agentguard.redis.pool.max-total` concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing
-unboundedly, by design (Cipher C7) — size the pool at or above real peak concurrency.
+unboundedly, by design (Cipher C7) — size the pool at or above real peak concurrency, and size
+`platform-thread-count`/`platform-thread-queue-size` (Cipher V5) at or above real peak concurrent tool calls
+independently of `max-total` if the connection pool itself is deliberately smaller.
 
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.

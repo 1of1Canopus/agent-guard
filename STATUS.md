@@ -1,12 +1,32 @@
-# STATUS.md — Module B · Agent Guard, free core (run 5: clean-verdict round)
+# STATUS.md — Module B · Agent Guard, free core (run 6: re-verification round, V1-V5)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
 
-## Summary
-**Done.** Every finding of Cipher's clean-verdict pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, on
+## Summary (run 6)
+**Done, with one scoped exception.** Cipher's re-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`,
+`## Re-verification (6f026ff)`) found five new issues (V1 MEDIUM, V2 MEDIUM, V3 LOW, V4 LOW, V5 LOW) after the
+clean-verdict round. V1, V3, V4, V5 are closed on the branch, each with its probe flipped. V2 is fixed for the
+*detectable* form of the attack (a partial downgrade — a genuinely keyed prefix, a downgraded tail); its exact
+probe scenario (the entire trail downgraded from GENESIS) is not, and cannot be, closed by a purely row-embedded
+version check without breaking `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`
+(C6) — see QUESTIONS.md #20 for the full argument. `./mvnw -B clean verify` is green: **173 tests** (core 126,
+starter 46 + 1 self-skipping — needs Spring AI's real `ToolCallingAutoConfiguration` on the test classpath —
+sample 1 end-to-end), core line coverage 90.23% / branch 78.14% (gate 80% line, held), spotless, Error Prone,
+enforcer, JaCoCo gate.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| V1 | MEDIUM | `ToolGuard.guarded` applies `rejectIfTooLarge` as its first statement, before `policies.resolve` — the unregistered-tool and policy-denial paths no longer canonicalise oversized arguments | `CipherProbeReverifyTest.probe_the_denial_paths_parse_arguments_of_any_size` |
+| V2 | MEDIUM (scoped) | `AuditChainVerifier.verify` tracks `keyedSeen`; once a `KEYED_VERSION` row has verified, a later `CANONICAL_VERSION` row is `BROKEN`, not silently re-verified unkeyed — closes a partial (keyed-prefix, downgraded-tail) rewrite. A full-trail downgrade to GENESIS is indistinguishable from a legitimately-never-keyed trail and is not covered — QUESTIONS.md #20 | `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (scenario changed to tail-only rewrite; see the test's javadoc) |
+| V3 | LOW | `ArgumentCanonicalizer.hash` prefixes `"agcanon1:"`, `AuditRecorder.recordOversized` prefixes `"agraw1:"` — the two `args_hash` domains no longer collide; `ToolGuard.rejectIfTooLarge` also caps the canonicalised length | `CipherProbeReverifyTest.probe_an_oversized_denial_shares_an_args_hash_with_an_allowed_call` |
+| V4 | LOW | `AgentGuardStartupCheck` warns when `endpoints.enabled` and either `tenant-scoped=false` or `require-tenant=false` | `CipherProbeReverifyStartupTest.probe_a_cross_tenant_approver_opt_out_is_silent_at_startup` |
+| V5 | LOW | `AgentGuardProperties.Pool.platform-thread-count`/`.platform-thread-queue-size`, decoupled from `max-total`; `JedisBudgetStore.onPlatformThreads` takes the queue bound as its own parameter | `CipherProbeJedisFactoryTest.burst` (restored to `max-total=4`, thread/queue properties set to 200) |
+
+## Summary (run 5, prior)
+Every finding of Cipher's clean-verdict pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, on
 `50ed8d3`) is closed on the branch: C4 (MEDIUM), C1/C2/C5/C7/C9/C11 (LOW), C3/C6/C8/C10/C12 (INFO), each with its
-probe flipped (renamed without `probe_`, assertion inverted). `./mvnw -B clean verify` is green: **169 tests** (core
+probe flipped (renamed without `probe_`, assertion inverted). `./mvnw -B clean verify` was green: **169 tests** (core
 123, starter 45 + 1 self-skipping — needs Spring AI's real `ToolCallingAutoConfiguration` on the test classpath —
 sample 1 end-to-end), core line coverage 90.2% / branch 77.7% (gate 80% line, held), spotless, Error Prone,
 enforcer, JaCoCo gate, THIRD-PARTY-NOTICES.
@@ -29,7 +49,18 @@ enforcer, JaCoCo gate, THIRD-PARTY-NOTICES.
 Versions unchanged: Spring Boot 4.0.8, Spring Framework 7.0.9, Spring Security 7.0.7, Spring AI 2.0.1
 (+ `spring-ai-client-chat`, optional), MCP Java SDK 2.0.0, Jedis 7.5.2, Testcontainers 2.0.5, Java 21.
 
-## Interface changes this run (all additive or default-preserving)
+## Interface changes run 6 (all additive or default-preserving)
+- `ArgumentCanonicalizer.hash` and `AuditRecorder.recordOversized` now hash a domain-prefixed input
+  (`"agcanon1:"` / `"agraw1:"`); `ArgumentCanonicalizer.CANONICAL_HASH_DOMAIN` is package-visible for tests.
+  Stored `args_hash` values are unaffected (the chain hashes the row, not the arguments) but cannot be
+  recomputed from raw text without the prefix.
+- `AgentGuardProperties.Pool` gained `platformThreadCount`/`platformThreadQueueSize` (both `Integer`, null =
+  "use max-total", the prior behaviour) and `effectivePlatformThreadCount()`/`effectivePlatformThreadQueueSize()`.
+- `JedisBudgetStore.onPlatformThreads(UnifiedJedis, int threads, Duration maxWait)` is unchanged (delegates to
+  the queue-bound-equals-threads case); a new overload
+  `onPlatformThreads(UnifiedJedis, int threads, int queueSize, Duration maxWait)` is used by the factory.
+
+## Interface changes this run (run 5, prior)
 - `DecisionStore.findByState(DecisionState, int)` is now a default method delegating to the new
   `findByState(DecisionState, String tenantId, int)` with `tenantId=null` (every tenant); both in-memory and JDBC
   implementations override the new one directly.
@@ -76,9 +107,9 @@ app being brought into line with the now-correct, fail-closed default.
 
 ## Proof commands
 ```bash
-./mvnw -B clean verify                                       # 169 tests, all gates
+./mvnw -B clean verify                                       # 173 tests, all gates
 ./mvnw -B -pl agent-guard-core -Ppinning-probe test          # + the 2 child-JVM pinning probes (~25 s)
-./mvnw -B -pl agent-guard-spring-boot-starter test           # 45 + 1 skip (incl. every flipped Cipher probe)
+./mvnw -B -pl agent-guard-spring-boot-starter test           # 46 + 1 skip (incl. every flipped Cipher probe)
 ./mvnw -B -pl agent-guard-sample test                        # 1 end-to-end through a real MCP client
 ```
 
@@ -89,7 +120,16 @@ Micrometer metrics, `@Internal` API pass. Cipher's real-`ToolCallingAutoConfigur
 C11 has no dedicated `CipherProbe*` test (the finding table lists its probe as "git diff"): the fix is entirely in
 `HexagonalArchitectureTest`'s rule definition, verified by the ArchUnit rule itself passing/failing.
 
-## Pain points (plain words)
+## Pain points (plain words) — run 6
+- V2's described fix ("version may only move forward") cannot make its own probe's exact scenario report
+  `BROKEN`: a fully-keyed 2-row trail downgraded entirely back to `ag1` is byte-for-byte the same data as a
+  trail that legitimately never used HMAC, verified after a key is later configured — the case C6 exists to
+  keep `INTACT`. Implemented the fix as literally described (it is correct and valuable for the *detectable*
+  half of the attack — a genuine keyed prefix with a downgraded tail, which is what an attacker who joins an
+  already-running deployment can actually do without breaking the earlier rows' own hashes) and changed the
+  probe to rewrite the tail instead of the head, with a javadoc explaining why. Full write-up: QUESTIONS.md #20.
+
+## Pain points (plain words) — run 5, prior
 - Fixing C12 (audit hashes canonical, not raw) meant every `AuditRecorder.record` call now parses the arguments —
   reintroducing C4's amplification risk on paths that were never covered by the `maxArgumentBytes` check (the early
   policy-denied / unregistered-tool paths in `ToolGuard.guarded`). Rather than widen C4's fix into those paths (not

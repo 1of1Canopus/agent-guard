@@ -101,6 +101,35 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - C12 `AuditRecorder.record` hashes `ArgumentCanonicalizer.canonical(argumentsJson)`, the same form the decision
   store hashes, so `agentguard_audit.args_hash` and `agentguard_decision.args_hash` join for the same call again.
 
+### Security (re-verification round: V1-V5, all closed or scoped)
+- V1 (MEDIUM) `ToolGuard.guarded` now applies the raw byte cap (`rejectIfTooLarge`) as the first statement on
+  every path into the guard, including the unregistered-tool and policy-denial paths — both reachable with no
+  role and no policy at all. Those two denials previously canonicalised (parsed) the arguments before the cap
+  ran; `gate`/`dispatch` keep their now-redundant checks.
+- V2 (MEDIUM) `AuditChainVerifier.verify` tracks whether a `KEYED_VERSION` row has verified while walking the
+  trail; once it has, a later row claiming `CANONICAL_VERSION` is `BROKEN` at its own sequence instead of being
+  silently re-verified with plain SHA-256. C6's migration case (an unkeyed prefix, then keyed rows) is unaffected.
+  **Scope:** this closes a *partial* downgrade — a genuinely keyed prefix followed by a downgraded tail. It cannot
+  close a downgrade of the *entire* trail back to GENESIS: that row shape is identical to a deployment that has
+  never used HMAC, which `AuditChainVerifier` must (and does) still report `INTACT` — see QUESTIONS.md #20.
+- V3 (LOW) the two `args_hash` domains are separated with a fixed prefix hashed into the material:
+  `AuditRecorder.recordOversized` hashes `"agraw1:" + argumentsJson`, `ArgumentCanonicalizer.hash` hashes
+  `"agcanon1:" + canonical(argumentsJson)` — an oversized denial can no longer share `args_hash` with an allowed
+  call. `ToolGuard.rejectIfTooLarge` additionally checks the canonical form's byte length (once the raw check has
+  already bounded the cost of computing it), so a sub-cap raw payload whose canonical form exceeds the cap is also
+  refused as oversized. **Hash-format change:** existing `args_hash` values are unaffected (the chain hashes the
+  row, not the arguments), but a stored `args_hash` can no longer be recomputed from raw arguments text without
+  the domain prefix.
+- V4 (LOW) `AgentGuardStartupCheck` now warns when `agentguard.endpoints.enabled` and either
+  `agentguard.endpoints.tenant-scoped=false` or `agentguard.endpoints.require-tenant=false`, naming the property
+  and the consequence ("approvers see and decide every tenant's decisions and audit rows").
+- V5 (LOW) `AgentGuardProperties.Pool` gets `platform-thread-count` and `platform-thread-queue-size`, decoupled
+  from `max-total` (the Jedis connection pool size); both default to `max-total` when unset, preserving prior
+  behaviour. `JedisBudgetStore.onPlatformThreads` takes the queue bound as its own parameter.
+  `CipherProbeJedisFactoryTest.burst` is restored to `max-total=4` (the real H3/R6 connection-pool contention
+  scenario) with `platform-thread-count`/`platform-thread-queue-size=200`, so the burst still passes without
+  inflating the connection pool.
+
 ### Added
 - `agent-guard-core` (Apache-2.0, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable

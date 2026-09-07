@@ -15,7 +15,16 @@ public final class ArgumentCanonicalizer {
     return JsonText.parse(argumentsJson).map(n -> n.toJson(true)).orElse(argumentsJson);
   }
 
+  /**
+   * V3: domain-separated from {@link com.housedevinci.agentguard.application.AuditRecorder
+   * #recordOversized}'s raw-text hash, so a denied oversized call can never share {@code args_hash}
+   * with an allowed one. Canonicalisation is not size-preserving (an unpaired surrogate goes from
+   * one raw UTF-8 byte to a six-byte {@code \\u} escape), so a payload under the byte cap can still
+   * produce a canonical form over it.
+   */
+  static final String CANONICAL_HASH_DOMAIN = "agcanon1:"; // package-visible for tests
+
   public static String hash(String argumentsJson) {
-    return Hashes.sha256Hex(canonical(argumentsJson));
+    return Hashes.sha256Hex(CANONICAL_HASH_DOMAIN + canonical(argumentsJson));
   }
 }

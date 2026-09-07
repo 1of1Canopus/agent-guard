@@ -95,8 +95,13 @@ class CipherProbeCleanTest {
   @Test
   void the_audit_row_hashes_the_same_canonical_form_as_the_decision() {
     String args = "{ \"b\":2, \"a\":1 }";
-    // AuditRecorder now hashes ArgumentCanonicalizer.canonical(args), same as the decision store
-    assertThat(Hashes.sha256Hex(ArgumentCanonicalizer.canonical(args)))
+    // AuditRecorder now hashes ArgumentCanonicalizer.canonical(args), same as the decision store.
+    // V3 domain-separates this hash from the oversized-denial raw hash with a fixed prefix, so the
+    // expectation here is computed the same way ArgumentCanonicalizer.hash is (see V3).
+    assertThat(
+            Hashes.sha256Hex(
+                ArgumentCanonicalizer.CANONICAL_HASH_DOMAIN
+                    + ArgumentCanonicalizer.canonical(args)))
         .isEqualTo(ArgumentCanonicalizer.hash(args));
   }
 }

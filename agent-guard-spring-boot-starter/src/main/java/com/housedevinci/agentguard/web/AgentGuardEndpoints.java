@@ -47,6 +47,7 @@ public class AgentGuardEndpoints {
   private final ArgumentRedactor redactor;
   private final boolean allowAnonymous;
   private final boolean tenantScoped;
+  private final boolean requireTenant;
 
   public AgentGuardEndpoints(
       ApprovalService approvals,
@@ -64,12 +65,28 @@ public class AgentGuardEndpoints {
       ArgumentRedactor redactor,
       boolean allowAnonymous,
       boolean tenantScoped) {
+    this(approvals, audit, principals, redactor, allowAnonymous, tenantScoped, true);
+  }
+
+  /**
+   * @param requireTenant when {@code tenantScoped}, refuse (403) an approver with no tenant instead
+   *     of letting them see and decide every tenant's work (the security review C9)
+   */
+  public AgentGuardEndpoints(
+      ApprovalService approvals,
+      AuditReader audit,
+      PrincipalResolver principals,
+      ArgumentRedactor redactor,
+      boolean allowAnonymous,
+      boolean tenantScoped,
+      boolean requireTenant) {
     this.approvals = approvals;
     this.audit = audit;
     this.principals = principals;
     this.redactor = redactor;
     this.allowAnonymous = allowAnonymous;
     this.tenantScoped = tenantScoped;
+    this.requireTenant = requireTenant;
   }
 
   @GetMapping("/decisions")
@@ -77,8 +94,7 @@ public class AgentGuardEndpoints {
       @RequestParam(defaultValue = "100") int limit, Principal caller) {
     approver(caller);
     var tenant = approverTenant();
-    return approvals.pending(Math.max(1, Math.min(limit, 500))).stream()
-        .filter(d -> visible(d, tenant))
+    return approvals.pending(Math.max(1, Math.min(limit, 500)), tenant.orElse(null)).stream()
         .map(DecisionResponse::from)
         .toList();
   }
@@ -121,9 +137,7 @@ public class AgentGuardEndpoints {
   public List<AuditEvent> audit(@RequestParam(defaultValue = "100") int limit, Principal caller) {
     approver(caller);
     var tenant = approverTenant();
-    return audit.latest(Math.max(1, Math.min(limit, 500))).stream()
-        .filter(e -> tenant.isEmpty() || tenant.get().equals(e.tenantId()))
-        .toList();
+    return audit.latest(tenant.orElse(null), Math.max(1, Math.min(limit, 500)));
   }
 
   /** A decision of another tenant does not exist for this approver (404, not 403). */
@@ -136,8 +150,21 @@ public class AgentGuardEndpoints {
         .orElseThrow(() -> new DecisionNotFoundException(decisionId));
   }
 
+  /**
+   * C9: tenant scoping must not fail open. When {@code tenantScoped}, an approver whose resolver
+   * yields no tenant (a missing claim, a service account, a misconfigured {@code TenantResolver})
+   * is refused instead of silently seeing and deciding every tenant's work, unless the deployment
+   * has explicitly opted into a cross-tenant approver ({@code require-tenant=false}).
+   */
   private Optional<String> approverTenant() {
-    return tenantScoped ? principals.resolve().tenantId() : Optional.empty();
+    if (!tenantScoped) {
+      return Optional.empty();
+    }
+    var tenant = principals.resolve().tenantId();
+    if (tenant.isEmpty() && requireTenant) {
+      throw new MissingTenantException();
+    }
+    return tenant;
   }
 
   private static boolean visible(PendingDecision d, Optional<String> tenant) {
@@ -170,6 +197,21 @@ public class AgentGuardEndpoints {
   ResponseEntity<Map<String, String>> unauthorized(AnonymousApproverException e) {
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
         .body(Map.of("code", "AG-HTTP-401", "message", e.getMessage()));
+  }
+
+  static final class MissingTenantException extends RuntimeException {
+    MissingTenantException() {
+      super(
+          "approver has no tenant; refused under agentguard.endpoints.tenant-scoped=true and"
+              + " require-tenant=true. Set agentguard.endpoints.require-tenant=false only for a"
+              + " deliberate cross-tenant approver role.");
+    }
+  }
+
+  @ExceptionHandler(MissingTenantException.class)
+  ResponseEntity<Map<String, String>> missingTenant(MissingTenantException e) {
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
+        .body(Map.of("code", "AG-HTTP-403", "message", e.getMessage()));
   }
 
   @ExceptionHandler(SelfApprovalException.class)

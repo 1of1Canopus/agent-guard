@@ -143,7 +143,15 @@ public final class ApprovalService {
   }
 
   public List<PendingDecision> pending(int limit) {
-    return store.findByState(DecisionState.PENDING, limit).stream()
+    return pending(limit, null);
+  }
+
+  /**
+   * Same, restricted to one tenant ({@code null} = every tenant); pushed into the store query so a
+   * busy neighbour tenant cannot push a tenant's own pending work past {@code limit} (C10).
+   */
+  public List<PendingDecision> pending(int limit, String tenantId) {
+    return store.findByState(DecisionState.PENDING, tenantId, limit).stream()
         .map(this::expireIfOverdue)
         .filter(d -> d.state() == DecisionState.PENDING)
         .toList();

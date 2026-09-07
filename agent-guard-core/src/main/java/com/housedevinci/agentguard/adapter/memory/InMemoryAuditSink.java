@@ -36,10 +36,13 @@ public final class InMemoryAuditSink implements AuditSink, AuditReader, AuditAnc
   }
 
   @Override
-  public synchronized List<AuditEvent> latest(int limit) {
+  public synchronized List<AuditEvent> latest(String tenantId, int limit) {
     var copy = new ArrayList<>(events);
     java.util.Collections.reverse(copy);
-    return copy.stream().limit(limit).toList();
+    return copy.stream()
+        .filter(e -> tenantId == null || tenantId.equals(e.tenantId()))
+        .limit(limit)
+        .toList();
   }
 
   @Override

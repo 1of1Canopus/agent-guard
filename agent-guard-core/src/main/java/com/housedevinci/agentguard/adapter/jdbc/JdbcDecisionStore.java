@@ -131,15 +131,28 @@ public final class JdbcDecisionStore implements DecisionStore {
   }
 
   @Override
-  public List<PendingDecision> findByState(DecisionState state, int limit) {
+  public List<PendingDecision> findByState(DecisionState state, String tenantId, int limit) {
     int capped = Math.max(1, Math.min(limit, 1000));
+    if (tenantId == null) {
+      return query(
+          "SELECT "
+              + COLUMNS
+              + " FROM agentguard_decision WHERE state = ? ORDER BY created_at LIMIT ?",
+          ps -> {
+            ps.setString(1, state.name());
+            ps.setInt(2, capped);
+          },
+          capped);
+    }
     return query(
         "SELECT "
             + COLUMNS
-            + " FROM agentguard_decision WHERE state = ? ORDER BY created_at LIMIT ?",
+            + " FROM agentguard_decision WHERE state = ? AND tenant_id = ? ORDER BY created_at"
+            + " LIMIT ?",
         ps -> {
           ps.setString(1, state.name());
-          ps.setInt(2, capped);
+          ps.setString(2, tenantId);
+          ps.setInt(3, capped);
         },
         capped);
   }

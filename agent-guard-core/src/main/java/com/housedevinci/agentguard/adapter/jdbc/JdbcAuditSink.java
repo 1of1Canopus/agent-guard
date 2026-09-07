@@ -155,21 +155,38 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   }
 
   @Override
-  public List<AuditEvent> latest(int limit) {
+  public List<AuditEvent> latest(String tenantId, int limit) {
+    if (tenantId == null) {
+      return read(
+          "SELECT " + COLUMNS + " FROM agentguard_audit WHERE seq > ? ORDER BY seq DESC LIMIT ?",
+          0,
+          limit);
+    }
     return read(
-        "SELECT " + COLUMNS + " FROM agentguard_audit WHERE seq > ? ORDER BY seq DESC LIMIT ?",
+        "SELECT "
+            + COLUMNS
+            + " FROM agentguard_audit WHERE seq > ? AND tenant_id = ? ORDER BY seq DESC LIMIT ?",
         0,
-        limit);
+        limit,
+        tenantId);
   }
 
   private List<AuditEvent> read(String sql, long after, int limit) {
+    return read(sql, after, limit, null);
+  }
+
+  private List<AuditEvent> read(String sql, long after, int limit, String tenantId) {
     int capped = Math.max(1, Math.min(limit, 1000));
     return JdbcSupport.withConnection(
         dataSource,
         c -> {
           try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setLong(1, after);
-            ps.setInt(2, capped);
+            int i = 1;
+            ps.setLong(i++, after);
+            if (tenantId != null) {
+              ps.setString(i++, tenantId);
+            }
+            ps.setInt(i, capped);
             try (ResultSet rs = ps.executeQuery()) {
               var out = new ArrayList<AuditEvent>();
               while (rs.next()) {

@@ -21,7 +21,20 @@ public interface DecisionStore {
   /** Number of PENDING decisions parked by this principal in this tenant (null = no tenant). */
   long countPending(String principalId, String tenantId);
 
-  List<PendingDecision> findByState(DecisionState state, int limit);
+  /**
+   * All tenants. Prefer {@link #findByState(DecisionState, String, int)} for a tenant-scoped
+   * caller: filtering after this applies {@code limit} can hide a tenant's own pending work behind
+   * a busier neighbour's (the security review C10).
+   */
+  default List<PendingDecision> findByState(DecisionState state, int limit) {
+    return findByState(state, null, limit);
+  }
+
+  /**
+   * Same, restricted to one tenant ({@code null} = every tenant, for internal maintenance such as
+   * expiring overdue decisions). The filter must apply before {@code limit}, not after (C10).
+   */
+  List<PendingDecision> findByState(DecisionState state, String tenantId, int limit);
 
   /**
    * Compare-and-set of the state: succeeds only if the stored state is {@code expected}.

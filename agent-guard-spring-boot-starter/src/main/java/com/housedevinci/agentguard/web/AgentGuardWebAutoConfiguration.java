@@ -35,6 +35,7 @@ public class AgentGuardWebAutoConfiguration {
         principals,
         redactor,
         props.getEndpoints().isAllowAnonymous(),
-        props.getEndpoints().isTenantScoped());
+        props.getEndpoints().isTenantScoped(),
+        props.getEndpoints().isRequireTenant());
   }
 }

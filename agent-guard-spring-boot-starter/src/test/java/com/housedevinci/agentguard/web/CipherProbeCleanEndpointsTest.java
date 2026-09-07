@@ -12,7 +12,6 @@ import com.housedevinci.agentguard.domain.SideEffect;
 import com.housedevinci.agentguard.domain.ToolRef;
 import java.util.Optional;
 import java.util.Set;
-import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
@@ -99,14 +98,14 @@ class CipherProbeCleanEndpointsTest {
    * cross-tenant approver as {@code require-tenant=false}.
    */
   @Test
-  void probe_an_approver_without_a_tenant_reads_every_tenant() throws Exception {
+  void an_approver_without_a_tenant_is_refused() throws Exception {
     park("t1", "{\"a\":1}");
     park("t2", "{\"a\":2}");
 
     loginAs("nobody");
     mvc.perform(get("/agentguard/decisions").with(user("nobody")))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.length()").value(2));
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code").value("AG-HTTP-403"));
   }
 
   /**
@@ -119,7 +118,7 @@ class CipherProbeCleanEndpointsTest {
    * limit)} and {@code AuditReader.latest(tenantId, limit)} — instead of filtering the page.
    */
   @Test
-  void probe_the_pending_inbox_is_filtered_after_the_store_limit() throws Exception {
+  void the_pending_inbox_is_filtered_by_the_store_before_the_limit() throws Exception {
     park("t2", "{\"a\":1}");
     park("t2", "{\"a\":2}");
     park("t2", "{\"a\":3}");
@@ -128,6 +127,6 @@ class CipherProbeCleanEndpointsTest {
     loginAs("t1-alice");
     mvc.perform(get("/agentguard/decisions").param("limit", "3").with(user("t1-alice")))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.length()").value(Matchers.lessThan(1)));
+        .andExpect(jsonPath("$.length()").value(1));
   }
 }

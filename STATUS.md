@@ -1,7 +1,35 @@
-# STATUS.md — Module B · Agent Guard, free core (run 9: Isis closes Cipher's keyed-from-birth verification)
+# STATUS.md — Module B · Agent Guard, free core (run 10: Isis closes Cipher's clean-verdict J1)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
+
+## Summary (run 10)
+**Done.** Isis closed J1 (LOW) from Cipher's clean verdict on `f27c45e`
+(`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Clean verdict (f27c45e)"): the schema step's pre-redesign guard
+matched `information_schema.tables`/`.columns` with no `table_schema` filter, so a stale `agentguard_audit` left in
+another schema the role can see permanently blocked a fresh install in the current schema, even though every other
+statement in the step is search_path-relative. Fixed as Cipher prescribed: both existence checks now resolve
+through `to_regclass('agentguard_audit')` / `to_regclass('agentguard_audit_anchor')`, and both column checks look
+up `key_id`/`keyed` via `pg_attribute` against that same oid (`attnum > 0 AND NOT attisdropped`) instead of
+scanning `information_schema` unscoped.
+
+`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install` inverted from
+asserting the refusal (the reproduction) to `assertThatCode(...).doesNotThrowAnyException()` (the fix); the G1/G2
+same-schema probes (`probe_a_fresh_empty_database_never_trips_the_predates_guard`,
+`probe_the_predates_message_offers_no_in_place_upgrade`) are unchanged and still green — a pre-redesign table in
+the *current* schema is still refused with the same message.
+
+`./mvnw -B clean verify` is green: **215 tests** (core 156, starter 58 + 1 self-skipping — needs Spring AI's real
+`ToolCallingAutoConfiguration` on the test classpath, pre-existing and unrelated to J1 — sample 1 end-to-end), 0
+failures. Core line coverage **90.60%** (gate 80% line, held; JaCoCo CSV, `LINE_COVERED`/`(LINE_COVERED+LINE_MISSED)`
+over `agent-guard-core/target/site/jacoco/jacoco.csv`) — unchanged from run 9, this is a two-clause SQL rewrite plus
+one inverted probe, not a new production branch.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| J1 | LOW | Schema-predates guard resolves both tables via `to_regclass(...)` and both columns via `pg_attribute` against that oid, instead of unscoped `information_schema`. | `CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install` |
+
+Full table below (run 9 and earlier) unchanged.
 
 ## Summary (run 9)
 **Done.** Isis closed all six findings from Cipher's verification of keyed-from-birth (`722e9a5`,

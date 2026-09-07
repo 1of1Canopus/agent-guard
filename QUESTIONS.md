@@ -172,3 +172,11 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     hangs on purpose for 2 x 10 s).
 15. **[decided]** Testcontainers 2.0.5 (Boot-managed): `testcontainers-postgresql` + `testcontainers-junit-jupiter`;
     Redis via `GenericContainer("redis:7-alpine")`.
+18. **[decided]** Cipher's clean verdict on `f27c45e` (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Clean
+    verdict (f27c45e)") found one new LOW, J1: the schema-predates guard matched `information_schema` unscoped
+    while the rest of the step is search_path-relative, so a stale pre-redesign `agentguard_audit` in another
+    visible schema permanently blocked a fresh install in the current one. Closed by Isis exactly as prescribed —
+    both existence checks now go through `to_regclass('agentguard_audit')` /
+    `to_regclass('agentguard_audit_anchor')`, both column checks through `pg_attribute` against that same oid
+    (`attnum > 0 AND NOT attisdropped`) — no pushback filed. Full write-up: CHANGELOG "Cipher clean verdict on
+    f27c45e (J1 LOW closed)"; STATUS.md run 10.

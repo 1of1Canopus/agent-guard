@@ -4,6 +4,21 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Security (Cipher clean verdict on `f27c45e`: J1 LOW closed)
+- **J1 (LOW):** the schema step's pre-redesign guard matched `information_schema.tables`/`.columns` with no
+  `table_schema` filter, while every other statement in the step (`CREATE TABLE IF NOT EXISTS agentguard_audit`,
+  the triggers, the anchor) is unqualified and therefore search_path-relative — a stale pre-redesign copy of
+  `agentguard_audit` sitting in another schema the role can see (reached, for example, by following
+  `docs/index.md`'s "archive by rename or drop" via `ALTER TABLE agentguard_audit SET SCHEMA archive`, or in a
+  schema-per-tenant database where one tenant has migrated and another has not) permanently blocked a fresh
+  install in the current schema. The guard now resolves both tables via `to_regclass(...)`, the same
+  search_path-relative resolution the rest of the step uses, and checks for `key_id`/`keyed` via `pg_attribute`
+  against that same oid (`attnum > 0 AND NOT attisdropped`) instead of scanning `information_schema` unscoped.
+  No integrity impact (denial of startup, fails in the safe direction) — hence LOW.
+- **Test:** `CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`
+  inverted from asserting the refusal to `doesNotThrowAnyException()`; the G1/G2 same-schema pre-redesign probes
+  (column absent in the current schema still refuses) are unchanged and still pass.
+
 ### Security (Cipher verification of keyed-from-birth, `722e9a5`: G1/G2 MEDIUM, H1/H2 LOW, H3/H4 INFO closed)
 Cipher's verification pass on the keyed-from-birth design (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`,
 "Verification of keyed-from-birth") found two MEDIUM in the schema step and two LOW/two INFO in configuration and

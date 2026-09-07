@@ -180,3 +180,11 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     `to_regclass('agentguard_audit_anchor')`, both column checks through `pg_attribute` against that same oid
     (`attnum > 0 AND NOT attisdropped`) — no pushback filed. Full write-up: CHANGELOG "Cipher clean verdict on
     f27c45e (J1 LOW closed)"; STATUS.md run 10.
+19. **[decided]** Cipher's final verdict on `05f209d` (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, final
+    section) found one new LOW, K1: the J1 fix scoped the guard to search_path visibility (`to_regclass` resolves
+    like a reference, the first schema on the search_path holding the name), while the unqualified `CREATE TABLE`
+    it protects targets only `current_schema()` — a pre-redesign copy on the search_path but behind the creation
+    schema still blocked a fresh install that would have been correct. Closed by Isis exactly as prescribed —
+    both oids resolved via `to_regclass(quote_ident(current_schema()) || '.agentguard_audit')` /
+    `... '.agentguard_audit_anchor'` in one `DECLARE` block — no pushback filed. Full write-up: CHANGELOG "Cipher
+    final verdict on 05f209d (K1 LOW closed)"; STATUS.md run 11.

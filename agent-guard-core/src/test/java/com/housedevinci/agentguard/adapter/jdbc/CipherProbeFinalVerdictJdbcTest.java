@@ -70,23 +70,19 @@ class CipherProbeFinalVerdictJdbcTest {
   }
 
   /**
-   * K1. The J1 fix scopes the guard to search_path <em>visibility</em> ({@code to_regclass}), but
-   * {@code CREATE TABLE IF NOT EXISTS agentguard_audit} targets the <em>creation</em> schema —
-   * {@code current_schema()}, the first entry of the search_path. The two are not the same set. A
-   * stale pre-redesign copy in a schema that is on the search_path but <em>behind</em> the creation
-   * schema is visible to {@code to_regclass} and is therefore refused, even though the step would
-   * have created a brand-new, correct table in the schema ahead of it. This is J1's own symptom,
-   * narrowed from "any schema the role can see" to "any schema on the search_path" rather than
-   * closed. Asserted here as it behaves today (the reproduction); the fix inverts it to {@code
-   * doesNotThrowAnyException}.
+   * K1, fixed. The guard now resolves both oids against {@code current_schema()} explicitly
+   * (quote_ident'd), the same schema the unqualified {@code CREATE TABLE} below targets, instead of
+   * against search_path <em>visibility</em>. A stale pre-redesign copy in a schema that is on the
+   * search_path but <em>behind</em> the creation schema is no longer visible to the guard, and a
+   * fresh install proceeds — correctly, since the step creates a brand-new, correct table in the
+   * schema ahead of it and never touches the stale copy.
    */
   @Test
   void probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install()
       throws Exception {
     sql("CREATE SCHEMA archive");
     sql("CREATE TABLE archive.agentguard_audit (seq bigserial PRIMARY KEY, hash char(64))");
-    assertThatThrownBy(() -> JdbcSupport.initializeSchema(dsArchiveOnPath))
-        .hasMessageContaining("audit schema predates keyed-from-birth");
+    assertThatCode(() -> JdbcSupport.initializeSchema(dsArchiveOnPath)).doesNotThrowAnyException();
   }
 
   /**

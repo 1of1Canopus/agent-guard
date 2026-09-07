@@ -1,7 +1,39 @@
-# STATUS.md — Module B · Agent Guard, free core (run 10: Isis closes Cipher's clean-verdict J1)
+# STATUS.md — Module B · Agent Guard, free core (run 11: Isis closes Cipher's final-verdict K1)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
+
+## Summary (run 11)
+**Done.** Isis closed K1 (LOW) from Cipher's final verdict on `05f209d`
+(`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, final section): the J1 fix scoped the schema-predates guard to
+search_path *visibility* (`to_regclass`, which resolves like a reference — first schema on the search_path
+holding the name, anywhere along the path), while the unqualified `CREATE TABLE IF NOT EXISTS agentguard_audit`
+targets only `current_schema()`, the first *existing* entry — narrower than J1's original bug but not closed. A
+pre-redesign copy in a schema on the search_path but behind the creation schema was still refused, even though
+the step would have created a correct new table ahead of it. Fixed exactly as Cipher prescribed: both oids now
+resolve via `to_regclass(quote_ident(current_schema()) || '.agentguard_audit')` /
+`... '.agentguard_audit_anchor'`, declared once in a `DO $$ DECLARE` block, with `quote_ident` (required, not
+decoration — a schema with capitals or a dot would otherwise be re-parsed as a different name).
+
+`CipherProbeFinalVerdictJdbcTest.probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install`
+inverted from asserting the refusal to `assertThatCode(...).doesNotThrowAnyException()`; J1's own probe
+(`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`) and both
+G1/G2 same-schema probes (`probe_a_fresh_empty_database_never_trips_the_predates_guard`,
+`probe_the_predates_message_offers_no_in_place_upgrade`) are unchanged and still green, as are
+`CipherProbeFinalVerdictJdbcTest`'s other three recorded (non-finding) probes K2–K4.
+
+`./mvnw -B clean verify` is green: **220 tests** (core 161, starter 58 + 1 self-skipping — needs Spring AI's real
+`ToolCallingAutoConfiguration` on the test classpath, pre-existing and unrelated to K1 — sample 1 end-to-end), 0
+failures. Core line coverage **90.60%** (gate 80% line, held; JaCoCo CSV, `LINE_COVERED`/`(LINE_COVERED+LINE_MISSED)`
+over `agent-guard-core/target/site/jacoco/jacoco.csv`) — unchanged from run 10, this is a two-clause SQL rewrite
+plus one inverted probe, not a new production branch. No pushback filed; fix matched Cipher's prescription
+exactly.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| K1 | LOW | Schema-predates guard resolves both oids via `to_regclass(quote_ident(current_schema()) || '.<table>')`, scoped to the creation schema instead of search_path visibility. | `CipherProbeFinalVerdictJdbcTest.probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install` |
+
+Full table below (run 10 and earlier) unchanged.
 
 ## Summary (run 10)
 **Done.** Isis closed J1 (LOW) from Cipher's clean verdict on `f27c45e`

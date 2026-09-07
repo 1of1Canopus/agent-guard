@@ -15,17 +15,26 @@ SELECT pg_advisory_xact_lock(18374244850549833);
 -- can see. A pre-redesign copy sitting in another visible schema (e.g. after an operator followed
 -- docs/index.md's "rename or drop" and did `ALTER TABLE ... SET SCHEMA archive`) no longer blocks a
 -- fresh install in the current schema.
-DO $$ BEGIN
-  IF (to_regclass('agentguard_audit') IS NOT NULL
+-- K1 (Cipher): to_regclass resolves like a *reference* — the first schema on the search_path that
+-- holds the name, anywhere along the path — while the unqualified CREATE TABLE below targets only
+-- current_schema(), the first *existing* entry. A pre-redesign copy in a schema that is on the
+-- search_path but behind the creation schema was therefore visible to to_regclass and refused a
+-- fresh install that would have been entirely correct. Both oids are now resolved against
+-- current_schema() explicitly, quote_ident'd so a schema named with capitals or a dot is not
+-- re-parsed as a different name, matching exactly what the unqualified CREATE TABLE targets.
+DO $$
+DECLARE
+  a oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit');
+  n oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit_anchor');
+BEGIN
+  IF (a IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM pg_attribute
-        WHERE attrelid = to_regclass('agentguard_audit')
-          AND attname = 'key_id' AND attnum > 0 AND NOT attisdropped))
-     OR (to_regclass('agentguard_audit_anchor') IS NOT NULL
+        WHERE attrelid = a AND attname = 'key_id' AND attnum > 0 AND NOT attisdropped))
+     OR (n IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM pg_attribute
-        WHERE attrelid = to_regclass('agentguard_audit_anchor')
-          AND attname = 'keyed' AND attnum > 0 AND NOT attisdropped)) THEN
+        WHERE attrelid = n AND attname = 'keyed' AND attnum > 0 AND NOT attisdropped)) THEN
     RAISE EXCEPTION
       'audit schema predates keyed-from-birth; archive the table and start a new trail (see SECURITY-NOTES)';
   END IF;

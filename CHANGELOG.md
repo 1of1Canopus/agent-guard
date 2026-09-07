@@ -4,6 +4,26 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Security (Cipher final verdict on `05f209d`: K1 LOW closed)
+- **K1 (LOW):** the J1 fix scoped the schema-predates guard to search_path *visibility*
+  (`to_regclass('agentguard_audit')`, which resolves like a reference — the first schema on the search_path that
+  holds the name, anywhere along the path), while the unqualified `CREATE TABLE IF NOT EXISTS agentguard_audit` in
+  the same script targets only `current_schema()`, the first *existing* entry. The two are not the same set: a
+  stale pre-redesign copy sitting in a schema that is on the search_path but *behind* the creation schema (e.g.
+  `search_path = public, archive` with a pre-redesign `agentguard_audit` left in `archive`) was still visible to
+  `to_regclass` and refused a fresh install that would have created a brand-new, fully correct table in `public`
+  and never touched the stale copy — J1's own symptom, narrowed rather than closed. Both oids are now resolved
+  once, in a `DECLARE`, against `to_regclass(quote_ident(current_schema()) || '.agentguard_audit')` /
+  `... '.agentguard_audit_anchor'` — the same schema the unqualified `CREATE TABLE` targets — with `quote_ident`
+  required so a schema named with capitals or a dot is not re-parsed as a different name. No integrity impact
+  (denial of startup, fails in the safe direction) — hence LOW.
+- **Test:**
+  `CipherProbeFinalVerdictJdbcTest.probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install`
+  inverted from asserting the refusal (the reproduction) to `assertThatCode(...).doesNotThrowAnyException()` (the
+  fix); J1's own probe
+  (`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`) and both
+  G1/G2 same-schema probes are unchanged and still green.
+
 ### Security (Cipher clean verdict on `f27c45e`: J1 LOW closed)
 - **J1 (LOW):** the schema step's pre-redesign guard matched `information_schema.tables`/`.columns` with no
   `table_schema` filter, while every other statement in the step (`CREATE TABLE IF NOT EXISTS agentguard_audit`,

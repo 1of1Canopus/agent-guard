@@ -37,7 +37,13 @@ final class JedisBudgetStoreFactory {
       }
     }
     if (pool.isPlatformThreads() && Runtime.version().feature() < 24) {
-      return JedisBudgetStore.onPlatformThreads(jedis, pool.getMaxTotal(), pool.getMaxWait());
+      // V5: worker-thread count and queue bound are their own properties, decoupled from
+      // max-total (the Jedis connection pool size) — see AgentGuardProperties.Pool.
+      return JedisBudgetStore.onPlatformThreads(
+          jedis,
+          pool.effectivePlatformThreadCount(),
+          pool.effectivePlatformThreadQueueSize(),
+          pool.getMaxWait());
     }
     return new JedisBudgetStore(jedis);
   }

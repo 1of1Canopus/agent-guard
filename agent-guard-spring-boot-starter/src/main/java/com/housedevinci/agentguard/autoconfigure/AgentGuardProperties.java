@@ -319,10 +319,28 @@ public class AgentGuardProperties {
     private boolean preparePool = true;
 
     /**
-     * On JDK 21-23 run every Redis call on a bounded pool of platform threads (size max-total), so
-     * a virtual-thread caller never reaches the connection pool's growth lock. Ignored on JDK 24+.
+     * On JDK 21-23 run every Redis call on a bounded pool of platform threads, so a virtual-thread
+     * caller never reaches the connection pool's growth lock. Ignored on JDK 24+.
      */
     private boolean platformThreads = true;
+
+    /**
+     * V5: worker-thread count for the platform-thread pool above, decoupled from {@code max-total}
+     * (the Jedis connection pool size). Null defaults to {@code max-total}, matching the module's
+     * original behaviour. A caller who wants a small, contended connection pool (to exercise or
+     * bound Redis concurrency) and a burst of concurrent virtual-thread callers sets this
+     * independently instead of inflating {@code max-total} — the workers simply block on the
+     * connection pool the way a virtual thread never should.
+     */
+    @Min(1)
+    private Integer platformThreadCount;
+
+    /**
+     * V5: bound of the platform-thread pool's work queue (Cipher C7). Null defaults to the
+     * effective {@link #effectivePlatformThreadCount()}.
+     */
+    @Min(1)
+    private Integer platformThreadQueueSize;
 
     public boolean isPlatformThreads() {
       return platformThreads;
@@ -338,6 +356,32 @@ public class AgentGuardProperties {
 
     public void setMaxTotal(int v) {
       this.maxTotal = v;
+    }
+
+    public Integer getPlatformThreadCount() {
+      return platformThreadCount;
+    }
+
+    public void setPlatformThreadCount(Integer v) {
+      this.platformThreadCount = v;
+    }
+
+    public Integer getPlatformThreadQueueSize() {
+      return platformThreadQueueSize;
+    }
+
+    public void setPlatformThreadQueueSize(Integer v) {
+      this.platformThreadQueueSize = v;
+    }
+
+    public int effectivePlatformThreadCount() {
+      return platformThreadCount == null ? maxTotal : platformThreadCount;
+    }
+
+    public int effectivePlatformThreadQueueSize() {
+      return platformThreadQueueSize == null
+          ? effectivePlatformThreadCount()
+          : platformThreadQueueSize;
     }
 
     public Integer getMinIdle() {

@@ -50,14 +50,27 @@ public final class JedisBudgetStore implements BudgetStore, AutoCloseable {
   /** Runs every call on {@code threads} daemon platform threads, bounded by {@code maxWait}. */
   public static JedisBudgetStore onPlatformThreads(
       UnifiedJedis jedis, int threads, Duration maxWait) {
+    return onPlatformThreads(jedis, threads, threads, maxWait);
+  }
+
+  /**
+   * Same, with the worker pool and its bounded work queue (Cipher C7) sized independently (V5):
+   * {@code threads} need not equal the Jedis connection pool's own {@code max-total} — a small,
+   * contended connection pool and a large burst of concurrent virtual-thread callers are two
+   * different numbers, and workers simply block on the connection pool the way a virtual thread
+   * never should.
+   */
+  public static JedisBudgetStore onPlatformThreads(
+      UnifiedJedis jedis, int threads, int queueSize, Duration maxWait) {
     int n = Math.max(1, threads);
+    int q = Math.max(1, queueSize);
     var pool =
         new ThreadPoolExecutor(
             n,
             n,
             0L,
             TimeUnit.MILLISECONDS,
-            new ArrayBlockingQueue<>(n),
+            new ArrayBlockingQueue<>(q),
             r -> {
               var t = new Thread(r, "agentguard-redis");
               t.setDaemon(true);

@@ -42,11 +42,13 @@ class CipherProbeJedisFactoryTest {
     int threads = 200;
     var pool = new AgentGuardProperties.Pool();
     pool.setPreparePool(prefill);
-    // each virtual thread has at most one call in flight at a time (its own loop is sequential),
-    // so `threads` concurrent submitters is the real ceiling; size the platform-thread pool (and
-    // its now-bounded queue, Cipher C7) to that ceiling instead of a small fixed pool that would
-    // legitimately reject most of a burst this size under the queue-saturation fix
-    pool.setMaxTotal(threads);
+    // V5: max-total (the Jedis connection pool) stays small and contended, as H3/R6 intended —
+    // the platform-thread pool and its bounded queue (Cipher C7) are sized from their own
+    // properties, decoupled from max-total, so the burst does not have to inflate the connection
+    // pool just to get enough workers to submit to
+    pool.setMaxTotal(4);
+    pool.setPlatformThreadCount(threads);
+    pool.setPlatformThreadQueueSize(threads);
     var store =
         JedisBudgetStoreFactory.create(
             URI.create("redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379)), pool);

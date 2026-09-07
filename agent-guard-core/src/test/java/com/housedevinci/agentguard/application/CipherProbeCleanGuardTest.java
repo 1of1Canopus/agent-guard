@@ -1,6 +1,7 @@
 package com.housedevinci.agentguard.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.housedevinci.agentguard.adapter.memory.InMemoryAuditSink;
 import com.housedevinci.agentguard.domain.AuditChain;
@@ -36,7 +37,7 @@ class CipherProbeCleanGuardTest {
    * cap on the ALLOW path in {@code dispatch} before anything hashes or previews the arguments).
    */
   @Test
-  void probe_arguments_are_parsed_before_the_size_cap_refuses_them() {
+  void the_size_cap_refuses_arguments_before_they_are_parsed() {
     var f = new GuardFixture();
     f.registry.register(
         "write", new PolicyRule(Set.of("AGENT"), Set.of(), Set.of(), SideEffect.WRITE));
@@ -76,9 +77,9 @@ class CipherProbeCleanGuardTest {
     assertThat(result).isInstanceOf(GuardResult.Denied.class);
     assertThat(((GuardResult.Denied) result).code())
         .isEqualTo(com.housedevinci.agentguard.domain.ErrorCodes.APPROVAL_ARGS_TOO_LARGE);
-    // but the dedup lookup — which only happens after ArgumentCanonicalizer.hash parsed the whole
-    // payload — already ran: the parse is not bounded by maxArgumentBytes
-    assertThat(seen.get()).isNotNull();
+    // the size cap now runs first: the dedup lookup (which parses via ArgumentCanonicalizer.hash)
+    // never ran
+    assertThat(seen.get()).isNull();
   }
 
   /**
@@ -90,7 +91,7 @@ class CipherProbeCleanGuardTest {
    * {@code equalsIgnoreCase} in {@code ApprovalService.fourEyes}.
    */
   @Test
-  void probe_four_eyes_is_bypassed_by_a_differently_cased_approver_id() {
+  void four_eyes_rejects_a_differently_cased_approver_id() {
     var f = new GuardFixture();
     var agent = new Principal("alice", Set.of("AGENT"), Set.of(), "acme");
     var parked =
@@ -100,10 +101,9 @@ class CipherProbeCleanGuardTest {
             "preview");
     f.executors.register(parked.id(), i -> "ran");
 
-    var outcome = f.approvals.approve(parked.id(), "ALICE"); // same human, other casing
-
-    assertThat(outcome.decision().state()).isEqualTo(DecisionState.APPROVED);
-    assertThat(outcome.decision().decidedBy()).isEqualTo("ALICE");
+    // same human, other casing: still self-approval
+    assertThatThrownBy(() -> f.approvals.approve(parked.id(), "ALICE"))
+        .isInstanceOf(com.housedevinci.agentguard.domain.SelfApprovalException.class);
     // and with a trailing space
     var parked2 =
         f.approvals.park(
@@ -111,8 +111,8 @@ class CipherProbeCleanGuardTest {
             new com.housedevinci.agentguard.domain.ToolRef("refund", SideEffect.WRITE),
             "preview");
     f.executors.register(parked2.id(), i -> "ran");
-    assertThat(f.approvals.approve(parked2.id(), "alice ").decision().state())
-        .isEqualTo(DecisionState.APPROVED);
+    assertThatThrownBy(() -> f.approvals.approve(parked2.id(), "alice "))
+        .isInstanceOf(com.housedevinci.agentguard.domain.SelfApprovalException.class);
   }
 
   /**
@@ -126,7 +126,7 @@ class CipherProbeCleanGuardTest {
    * that must be taken with the trail's verification report attached.
    */
   @Test
-  void probe_enabling_the_audit_hmac_secret_reports_the_existing_trail_as_broken() {
+  void enabling_the_audit_hmac_secret_does_not_break_the_existing_trail() {
     var unkeyed = new InMemoryAuditSink(AuditChain.unkeyed());
     var recorder = new AuditRecorder(unkeyed, java.time.Clock.systemUTC());
     var principal = new Principal("agent-1", Set.of("AGENT"), Set.of(), "acme");
@@ -138,10 +138,13 @@ class CipherProbeCleanGuardTest {
 
     var key = new byte[32];
     java.util.Arrays.fill(key, (byte) 7);
+    // the two rows above were written unkeyed (version ag1); verifying with a keyed chain must
+    // still recognise them as intact, since the verifier now applies the version each row was
+    // actually written with instead of the chain it happens to be configured with today
     var afterKey = AuditChainVerifier.of(unkeyed, AuditChain.keyed(key)).verify();
 
-    assertThat(afterKey.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
-    assertThat(afterKey.brokenAtSequence()).isEqualTo(1L);
+    assertThat(afterKey.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
+    assertThat(afterKey.verified()).isEqualTo(2L);
   }
 
   /** Delegating store that records the dedup lookup the canonical hash feeds. */
@@ -172,8 +175,8 @@ class CipherProbeCleanGuardTest {
     }
 
     @Override
-    public List<PendingDecision> findByState(DecisionState state, int limit) {
-      return delegate.findByState(state, limit);
+    public List<PendingDecision> findByState(DecisionState state, String tenantId, int limit) {
+      return delegate.findByState(state, tenantId, limit);
     }
 
     @Override

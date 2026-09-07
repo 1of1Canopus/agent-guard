@@ -134,6 +134,13 @@ public final class ToolGuard {
 
   private GuardResult gate(ToolInvocation invocation, ToolRef tool, ToolExecutor executor) {
     var principal = invocation.principal();
+    // C4: the size cap must run before anything parses the arguments (ArgumentCanonicalizer.hash
+    // walks the whole payload into a JsonNode tree); otherwise the 64 KB default no longer bounds
+    // the work the guard does on model-supplied text.
+    Optional<GuardResult> tooLarge = rejectIfTooLarge(invocation, tool.name());
+    if (tooLarge.isPresent()) {
+      return tooLarge.get();
+    }
     var argsHash = ArgumentCanonicalizer.hash(invocation.argumentsJson());
     var since = clock.instant().minus(options.replayWindow());
     Optional<PendingDecision> existing =
@@ -159,22 +166,6 @@ public final class ToolGuard {
         return resumer.resume(d.id());
       }
       // EXPIRED: fall through and park again
-    }
-    if (invocation.argumentsJson().getBytes(StandardCharsets.UTF_8).length
-        > options.maxArgumentBytes()) {
-      audit.record(
-          principal,
-          tool.name(),
-          invocation.argumentsJson(),
-          null,
-          0,
-          AuditDecision.DENIED,
-          invocation.correlationId(),
-          null);
-      return new GuardResult.Denied(
-          ErrorCodes.APPROVAL_ARGS_TOO_LARGE,
-          tool.name(),
-          "arguments exceed " + options.maxArgumentBytes() + " bytes and cannot be parked");
     }
     if (decisions.countPending(principal.id(), principal.tenantId().orElse(null))
         >= options.maxPendingPerPrincipal()) {
@@ -213,6 +204,12 @@ public final class ToolGuard {
 
   private GuardResult dispatch(ToolInvocation invocation, ToolExecutor executor) {
     var tool = invocation.toolName();
+    // C4: the ALLOW path had no size check at all; apply the same cap here before anything hashes
+    // or previews the arguments (the audit call below canonicalises them).
+    Optional<GuardResult> tooLarge = rejectIfTooLarge(invocation, tool);
+    if (tooLarge.isPresent()) {
+      return tooLarge.get();
+    }
     Optional<GuardResult> refused = reserve(invocation);
     if (refused.isPresent()) {
       return refused.get();
@@ -256,6 +253,24 @@ public final class ToolGuard {
       return new GuardResult.Failed(
           tool, Errors.describe(e, invocation.correlationId(), options.includeToolMessage()), true);
     }
+  }
+
+  /**
+   * C4: bounds the raw text before anything parses it (canonicalisation, redaction). Must run
+   * before {@link ArgumentCanonicalizer#hash} on every path that reaches it.
+   */
+  private Optional<GuardResult> rejectIfTooLarge(ToolInvocation invocation, String toolName) {
+    if (invocation.argumentsJson().getBytes(StandardCharsets.UTF_8).length
+        <= options.maxArgumentBytes()) {
+      return Optional.empty();
+    }
+    audit.recordOversized(
+        invocation.principal(), toolName, invocation.argumentsJson(), invocation.correlationId());
+    return Optional.of(
+        new GuardResult.Denied(
+            ErrorCodes.APPROVAL_ARGS_TOO_LARGE,
+            toolName,
+            "arguments exceed " + options.maxArgumentBytes() + " bytes"));
   }
 
   private Optional<GuardResult> reserve(ToolInvocation invocation) {

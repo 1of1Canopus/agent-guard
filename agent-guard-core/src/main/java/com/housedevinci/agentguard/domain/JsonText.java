@@ -47,6 +47,13 @@ public final class JsonText {
         default -> {
           if (c < 0x20) {
             sb.append(String.format("\\u%04x", (int) c));
+          } else if (isUnpairedSurrogate(v, k)) {
+            // an unpaired surrogate has no valid UTF-8/UTF-16 partner: leaving it as-is lets
+            // String.getBytes(UTF_8) collapse it to a question mark, colliding the canonical hash
+            // with a literal question mark in the same position (C1). Escape it as a unicode
+            // sequence instead, which is unambiguous and round-trips through the parser's own
+            // string-escape handling.
+            sb.append(String.format("\\u%04x", (int) c));
           } else {
             sb.append(c);
           }
@@ -54,6 +61,17 @@ public final class JsonText {
       }
     }
     return sb.toString();
+  }
+
+  private static boolean isUnpairedSurrogate(String v, int k) {
+    char c = v.charAt(k);
+    if (Character.isHighSurrogate(c)) {
+      return k + 1 >= v.length() || !Character.isLowSurrogate(v.charAt(k + 1));
+    }
+    if (Character.isLowSurrogate(c)) {
+      return k == 0 || !Character.isHighSurrogate(v.charAt(k - 1));
+    }
+    return false;
   }
 
   private JsonNode value(int depth) {
@@ -143,7 +161,13 @@ public final class JsonText {
             if (i + 4 > s.length()) {
               throw new IllegalArgumentException("bad \\u escape");
             }
-            sb.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+            String hex = s.substring(i, i + 4);
+            for (int h = 0; h < 4; h++) {
+              if (!isHexDigit(hex.charAt(h))) {
+                throw new IllegalArgumentException("bad \\u escape");
+              }
+            }
+            sb.append((char) Integer.parseInt(hex, 16));
             i += 4;
           }
           default -> throw new IllegalArgumentException("bad escape");
@@ -182,12 +206,20 @@ public final class JsonText {
 
   private void digits() {
     int start = i;
-    while (i < s.length() && Character.isDigit(s.charAt(i))) {
+    while (i < s.length() && isAsciiDigit(s.charAt(i))) {
       i++;
     }
     if (i == start) {
       throw new IllegalArgumentException("digit expected");
     }
+  }
+
+  private static boolean isAsciiDigit(char c) {
+    return c >= '0' && c <= '9';
+  }
+
+  private static boolean isHexDigit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
   }
 
   private JsonNode literal(String word, JsonNode node) {

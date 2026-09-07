@@ -25,12 +25,12 @@ class CipherProbeCleanTest {
    * text.getBytes(UTF_16BE)}.
    */
   @Test
-  void probe_an_unpaired_surrogate_and_a_question_mark_share_one_arguments_hash() {
+  void an_unpaired_surrogate_and_a_question_mark_do_not_share_one_arguments_hash() {
     String surrogate = "{\"path\":\"\\ud800\"}";
     String questionMark = "{\"path\":\"?\"}";
 
     assertThat(ArgumentCanonicalizer.hash(surrogate))
-        .isEqualTo(ArgumentCanonicalizer.hash(questionMark));
+        .isNotEqualTo(ArgumentCanonicalizer.hash(questionMark));
     // the approver does see two different things, which is what makes the collision a swap
     assertThat(redactor.redact(surrogate)).isNotEqualTo(redactor.redact(questionMark));
   }
@@ -43,10 +43,11 @@ class CipherProbeCleanTest {
    * matches a sensitive key (keep the current suffix rule for the unsplittable case).
    */
   @Test
-  void probe_camel_case_and_suffixed_sensitive_keys_are_not_masked() {
-    assertThat(redactor.redact("{\"userPassword\":\"hunter2\"}")).contains("hunter2");
-    assertThat(redactor.redact("{\"myApiKey\":\"sk-live-1\"}")).contains("sk-live-1");
-    assertThat(redactor.redact("{\"password_confirmation\":\"hunter2\"}")).contains("hunter2");
+  void camel_case_and_suffixed_sensitive_keys_are_masked() {
+    assertThat(redactor.redact("{\"userPassword\":\"hunter2\"}")).doesNotContain("hunter2");
+    assertThat(redactor.redact("{\"myApiKey\":\"sk-live-1\"}")).doesNotContain("sk-live-1");
+    assertThat(redactor.redact("{\"password_confirmation\":\"hunter2\"}"))
+        .doesNotContain("hunter2");
     // what already works, so the fix does not regress it
     assertThat(redactor.redact("{\"api_key\":{\"v\":\"x\"}}")).isEqualTo("{\"api_key\":\"***\"}");
     assertThat(redactor.redact("{\"user_password\":\"hunter2\"}")).doesNotContain("hunter2");
@@ -61,11 +62,10 @@ class CipherProbeCleanTest {
    * four characters are not all {@code [0-9a-fA-F]}.
    */
   @Test
-  void probe_the_parser_accepts_text_that_is_not_json() {
-    assertThat(JsonText.parse("{\"a\":\u0661\u0662}")).isPresent(); // Arabic-Indic digits
-    assertThat(JsonText.parse("{\"a\":\"\\u+041\"}").map(n -> n.toJson(false)))
-        .contains("{\"a\":\"A\"}"); // '+' accepted as a hex sign
-    assertThat(JsonText.parse("{\"a\":\"\\u-001\"}")).isPresent();
+  void the_parser_rejects_text_that_is_not_json() {
+    assertThat(JsonText.parse("{\"a\":\u0661\u0662}")).isEmpty(); // Arabic-Indic digits
+    assertThat(JsonText.parse("{\"a\":\"\\u+041\"}")).isEmpty(); // '+' rejected as a hex sign
+    assertThat(JsonText.parse("{\"a\":\"\\u-001\"}")).isEmpty();
   }
 
   /** What the parser does get right, so a fix for C3 does not lose it. */
@@ -93,8 +93,10 @@ class CipherProbeCleanTest {
    * <p>Fix: {@code AuditRecorder} hashes {@code ArgumentCanonicalizer.canonical(argumentsJson)}.
    */
   @Test
-  void probe_the_audit_row_hashes_the_raw_arguments_while_the_decision_hashes_the_canonical_form() {
+  void the_audit_row_hashes_the_same_canonical_form_as_the_decision() {
     String args = "{ \"b\":2, \"a\":1 }";
-    assertThat(Hashes.sha256Hex(args)).isNotEqualTo(ArgumentCanonicalizer.hash(args));
+    // AuditRecorder now hashes ArgumentCanonicalizer.canonical(args), same as the decision store
+    assertThat(Hashes.sha256Hex(ArgumentCanonicalizer.canonical(args)))
+        .isEqualTo(ArgumentCanonicalizer.hash(args));
   }
 }

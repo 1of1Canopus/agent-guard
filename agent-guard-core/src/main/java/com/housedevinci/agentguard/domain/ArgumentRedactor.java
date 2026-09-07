@@ -103,6 +103,9 @@ public final class ArgumentRedactor {
     };
   }
 
+  private static final Pattern WORD_BOUNDARY =
+      Pattern.compile("[_\\-.]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])");
+
   private boolean isSensitive(String key) {
     var lower = key.toLowerCase(Locale.ROOT);
     if (sensitiveKeys.contains(lower)) {
@@ -115,6 +118,24 @@ public final class ArgumentRedactor {
       if (lower.endsWith(s)
           && lower.length() > s.length()
           && !Character.isLetter(lower.charAt(lower.length() - s.length() - 1))) {
+        return true;
+      }
+    }
+    // split on separators and camel-case boundaries: catches compound spellings the whole-word
+    // suffix rule above misses (userPassword, myApiKey, password_confirmation, token_value)
+    String[] parts = WORD_BOUNDARY.split(key);
+    for (String part : parts) {
+      String p = part.toLowerCase(Locale.ROOT);
+      if (p.isEmpty()) {
+        continue;
+      }
+      if (sensitiveKeys.contains(p)) {
+        return true;
+      }
+    }
+    for (int idx = 0; idx < parts.length - 1; idx++) {
+      String joined = (parts[idx] + parts[idx + 1]).toLowerCase(Locale.ROOT);
+      if (sensitiveKeys.contains(joined)) {
         return true;
       }
     }

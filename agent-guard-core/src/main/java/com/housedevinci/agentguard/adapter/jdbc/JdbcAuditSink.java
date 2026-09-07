@@ -28,7 +28,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
 
   private static final String COLUMNS =
       "seq, ts, principal_id, tenant_id, tool, args_hash, result_hash, latency_ms, decision, "
-          + "correlation_id, decision_id, actor_id, prev_hash, hash";
+          + "correlation_id, decision_id, actor_id, chain_version, prev_hash, hash";
   private static final org.slf4j.Logger log =
       org.slf4j.LoggerFactory.getLogger(JdbcAuditSink.class);
   private static final java.util.concurrent.atomic.AtomicBoolean WARNED_MISSING_ANCHOR =
@@ -104,8 +104,9 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
           try (PreparedStatement ps =
               c.prepareStatement(
                   "INSERT INTO agentguard_audit (ts, principal_id, tenant_id, tool, args_hash, "
-                      + "result_hash, latency_ms, decision, correlation_id, decision_id, actor_id, prev_hash, hash) "
-                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
+                      + "result_hash, latency_ms, decision, correlation_id, decision_id, actor_id, "
+                      + "chain_version, prev_hash, hash) "
+                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
             int i = 1;
             ps.setObject(i++, ts(linked.timestamp()));
             ps.setString(i++, linked.principalId());
@@ -118,6 +119,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
             ps.setString(i++, linked.correlationId());
             ps.setString(i++, linked.decisionId());
             ps.setString(i++, linked.actorId());
+            ps.setString(i++, linked.version());
             ps.setString(i++, linked.prevHash());
             ps.setString(i, linked.hash());
             try (ResultSet rs = ps.executeQuery()) {
@@ -193,6 +195,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
         rs.getString("correlation_id"),
         rs.getString("decision_id"),
         rs.getString("actor_id"),
+        rs.getString("chain_version"),
         rs.getString("prev_hash"),
         rs.getString("hash"));
   }

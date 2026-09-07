@@ -53,6 +53,11 @@ CREATE INDEX IF NOT EXISTS agentguard_audit_tool ON agentguard_audit (tool, ts);
 
 ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS actor_id varchar(255);
 
+-- Chain version each row was written with (C6): backfilled 'ag1' for rows that predate this
+-- column, so enabling agentguard.audit.hmac-secret on a running installation does not make the
+-- pre-key trail report BROKEN; the verifier applies the function each row actually recorded.
+ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) NOT NULL DEFAULT 'ag1';
+
 -- Append-only: UPDATE, DELETE and TRUNCATE are refused at the database level. A role that owns the
 -- table can still DISABLE TRIGGER: run the application with a role that has INSERT/SELECT only
 -- (see docs, "Database roles"); the anchor below makes tail deletion and truncation detectable.

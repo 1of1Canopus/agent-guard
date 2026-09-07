@@ -161,9 +161,24 @@ public final class ApprovalService {
   }
 
   private void fourEyes(PendingDecision decision, String approver) {
-    if (!allowSelfApproval && approver != null && approver.equals(decision.principal().id())) {
+    if (!allowSelfApproval
+        && approver != null
+        && sameIdentity(approver, decision.principal().id())) {
       throw new SelfApprovalException(decision.id(), approver);
     }
+  }
+
+  /**
+   * C5: identity comparison must not be defeated by whitespace or the casing an IdP happens to hand
+   * back (LDAP, e-mail logins, Keycloak's default username handling all treat login
+   * case-insensitively), so normalise both sides the same way before comparing.
+   */
+  private static boolean sameIdentity(String a, String b) {
+    return normalizeIdentity(a).equalsIgnoreCase(normalizeIdentity(b));
+  }
+
+  private static String normalizeIdentity(String id) {
+    return java.text.Normalizer.normalize(id.strip(), java.text.Normalizer.Form.NFKC);
   }
 
   PendingDecision load(DecisionId id) {

@@ -97,10 +97,10 @@ class CipherProbeKeyedBirthJdbcTest {
   // ---- G1: an existing pre-redesign database cannot be upgraded in place ----
 
   /**
-   * The schema's own backfill of the new {@code agentguard_audit.key_id} column is an UPDATE on a
-   * table whose append-only trigger already exists from the previous run, so it is refused and the
-   * whole schema step (one transaction) aborts: the module cannot start against any database
-   * written by an earlier build of this branch that has at least one audit row.
+   * There is no upgrade path from a database written before {@code agentguard_audit.key_id} existed
+   * (this branch is unreleased): the schema step detects the missing column up front and fails with
+   * a clear, actionable message, rather than aborting later on the append-only trigger or on a
+   * missing-column error from an INSERT.
    */
   @Test
   void probe_an_existing_database_with_rows_cannot_run_the_new_schema_step() throws Exception {
@@ -110,12 +110,14 @@ class CipherProbeKeyedBirthJdbcTest {
     sql("ALTER TABLE agentguard_audit DROP COLUMN key_id");
 
     assertThatThrownBy(() -> JdbcSupport.initializeSchema(ds))
-        .hasMessageContaining("agentguard_audit is append-only");
+        .hasMessageContaining("audit schema predates keyed-from-birth")
+        .hasMessageContaining("archive the table and start a new trail");
   }
 
   /**
-   * The same for the anchor: the {@code keyed} backfill is a plain UPDATE that does not advance
-   * {@code row_count}, so the anchor's own monotonic trigger refuses it.
+   * The same for the anchor: a database whose {@code agentguard_audit_anchor} predates the {@code
+   * keyed} column is refused with the same clear message, not left to fail later on the anchor's
+   * monotonic trigger or a missing-column error from an INSERT.
    */
   @Test
   void probe_an_existing_anchor_row_cannot_be_backfilled_with_keyed() throws Exception {
@@ -123,7 +125,8 @@ class CipherProbeKeyedBirthJdbcTest {
     sql("ALTER TABLE agentguard_audit_anchor DROP COLUMN keyed");
 
     assertThatThrownBy(() -> JdbcSupport.initializeSchema(ds))
-        .hasMessageContaining("agentguard_audit_anchor only advances by one row");
+        .hasMessageContaining("audit schema predates keyed-from-birth")
+        .hasMessageContaining("archive the table and start a new trail");
   }
 
   /** Control: re-running the schema step on a current, non-empty database is idempotent. */

@@ -59,8 +59,12 @@ class CipherProbeReverifyStartupTest {
     assertThat(warnings)
         .as("the appender is wired: the check warns about the empty sensitive-keys list")
         .anyMatch(m -> m.contains("sensitive-keys"));
+    // V4 fixed: the cross-tenant approver opt-out now warns at startup.
     assertThat(warnings)
-        .as("nothing warns that approvers are cross-tenant")
-        .noneMatch(m -> m.contains("tenant-scoped") || m.contains("require-tenant"));
+        .as("warns that approvers are cross-tenant")
+        .anyMatch(m -> m.contains("tenant-scoped"));
+    assertThat(warnings)
+        .as("warns that a tenant-less approver is not refused")
+        .anyMatch(m -> m.contains("require-tenant"));
   }
 }

@@ -767,3 +767,174 @@ DISABLE TRIGGER step was not performed. V5 is asserted by reading `JedisBudgetSt
 No HIGH. Two MEDIUM (V1, V2) and three LOW (V3, V4, V5), each with a named fix and, for four of them, a probe to
 flip. C1–C12 are genuinely closed and the fixes are the right ones; V1 and V2 are the new surfaces those fixes
 opened, and V2 in particular voids a control an operator explicitly turned on, so it does not wait.
+
+## Final verification (9ebaad0)
+
+Branch `feat/agent-guard-core`, HEAD `9ebaad0`. Full `./mvnw clean verify` on Docker, twice: once on the tree as
+pushed, once with this pass's new probe class added.
+
+| Run | Tests | Failed | Errors | Skipped | Line | Branch |
+|---|---|---|---|---|---|---|
+| `9ebaad0` as pushed | 175 | 0 | 0 | 1 | 90.32% | 77.72% |
+| `9ebaad0` + `CipherProbeAnchorKeyingJdbcTest` | 182 | 0 | 0 | 1 | 90.38% | 78.57% |
+
+Both green, JaCoCo gate (80% line) passed. The one skipped test is the pre-existing
+`CipherProbeFinalSpringAiTest` assumption (`-Dmaven.test.additionalClasspath=spring-ai-autoconfigure-model-tool`),
+unchanged from earlier passes; a skipped test is not a passing one and is counted as skipped here. Isis reported
+line 90.98%; the measured figure on a clean `verify` is **90.32%** (branch matches exactly at 77.72%). Not a
+finding, but the reported number is 0.66 points optimistic.
+
+### Probes: nothing was narrowed
+
+Every `CipherProbe*` class diffed against `fa9feb7`. Seven files changed; all seven changes are assertion flips
+that record a fix landing, an anchor-record arity change (`Anchor(hash, count)` → `Anchor(hash, count, null)`), or
+a strengthening. In detail:
+
+- `CipherProbeJdbcTest`, `CipherProbeReverifyJdbcTest` — the new `keyedFromSeq` component only. No assertion lost.
+- `CipherProbeReverifyTest` — V1 and V3 flipped to the fixed expectation. The V2 probe
+  `probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` was re-scoped to the *partial* downgrade and the
+  original whole-trail repro restored beside it as
+  `probe_a_fully_downgraded_trail_verifies_as_broken_not_intact`. Both now assert BROKEN. Net coverage is wider,
+  not narrower.
+- `CipherProbeCleanTest` — V3 domain prefix folded into the expectation. Same property asserted.
+- `CipherProbeReverifyStartupTest` — V4 flipped from "nothing warns" to "warns", on both `tenant-scoped` and
+  `require-tenant`.
+- `CipherProbeJedisFactoryTest` (V5) — **checked specifically for weakening, and it is the reverse.** The burst was
+  previously forced to run with `max-total = 200` because worker count was tied to it; it now runs 200 concurrent
+  virtual threads × 5 calls against a connection pool of **4**, with the worker pool and its bounded queue sized
+  from their own properties. Every assertion is unchanged (zero errors, exact final counter of 1000, calls on
+  platform threads below JDK 24). This is the H3/R6 contention scenario the earlier round asked to restore.
+
+### C6's test change is a re-modelling, not a weakening
+
+`CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail` changed from
+"verify an unkeyed trail with a keyed verifier and no further appends → INTACT" to "restart the sink with the key,
+append one row, verify → INTACT with 3 rows". Under Dollar's ruling that first shape can no longer be INTACT by
+construction: a key given with `keyed_from_seq` still null is `UNKEYED` by design. That exact shape is not dropped
+— it is asserted by `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed`,
+which pins it to `UNKEYED` and, crucially, **not** to `BROKEN`, which is the false alarm C6 existed to prevent. The
+new form additionally exercises the restarted-sink path that a real migration takes. Accepted.
+
+### V1, V3, V4, V5 — verified in code and by probe
+
+- **V1** (raw byte cap after the unregistered-tool lookup). `ToolGuard.guard` now calls `rejectIfTooLarge` as the
+  first statement, before `policies.resolve`. Both no-policy and no-role paths are covered by the flipped probe;
+  the audit row carries the raw-domain hash, proving nothing parsed the payload. Closed.
+- **V3** (no domain separation between the canonical and raw `args_hash`). `ArgumentCanonicalizer.hash` prefixes
+  `agcanon1:`, `AuditRecorder.recordOversized` prefixes `agraw1:`; the two hash over disjoint material. Separately,
+  `rejectIfTooLarge` now also bounds the *canonical* length, closing the non-size-preserving-canonicalisation gap
+  that V3 rode in on. Closed.
+- **V4** (cross-tenant approver opt-outs were silent). `AgentGuardStartupCheck` warns on both
+  `endpoints.tenant-scoped=false` and `endpoints.require-tenant=false`, gated on the endpoints being enabled.
+  Observed live in the sample app's startup log during `verify`. Closed.
+- **V5** (worker pool tied to `max-total`). `platform-thread-count` and `platform-thread-queue-size` with
+  `@Min(1)`, defaulting to `max-total` and to the effective thread count respectively; `JedisBudgetStoreFactory`
+  passes both through to the new `onPlatformThreads(jedis, threads, queueSize, maxWait)` overload. Closed, and the
+  probe now exercises a genuinely contended connection pool.
+
+### V2's new surface: four findings
+
+New probe class `agent-guard-core/src/test/java/com/housedevinci/agentguard/adapter/jdbc/CipherProbeAnchorKeyingJdbcTest.java`
+— seven tests, all green, against real PostgreSQL 16 with the append-only triggers physically disabled where the
+attack needs it (the step the previous round listed as not covered). Four `probe_*` tests assert today's broken
+behaviour so the suite stays green; Isis flips each assertion when the fix lands.
+
+- **F1 — MEDIUM. `keyed_from_seq` is written as `row_count + 1`, not the row's real `seq`.**
+  `JdbcAuditSink.append` computes `keyedFromSeq = count + 1` from the anchor's row *count*, but the verifier
+  compares it against `agentguard_audit.seq`, a `bigserial`. The two diverge on the first gap in the sequence, and
+  a rolled-back INSERT leaves a gap — a role holding **exactly** the documented runtime grant can burn sequence
+  values at will (proved: `confirms_the_documented_runtime_role_can_burn_sequence_values_but_not_touch_the_trigger`),
+  and an ordinary failed append does it by accident. The keying transition is then recorded at a sequence belonging
+  to an older, legitimately unkeyed row, and the verifier reports **BROKEN on a trail nobody touched** —
+  permanently, because the extended trigger makes the column immutable once set. An attacker cannot turn this into
+  a false INTACT (`count + 1 ≤ seq` always), but they can permanently disable the control, which is the same
+  outcome for an operator who learns to ignore it.
+  *Fix:* do the `INSERT … RETURNING seq` first and write the anchor with the returned sequence in the same
+  transaction — the advisory lock already serialises appends, so ordering the two statements the other way is safe.
+  *Test:* `probe_a_bigserial_gap_makes_an_untampered_keyed_trail_report_broken`, asserting `INTACT`.
+
+- **F2 — MEDIUM. The schema's anchor seed forgets `keyed_from_seq`, and it beats the sink's re-derivation.**
+  `JdbcAuditSink.append` re-derives `keyed_from_seq` as `min(seq) WHERE chain_version = 'ag2h'` when the anchor row
+  is missing, but the schema step's seed (`INSERT INTO agentguard_audit_anchor (id, head_hash, row_count,
+  updated_at) SELECT …`) does not. Startup runs the schema before any append, so on an installation whose anchor
+  row was lost — a restore from a pre-anchor dump, the "pre-anchor installation" both the code and the schema
+  explicitly anticipate — the seed wins and the sink's re-derivation never runs. A genuinely keyed trail comes back
+  with `keyed_from_seq` NULL and every row claiming `ag2h`: **BROKEN**. The next append then stamps
+  `keyed_from_seq` with the current (wrong) sequence and the trigger freezes the mistake in place.
+  *Fix:* derive it in the seed too — add `(SELECT min(seq) FROM agentguard_audit WHERE chain_version = 'ag2h')` as
+  the seeded `keyed_from_seq`, matching the sink exactly.
+  *Test:* `probe_the_schema_anchor_seed_forgets_keyed_from_seq_and_breaks_a_keyed_trail`, asserting `INTACT`.
+
+- **F3 — MEDIUM. Nothing refuses DELETE on the anchor, and the verifier's fallback is silent.**
+  `agentguard_audit` has a row trigger *and* a TRUNCATE trigger; `agentguard_audit_anchor` has a `BEFORE UPDATE`
+  trigger only. With the anchor row gone, `AuditChainVerifier` sets `anchorKnowsKeying = false`, drops back to the
+  in-trail `keyedSeen` rule and reports the whole-trail downgrade as **INTACT** again — the exact V2 result the fix
+  closed — and the head-hash/row-count check disappears in the same breath, so tail deletion goes undetected too.
+  There is no distinct status, no field on `Report`, and no log line: an unanchored verification is
+  indistinguishable from an anchored one. Two ways in: the table owner (a documented residual — the runtime role is
+  confirmed unable to DELETE the anchor, replace the trigger function, or `DISABLE TRIGGER`), and, needing no
+  privilege at all, any `AuditReader` that does not implement `AuditAnchor`, which `AuditChainVerifier.of` accepts
+  and silently downgrades via `Optional::empty`.
+  *Fix, two parts:* (a) refuse DELETE and TRUNCATE on `agentguard_audit_anchor` with the same trigger pattern used
+  on `agentguard_audit`; (b) make the fallback loud — a distinct `Status.NO_ANCHOR`, or an `anchored` flag on
+  `Report`, whenever `anchor.anchor()` is empty, so an unanchored verification can never render as INTACT.
+  *Test:* `probe_deleting_the_anchor_row_restores_the_whole_trail_downgrade_to_intact`, asserting the new status.
+
+- **F4 — LOW. A rolling restart while the secret is being enabled corrupts the trail permanently.**
+  Nothing stops a still-unkeyed instance appending after another instance has set `keyed_from_seq`. During a
+  rolling restart that turns `agentguard.audit.hmac-secret` on — the ordinary way to deploy it — one unkeyed row
+  lands after the keying point and the trail is **BROKEN forever**: the row cannot be deleted (append-only) and
+  `keyed_from_seq` cannot be moved (immutable). The documented migration story ("enabling the HMAC key is a one-way
+  step, safely") does not say the step has to be atomic across instances.
+  *Fix:* `JdbcAuditSink.append` refuses to append with an unkeyed chain when the anchor already carries a non-null
+  `keyed_from_seq` — fail closed on the misconfigured instance rather than corrupt the trail — plus a line in
+  `docs/index.md` and `SECURITY-NOTES.md` that enabling the secret requires a stop-start, not a rolling restart.
+  *Test:* `probe_an_unkeyed_instance_appending_after_the_keying_point_breaks_the_trail_forever`, asserting the
+  unkeyed append throws.
+
+### Attacked and found sound (kept as regression cover)
+
+- **`keyed_from_seq` race between two sink instances at the first keyed append.** The transaction-scoped advisory
+  lock in `JdbcAuditSink.append` covers the read of `keyed_from_seq`, the anchor upsert and the row INSERT as one
+  unit. Twelve concurrent appends across two sink instances: exactly one write, value equal to the lowest keyed
+  sequence, no immutability-trigger rejection, trail INTACT.
+  (`confirms_concurrent_first_keyed_appends_set_keyed_from_seq_exactly_once`)
+- **Trigger extension via `CREATE OR REPLACE FUNCTION` on an existing database.** Reproduced against a database
+  carrying the pre-V2 function body (under which `keyed_from_seq` was freely movable, and was moved). Running the
+  new schema replaces the body in place and the existing trigger, which references the function by oid, picks it up
+  without being recreated: the very next attempt to move `keyed_from_seq` is refused. Upgraded installations get
+  the protection, not only fresh ones. The runtime role cannot replace the function — it is not the owner.
+  (`confirms_the_extended_monotonic_trigger_applies_to_an_upgraded_database`)
+- **What the documented runtime role can and cannot do.** With exactly the grant in docs "Database roles": DELETE
+  on the anchor is `permission denied`, `CREATE OR REPLACE FUNCTION` on the monotonic trigger fails, `ALTER TABLE …
+  DISABLE TRIGGER ALL` fails. Only the sequence burn of F1 gets through.
+  (`confirms_the_documented_runtime_role_can_burn_sequence_values_but_not_touch_the_trigger`)
+- **UNKEYED vs INTACT reporting paths.** `UNKEYED` is returned only after the whole trail has recomputed, so it
+  never masks a break, and `Report.intact()` deliberately returns `false` for it. No production code calls
+  `AuditChainVerifier.verify()` — it is an operator-facing API, not wired to an endpoint or to startup — so there
+  is no path on which `UNKEYED` is mistaken for a failure by the module itself. An operator alerting on
+  `!report.intact()` will be paged for the window between setting the secret and the first tool call; that is the
+  designed, documented, conservative behaviour, and it is fail-loud in the safe direction. Not a finding.
+- **JDBC read-and-append of `keyed_from_seq` in one transaction.** Covered by the advisory lock as above; the
+  anchor upsert and the audit INSERT are in the same transaction and roll back together.
+
+### Not covered
+
+Real OpenAI/Anthropic `ChatModel` end to end (no key, no network) — unchanged from every prior pass. The table-owner
+residual (owner drops the anchor trigger and rewrites `keyed_from_seq` alongside the trail) is accepted by design
+and was not probed beyond confirming the runtime role cannot reach it. `keyed_from_seq` behaviour was not exercised
+under a PostgreSQL logical restore or a `pg_dump`/`pg_restore` cycle — F2 models the outcome (a lost anchor row),
+not the mechanism. Sequence-burn was proved against `bigserial` gaps generally, not against every way one can
+arise (sequence caching under `CACHE > 1`, a failover replica's sequence advance).
+
+### Verdict: MERGE WITH FIXES
+
+No HIGH. V1, V3, V4, V5 are genuinely closed, in code and by probe, and none of the existing probes was narrowed —
+the V5 and V2 probes are both wider than they were. V2's chosen mechanism is the right one: `keyed_from_seq` is
+outside the rows an attacker rewrites, the advisory lock makes its one write atomic, the monotonic trigger holds on
+upgraded databases as well as fresh ones, and the runtime role cannot touch it. What is not right yet is its
+plumbing: it is written from the wrong number (F1), forgotten by the seed that re-creates the anchor (F2), and both
+it and the head/count check evaporate without a word when the anchor row is absent (F3). F1 and F2 turn a control
+an operator explicitly turned on into a permanent false alarm; F3 hands the original V2 attack back to anyone
+holding the table or supplying their own reader. Three MEDIUM and one LOW, each with a named fix and a probe to
+flip. Under the no-allowance rule all four ship before merge.

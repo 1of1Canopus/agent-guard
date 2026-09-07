@@ -650,3 +650,120 @@ Real OpenAI/Anthropic `ChatModel` end to end (no API key, no network in tests) �
 passes. The anchor's residual: a role holding `DELETE` on `agentguard_audit_anchor` can still delete and re-insert
 it, which the monotonic trigger (BEFORE UPDATE only) does not see; the documented grant is INSERT/SELECT, so this
 is only a warning to keep `DELETE` off that table — no probe written, no code change asked for.
+
+## Re-verification (6f026ff)
+
+2026-09-07 · Cipher · branch `feat/agent-guard-core`, HEAD `6f026ff` (Isis's five commits on top of the
+clean-verdict pass `538c91a`). `./mvnw -B clean verify`, Docker up.
+
+### Build, as run
+
+| | Tests | Failures | Errors | Skipped |
+|---|---|---|---|---|
+| `6f026ff` as delivered | 169 | 0 | 0 | 1 |
+| with this pass's four probes | 173 | 0 | 0 | 1 |
+
+Core line coverage 90.20%, branch 78.04% (JaCoCo gate 80% line: met). The one skip is
+`CipherProbeFinalSpringAiTest`, self-skipping without Spring AI's real `ToolCallingAutoConfiguration` on the test
+classpath — unchanged, and still not a passing test.
+
+### C1–C12: all twelve confirmed closed
+
+Every `CipherProbe*` class was re-run unchanged and is green: `CipherProbeCleanTest` 5/5,
+`CipherProbeCleanGuardTest` 3/3, `CipherProbeCleanRedisTest` 2/2, `CipherProbeCleanEndpointsTest` 2/2,
+`CipherProbeApprovalGateTest` 10/10, `CipherProbeEndpointsTest` 1/1, `CipherProbeMcpTest` 4/4,
+`CipherProbeSpringAiTest` 3/3, `CipherProbeReverifySpringAiTest` 4/4, `CipherProbeFinalSpringAiTest` 2/2 (1
+skipped), `CipherProbeJedisFactoryTest` 2/2, `CipherProbePropertiesTest` 3/3.
+
+Each C1–C12 probe was diffed against `538c91a`. Every one is the same scenario with the assertion inverted (or,
+for `CipherProbeApprovalGateTest`, one extra constructor argument for the new `version` component) — no probe was
+narrowed, no `@Disabled`, no dropped assertion. One material exception, recorded as V5 below:
+`CipherProbeJedisFactoryTest.burst` raised `maxTotal` from 4 to 200.
+
+The fixes were read in code, not taken on trust: C4 (`ToolGuard.gate`/`dispatch` call `rejectIfTooLarge` as their
+first statement — see V1 for where the cap still is not first), C1 (`JsonText.isUnpairedSurrogate` + `\u` escape),
+C2 (`WORD_BOUNDARY` split plus a re-joined-pair pass), C5 (`strip` + NFKC + `equalsIgnoreCase`), C7
+(`ThreadPoolExecutor` with `ArrayBlockingQueue(n)` and `AbortPolicy`, `RejectedExecutionException` mapped to
+`AG-GUARD-001`, a timed-out `Future` cancelled and removed from the queue), C9 (`MissingTenantException` → 403
+`AG-HTTP-403`), C11 (blanket `javax..` ban with a `javax.crypto..` carve-out), C3 (`isAsciiDigit`/`isHexDigit`),
+C6 (`chain_version` column, backfilled `ag1`, applied per row — see V2), C8 (`AutoCloseable`), C10 (`tenant_id`
+in the SQL, before `LIMIT`), C12 (`AuditRecorder.record` hashes the canonical form).
+
+### New findings (4 with probes, 1 without)
+
+Probes assert today's behaviour and are green; Isis flips each assertion when the fix lands.
+
+| Id | Sev | Finding | Probe |
+|---|---|---|---|
+| V1 | MEDIUM | C4 residual: the cap is first in `gate`/`dispatch`, but `ToolGuard.guarded` audits — and therefore canonicalises and *parses* — the arguments on the two paths that run **before** either of them, the unregistered-tool denial and the policy denial. Both are reachable by a caller with no role and no policy, so the cheapest path into the guard is the one that parses unbounded model-supplied text into a `JsonNode` tree. Repro: a 4 KB payload to an unregistered tool under a 32-byte cap comes back `AG-POLICY-001`, and the audit row's `args_hash` is the *canonical* hash — the parse ran. | `CipherProbeReverifyTest.probe_the_denial_paths_parse_arguments_of_any_size` |
+| V2 | MEDIUM | New in C6: `AuditChainVerifier.chainFor` picks the hash function from the row's own `chain_version` column. That column is part of what an attacker rewrites, and the version a row *claims* is not itself protected by the key. Stamping rewritten rows `ag1` makes the verifier recompute them with plain SHA-256, which needs no secret — the residual the schema documents ("a role that owns the table can DISABLE TRIGGER") is handed straight back, and `agentguard.audit.hmac-secret` stops being a control. Repro: write a keyed trail, rewrite every row relinked unkeyed, verify with the keyed chain → `INTACT`. | `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` |
+| V3 | LOW | New in C4/C12: `recordOversized` hashes the raw text, every other row hashes the canonical form, and both land in the same `args_hash` column with no domain separation. Canonicalisation is not size-preserving — after the C1 fix an unpaired surrogate goes from one UTF-8 byte (`?`) to six — so a payload under the 64 KB cap has a canonical form over it, and that canonical form replayed as raw text is refused as oversized with *exactly* the same `args_hash` as the allowed call. An auditor joining rows by `args_hash` conflates a denial with an execution. | `CipherProbeReverifyTest.probe_an_oversized_denial_shares_an_args_hash_with_an_allowed_call` |
+| V4 | LOW | The C9 opt-out is silent. `AgentGuardStartupCheck` exists to "warn about configurations that quietly weaken the guard" and does so for empty `approval-required-for`, empty `sensitive-keys`, `store=MEMORY`, a missing notifier, a missing `TenantResolver` and a runtime role that owns the audit table — but says nothing when `endpoints.tenant-scoped=false` or `endpoints.require-tenant=false` turns every approver into a cross-tenant approver. The sample opts out in a YAML comment; a running process says nothing. | `CipherProbeReverifyStartupTest.probe_a_cross_tenant_approver_opt_out_is_silent_at_startup` |
+| V5 | LOW | Probe coverage lost: `CipherProbeJedisFactoryTest.burst` raised `maxTotal` from 4 to 200 because `JedisBudgetStoreFactory` sizes the platform-thread pool *and* its now-bounded queue from `maxTotal`, so a 4-connection setting would legitimately reject the 200-thread burst. The change is honest, but it also removes the Jedis connection-pool contention that H3/R6 was about: 200 callers now each get their own connection and the pool's growth lock is never contended. No probe (the finding is about a probe). | — |
+
+### Exact fixes
+
+- **V1** — `ToolGuard.guarded`: call `rejectIfTooLarge(invocation, toolName)` before `policies.resolve`, and
+  return its result; `gate`/`dispatch` may keep their now-redundant check. The two denial audits then route
+  through `AuditRecorder.recordOversized` like the gate path already does. Flip
+  `probe_the_denial_paths_parse_arguments_of_any_size` to assert `APPROVAL_ARGS_TOO_LARGE` and a raw `args_hash`.
+- **V2** — `AuditChainVerifier.verify`: the version may only move forward. Carry a `boolean keyedSeen` through the
+  walk; when a `KEYED_VERSION` row verifies, set it, and from then on a `CANONICAL_VERSION` row is `BROKEN` at its
+  sequence rather than unkeyed-verified. C6's migration case (an unkeyed prefix, then keyed rows) still reports
+  `INTACT`, and rewriting the prefix still breaks the first keyed row's `prevHash`, which is under the HMAC.
+  Document in SECURITY-NOTES that `hmac-secret` is a one-way switch — which it already says.
+- **V3** — domain-separate the two hashes: `Hashes.sha256Hex("agraw1:" + argumentsJson)` in
+  `AuditRecorder.recordOversized` against `sha256Hex("agcanon1:" + canonical)` in `ArgumentCanonicalizer.hash`
+  (a hash-format change: note it in CHANGELOG, it does not invalidate existing chains because the chain hashes
+  the row, not the arguments). Optionally also cap `canonical(...)`, since the 6x expansion means
+  `maxArgumentBytes` does not bound what the guard hashes.
+- **V4** — `AgentGuardStartupCheck.afterSingletonsInstantiated`: when `endpoints.enabled` and either
+  `!tenantScoped` or `!requireTenant`, `log.warn` naming the property and the consequence ("approvers see and
+  decide every tenant's decisions and audit rows"). Then flip the probe to `anyMatch`.
+- **V5** — decouple the two pools: give `AgentGuardProperties.Pool` a separate `platform-threads` size (default
+  `maxTotal`, and the executor queue sized from it), or have `JedisBudgetStoreFactory` size the executor from
+  `max(maxTotal, 32)`. Restore `burst` to `maxTotal=4` so the H3/R6 contention scenario is tested again.
+
+### Attacked and found sound (no change asked for)
+
+- **Oversized raw hash, collisions.** Two different oversized payloads cannot share `args_hash`: it is a plain
+  SHA-256 of the text. The only cross-row equality is the canonical/raw domain overlap of V3, and it cannot hide a
+  payload — the oversized row is always `DENIED`, is always written before the denial returns, and no call runs.
+- **Mixed chain versions, keyed → unkeyed prefix.** An unkeyed prefix followed by keyed rows verifies correctly,
+  and the version string is inside the hashed material (`canonical()` starts with it), so a row cannot be
+  re-labelled without changing its own hash. The one gap is the verifier's *trust* in the label, which is V2.
+- **NFKC four-eyes, the opposite failure.** NFKC does collapse distinct strings (`alice`/`alicｅ`, `office`/`oﬃce`,
+  `user1`/`user₁`, `bob`/`𝐁ob` all compare equal). The failure direction is fail-closed: two distinct humans
+  judged the same identity produce a `SelfApprovalException`, i.e. a refused approval, never an accepted one.
+  `sameIdentity` is used by `fourEyes` only, and nowhere on a grant path. Worth a line in the docs (an IdP that
+  issues homoglyph-adjacent usernames can lock an approver out of one decision); not a finding.
+- **Surrogate escaping determinism.** `String.format("\\u%04x", …)` is locale-independent — `Formatter` localises
+  digits for `%d` only, not for `%x` — verified under `en-US`, `ar-SA-u-nu-arab`, `tr-TR`, `hi-IN-u-nu-deva`, all
+  producing `\ud800`. `String.equalsIgnoreCase` is likewise locale-independent, so the Turkish-I trap does not
+  apply to `sameIdentity`. Canonicalisation is idempotent: re-parsing `\ud800` yields the same escape.
+- **Tenant filter inside the queries.** `JdbcDecisionStore.findByState` and `JdbcAuditSink.latest` take the
+  `tenant_id = ?` branch only when `tenantId != null`, and the null branch is reachable only when the deployment
+  opted out (`tenant-scoped=false` or `require-tenant=false`). `IS NOT DISTINCT FROM` is therefore not needed and
+  would be wrong: a tenanted approver must not see rows with a NULL tenant. `LIMIT` is applied after the filter
+  (C10), and both queries stay parameterised.
+- **Bounded Redis executor, rejection path.** `RejectedExecutionException` becomes `AG-GUARD-001`
+  `GuardUnavailable`: the call is not run, so a saturated pool fails closed. A timed-out `Future` is cancelled and
+  removed from the queue, and `getQueue().remove(future)` matches the object `submit` enqueued. `close()`
+  `shutdownNow()`s the pool. Ceiling is `2n` in-flight calls (`n` running, `n` queued) — deliberate.
+- **`require-tenant` default.** `true`, and `AgentGuardEndpoints`' 6-argument constructor defaults it `true`, so
+  anyone wiring the endpoints by hand keeps the safe posture. `approverTenant()` is called by `pending`, `audit`
+  and `load`, so `approve`/`reject`/`arguments`/`get` are all covered through `load`. The sample's and
+  `AgentGuardEndpointsTest`'s opt-outs are correct for what they test; V4 is only that they are quiet.
+
+### Not covered
+
+Real OpenAI/Anthropic `ChatModel` end to end (no key, no network) — unchanged from every prior pass. V2 was
+reproduced against `InMemoryAuditSink`, not against a PostgreSQL trail with the append-only triggers disabled: the
+verifier logic is store-independent and `JdbcAuditSink` round-trips `chain_version` verbatim, but the physical
+DISABLE TRIGGER step was not performed. V5 is asserted by reading `JedisBudgetStoreFactory`, not by a probe.
+
+### Verdict: MERGE WITH FIXES
+
+No HIGH. Two MEDIUM (V1, V2) and three LOW (V3, V4, V5), each with a named fix and, for four of them, a probe to
+flip. C1–C12 are genuinely closed and the fixes are the right ones; V1 and V2 are the new surfaces those fixes
+opened, and V2 in particular voids a control an operator explicitly turned on, so it does not wait.

@@ -6,10 +6,13 @@ import com.housedevinci.agentguard.domain.ErrorCodes;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import redis.clients.jedis.UnifiedJedis;
@@ -18,9 +21,12 @@ import redis.clients.jedis.UnifiedJedis;
  * Redis counters through Jedis: {@code INCRBY} plus a {@code PEXPIRE} on first write, in one Lua
  * script so the pair is atomic. On JDK 21-23 every Jedis call can run on a bounded pool of daemon
  * platform threads ({@link #onPlatformThreads}), so a virtual-thread caller never reaches the
- * connection pool's growth lock whatever happens to the connections (the security review R6).
+ * connection pool's growth lock whatever happens to the connections (the security review R6). The pool's queue
+ * is bounded and a timed-out call is cancelled and removed from it (the security review C7): while Redis is
+ * slow, calls fail fast instead of piling up on an unbounded queue that outlives the outage.
+ * Closing the store shuts the pool down (the security review C8).
  */
-public final class JedisBudgetStore implements BudgetStore {
+public final class JedisBudgetStore implements BudgetStore, AutoCloseable {
 
   private static final String SCRIPT =
       "local v = redis.call('INCRBY', KEYS[1], ARGV[1]) "
@@ -44,19 +50,33 @@ public final class JedisBudgetStore implements BudgetStore {
   /** Runs every call on {@code threads} daemon platform threads, bounded by {@code maxWait}. */
   public static JedisBudgetStore onPlatformThreads(
       UnifiedJedis jedis, int threads, Duration maxWait) {
+    int n = Math.max(1, threads);
     var pool =
-        Executors.newFixedThreadPool(
-            Math.max(1, threads),
+        new ThreadPoolExecutor(
+            n,
+            n,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(n),
             r -> {
               var t = new Thread(r, "agentguard-redis");
               t.setDaemon(true);
               return t;
-            });
+            },
+            new ThreadPoolExecutor.AbortPolicy());
     return new JedisBudgetStore(jedis, pool, maxWait);
   }
 
   public boolean isOnPlatformThreads() {
     return executor != null;
+  }
+
+  /** Shuts the platform-thread pool down, if this store has one (the security review C8). No-op otherwise. */
+  @Override
+  public void close() {
+    if (executor != null) {
+      executor.shutdownNow();
+    }
   }
 
   @Override
@@ -89,9 +109,22 @@ public final class JedisBudgetStore implements BudgetStore {
         throw new AgentGuardException(ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store failed", e);
       }
     }
+    Future<Long> future;
     try {
-      return executor.submit(call).get(maxWait.toMillis(), TimeUnit.MILLISECONDS);
+      future = executor.submit(call);
+    } catch (RejectedExecutionException e) {
+      // the bounded queue is full: refuse immediately instead of piling work up (C7)
+      throw new AgentGuardException(
+          ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store pool saturated", e);
+    }
+    try {
+      return future.get(maxWait.toMillis(), TimeUnit.MILLISECONDS);
     } catch (TimeoutException e) {
+      // don't abandon it on the queue: cancel and remove it so the slot is free for the next call
+      future.cancel(true);
+      if (executor instanceof ThreadPoolExecutor tpe) {
+        tpe.getQueue().remove(future);
+      }
       throw new AgentGuardException(
           ErrorCodes.GUARD_UNAVAILABLE, "Redis budget store did not answer within " + maxWait, e);
     } catch (ExecutionException e) {

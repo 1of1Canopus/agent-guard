@@ -39,12 +39,12 @@ class CipherProbeCleanRedisTest {
    * mapped to {@code AG-GUARD-001}, so a saturated pool refuses immediately instead of queueing.
    */
   @Test
-  void probe_a_timed_out_redis_call_stays_queued_on_an_unbounded_queue() throws Exception {
+  void a_timed_out_redis_call_does_not_stay_queued() throws Exception {
     var store =
         JedisBudgetStore.onPlatformThreads(
             new UnifiedJedis("redis://127.0.0.1:1"), 1, Duration.ofMillis(50));
     var pool = executorOf(store);
-    assertThat(pool.getQueue().remainingCapacity()).isEqualTo(Integer.MAX_VALUE);
+    assertThat(pool.getQueue().remainingCapacity()).isNotEqualTo(Integer.MAX_VALUE);
 
     var hold = new CountDownLatch(1);
     var running = new CountDownLatch(1);
@@ -63,8 +63,8 @@ class CipherProbeCleanRedisTest {
           .isEqualTo(ErrorCodes.GUARD_UNAVAILABLE);
     }
 
-    // every abandoned call is still queued and will run whenever Redis recovers
-    assertThat(pool.getQueue()).hasSize(5);
+    // every abandoned call is cancelled and removed from the queue, not left to run later
+    assertThat(pool.getQueue()).isEmpty();
     hold.countDown();
     pool.shutdownNow();
   }
@@ -79,10 +79,10 @@ class CipherProbeCleanRedisTest {
    * definition in {@code JedisBudgetStoreFactory}/{@code AgentGuardAutoConfiguration} pick it up.
    */
   @Test
-  void probe_the_platform_thread_executor_is_never_shut_down() throws Exception {
-    assertThat(AutoCloseable.class.isAssignableFrom(JedisBudgetStore.class)).isFalse();
+  void the_platform_thread_executor_is_shut_down_on_close() throws Exception {
+    assertThat(AutoCloseable.class.isAssignableFrom(JedisBudgetStore.class)).isTrue();
     assertThat(Arrays.stream(JedisBudgetStore.class.getMethods()).map(m -> m.getName()))
-        .doesNotContain("close", "shutdown", "destroy");
+        .contains("close");
 
     var store =
         JedisBudgetStore.onPlatformThreads(
@@ -91,6 +91,9 @@ class CipherProbeCleanRedisTest {
     pool.prestartAllCoreThreads();
     assertThat(Thread.getAllStackTraces().keySet())
         .anyMatch(t -> t.getName().startsWith("agentguard-redis") && t.isAlive());
-    pool.shutdownNow(); // the probe cleans up after itself; production has nothing that does
+
+    store.close();
+
+    assertThat(pool.isShutdown()).isTrue();
   }
 }

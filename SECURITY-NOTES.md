@@ -83,8 +83,8 @@ does about it, and what still needs a reviewer's eye.
   is part of the material (`actor_id`, the security review M1); timestamps are truncated to milliseconds in `AuditEvent` so every
   store round-trips them; appends are serialised by a PostgreSQL transaction-scoped advisory lock; triggers refuse
   UPDATE, DELETE **and TRUNCATE**; a separate **anchor row** (`agentguard_audit_anchor`: head hash, row count and
-  `keyed`) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `BROKEN` /
-  `ANCHOR_MISMATCH` / `NO_ANCHOR` — tail deletion, truncation, or a downgraded keyed chain, by a role that can
+  `keyed`) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `INTACT_UNKEYED`
+  / `BROKEN` / `ANCHOR_MISMATCH` / `NO_ANCHOR` — tail deletion, truncation, or a downgraded keyed chain, by a role that can
   disable triggers, is detected; a missing anchor is reported, not silently guessed past.
 - **Residual (the security review R4):** a role that owns the tables can disable the append-only and anchor triggers and rewrite
   chain, anchor **and** `keyed` consistently — run the application with a least-privilege role (INSERT + SELECT on
@@ -134,6 +134,11 @@ does about it, and what still needs a reviewer's eye.
   which lives outside the rows they rewrite.
   **Residual, unchanged from R4:** the table owner can disable the anchor's trigger and rewrite `keyed` along with
   everything else; run the application with a role that does not own the tables (see "Database roles" below).
+- **`InMemoryAuditSink` has no external anchor (the security review H3, doc-only):** its `anchor()` is derived from the very
+  events list it anchors (`headHash`/`rowCount` from the last event, `keyed` from the instance's own `AuditChain`),
+  not a separate record like `JdbcAuditSink`'s anchor row. It therefore cannot detect its own tail being trimmed —
+  a trimmed in-memory trail still verifies `INTACT`/`INTACT_UNKEYED` with `anchored() == true`. Tests and
+  development only; not a substitute for the JDBC store in any deployment where the audit trail matters.
 - **Test:** `AuditChainVerifierTest.a_key_given_with_no_anchor_reports_no_anchor_never_intact`,
   `AuditChainVerifierTest.an_unkeyed_trail_never_renders_plain_intact`,
   `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (partial downgrade),

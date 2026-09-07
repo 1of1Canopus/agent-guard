@@ -86,21 +86,22 @@ class CipherProbeReverifyTest {
    * can DISABLE TRIGGER"), and per-row version trust hands that residual back — the whole trail can
    * be rewritten and still verify INTACT.
    *
-   * <p><b>Ruling on QUESTIONS.md #20 (the maintainers):</b> a row-embedded version scheme can never tell a
-   * whole-trail downgrade to GENESIS/{@code ag1} apart from a trail that has genuinely never used
-   * HMAC — that is what {@code
-   * CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail}
-   * (C6) requires to stay INTACT. The fix uses the external anchor instead: {@code
-   * agentguard_audit_anchor.keyed_from_seq}, set once — in the same transaction as the first row
-   * appended under a keyed chain — and never movable afterwards (the anchor's monotonic trigger,
-   * the security review R4). {@link AuditChainVerifier#verify()} requires every row before {@code
-   * keyed_from_seq} to be unkeyed and every row from it onward to be keyed; anything else,
-   * including a keyed row when {@code keyed_from_seq} is still {@code null}, is BROKEN. This closes
-   * both the partial downgrade below ({@code
-   * probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed}) and the security review's original
-   * whole-trail repro ({@code probe_a_fully_downgraded_trail_verifies_as_broken_not_intact}): the
-   * attacker's row-level rewrite cannot touch the anchor's {@code keyed_from_seq}, which is not
-   * part of the trail it rewrites.
+   * <p><b>Ruling on QUESTIONS.md #20 (the maintainers), then superseded by the keyed-from-birth design
+   * change (same question, later in the same round):</b> a row-embedded version scheme can never
+   * tell a whole-trail downgrade to GENESIS/{@code ag1} apart from a trail that has genuinely never
+   * used HMAC. The first fix used the external anchor's {@code keyed_from_seq} sequence position;
+   * that mechanism, and the C6 goal of accommodating "enabling the key on a running installation",
+   * were both replaced by keyed-from-birth: a trail is keyed from row 1 or unkeyed forever (no
+   * mixing, no later switch), recorded once as {@code agentguard_audit_anchor.keyed} (a plain
+   * boolean) and immutable afterwards (the anchor's monotonic trigger, the security review R4). {@link
+   * AuditChainVerifier#verify()} requires every row's {@code chain_version} to match what {@code
+   * keyed} says the whole trail must be; anything else is BROKEN. This still closes both the
+   * partial downgrade below ({@code probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed})
+   * and the security review's original whole-trail repro ({@code
+   * probe_a_fully_downgraded_trail_verifies_as_broken_not_intact}): the attacker's row-level
+   * rewrite cannot touch the anchor's {@code keyed} column, which is not part of the trail it
+   * rewrites — see {@code CipherProbeAnchorKeyingJdbcTest} for the JDBC-level replacements of
+   * the security review's F1–F4 findings against the sequence-position mechanism.
    */
   @Test
   void probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed() {
@@ -137,12 +138,12 @@ class CipherProbeReverifyTest {
   }
 
   /**
-   * V2, the security review's original repro restored (the maintainers's ruling, QUESTIONS.md #20): not a downgraded tail
-   * but the <em>whole</em> trail, including the genuinely keyed head, rewritten to {@code ag1}
-   * relinked from GENESIS. Row data alone cannot tell this apart from a trail that never used HMAC
-   * — the anchor's {@code keyed_from_seq} can: it is set once, at the first keyed append, and lives
-   * outside the rows an attacker with table-write access rewrites, so it still says row 1 must be
-   * keyed even after every row's own claim says otherwise.
+   * V2, the security review's original repro restored (the maintainers's ruling, QUESTIONS.md #20, keyed-from-birth): not
+   * a downgraded tail but the <em>whole</em> trail, including the genuinely keyed head, rewritten
+   * to {@code ag1} relinked from GENESIS. Row data alone cannot tell this apart from a trail that
+   * never used HMAC — the anchor's {@code keyed} column can: it is set once, at the first append,
+   * and lives outside the rows an attacker with table-write access rewrites, so it still says row 1
+   * must be keyed even after every row's own claim says otherwise.
    */
   @Test
   void probe_a_fully_downgraded_trail_verifies_as_broken_not_intact() {
@@ -172,9 +173,9 @@ class CipherProbeReverifyTest {
 
     var report = AuditChainVerifier.of(sink, AuditChain.keyed(key)).verify();
 
-    // V2 fixed via the external anchor: keyed_from_seq (1, set at the first keyed append and
-    // untouched by the row-level tamper above) says row 1 must be keyed; it now claims 'ag1', so
-    // the whole-trail downgrade is BROKEN at its very first row, not silently re-verified INTACT.
+    // V2 fixed via the external anchor: keyed=true (set at the first append and untouched by the
+    // row-level tamper above) says row 1 must be keyed; it now claims 'ag1', so the whole-trail
+    // downgrade is BROKEN at its very first row, not silently re-verified INTACT.
     assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.BROKEN);
     assertThat(report.brokenAtSequence()).isEqualTo(1L);
   }

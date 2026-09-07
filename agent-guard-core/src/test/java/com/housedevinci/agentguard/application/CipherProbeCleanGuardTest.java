@@ -3,9 +3,6 @@ package com.housedevinci.agentguard.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.housedevinci.agentguard.adapter.memory.InMemoryAuditSink;
-import com.housedevinci.agentguard.domain.AuditChain;
-import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.DecisionId;
 import com.housedevinci.agentguard.domain.DecisionState;
 import com.housedevinci.agentguard.domain.PendingDecision;
@@ -116,48 +113,15 @@ class CipherProbeCleanGuardTest {
   }
 
   /**
-   * C6: turning on {@code agentguard.audit.hmac-secret} on a running installation makes every row
-   * written before the key unverifiable: the verifier recomputes them with HMAC and reports BROKEN
-   * at the first row, which is exactly what a rewrite looks like. Nothing in the code or the docs
-   * distinguishes the two.
-   *
-   * <p>Fix: record the chain version per row ({@code ag1}/{@code ag2h}) in a column, verify each
-   * row with the version it was written with, and document that enabling the key is a one-way step
-   * that must be taken with the trail's verification report attached.
-   *
-   * <p><b>Updated for the V2 anchor fix (QUESTIONS.md #20):</b> "enabling the key" is modelled as
-   * it happens in production — a new sink instance (a restarted app with {@code
-   * agentguard.audit.hmac-secret} now set) continuing the same persisted trail, not merely a
-   * differently-configured verifier reading rows nothing ever appended to. The unkeyed prefix stays
-   * legitimately unkeyed because {@code keyed_from_seq} is still {@code null} when it is written;
-   * the first row appended under the new, keyed sink sets it, in the same transaction as that row.
+   * C6 (superseded by the keyed-from-birth design change, QUESTIONS.md #20): the original probe
+   * modelled "turning on {@code agentguard.audit.hmac-secret} on a running installation" and
+   * required the existing unkeyed trail to keep verifying INTACT. Under keyed-from-birth this is no
+   * longer the goal — a trail is keyed from row 1 or unkeyed forever, and switching is refused, not
+   * accommodated. The replacement lives in {@code CipherProbeAnchorKeyingJdbcTest
+   * .a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed}: restarting an installation with
+   * the secret newly set fails at startup, naming {@code agentguard.audit.hmac-secret} and the
+   * remedy (start a new trail).
    */
-  @Test
-  void enabling_the_audit_hmac_secret_does_not_break_the_existing_trail() {
-    var unkeyed = new InMemoryAuditSink(AuditChain.unkeyed());
-    var recorder = new AuditRecorder(unkeyed, java.time.Clock.systemUTC());
-    var principal = new Principal("agent-1", Set.of("AGENT"), Set.of(), "acme");
-    recorder.record(principal, "read", "{\"a\":1}", "ok", 1, AuditDecision.ALLOWED, "c1", null);
-    recorder.record(principal, "read", "{\"a\":2}", "ok", 1, AuditDecision.ALLOWED, "c2", null);
-
-    var beforeKey = AuditChainVerifier.of(unkeyed, AuditChain.unkeyed()).verify();
-    assertThat(beforeKey.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
-
-    var key = new byte[32];
-    java.util.Arrays.fill(key, (byte) 7);
-    // "enabling the key" = restarting the app with the secret set: a new sink instance over the
-    // same trail. keyed_from_seq is still null until this sink's first append sets it, so the two
-    // rows above stay a legitimately-unkeyed prefix, not a downgrade.
-    var keyed = new InMemoryAuditSink(unkeyed.readAfter(0, 100), AuditChain.keyed(key));
-    var keyedRecorder = new AuditRecorder(keyed, java.time.Clock.systemUTC());
-    keyedRecorder.record(
-        principal, "read", "{\"a\":3}", "ok", 1, AuditDecision.ALLOWED, "c3", null);
-
-    var afterKey = AuditChainVerifier.of(keyed, AuditChain.keyed(key)).verify();
-
-    assertThat(afterKey.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
-    assertThat(afterKey.verified()).isEqualTo(3L);
-  }
 
   /** Delegating store that records the dedup lookup the canonical hash feeds. */
   private record RecordingDecisionStore(

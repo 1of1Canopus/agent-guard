@@ -47,11 +47,38 @@ public class AgentGuardProperties {
 
   public static class Audit {
     /**
-     * Optional HMAC-SHA256 key (at least 32 bytes) for the audit chain: rewrites by anyone without
-     * the key become detectable. Provide it from an environment variable; changing it breaks
-     * verification of older rows.
+     * HMAC-SHA256 key (at least 32 bytes) for the audit chain: rewrites by anyone without the key
+     * become detectable. Required by default (a trail is keyed from row 1 or unkeyed forever, and
+     * unkeyed-by-accident is the wrong default for an audit trail); provide it from an environment
+     * variable — generate one with {@code openssl rand -base64 32}. Changing it breaks verification
+     * of older rows; see {@code agentguard.audit.unkeyed} for the explicit local-dev opt-out.
      */
     private String hmacSecret;
+
+    /**
+     * Id of the key above, baked into every row's hashed material from row 1 (see {@code
+     * AuditChain}) so rotation is data, not a chain-format change. Defaults {@code k1}; give the
+     * next key a different id when rotating (e.g. {@code k2}) and add the old one to {@code
+     * agentguard.audit.hmac-keys} so the verifier can still check rows it signed.
+     */
+    private String hmacKeyId = "k1";
+
+    /**
+     * Retired keys the verifier must still accept, by id — {@code
+     * agentguard.audit.hmac-keys.k1=...} — so historical rows signed under an id other than the
+     * current {@code hmac-key-id} still verify after a rotation. Not used for appending (only
+     * {@code hmac-secret}/{@code hmac-key-id} ever sign a new row); an id present here but equal to
+     * {@code hmac-key-id} is redundant, not an error.
+     */
+    private java.util.Map<String, String> hmacKeys = new java.util.LinkedHashMap<>();
+
+    /**
+     * Explicit opt-out, for local development only: start with an unkeyed audit chain instead of
+     * requiring {@code agentguard.audit.hmac-secret}. A database writer can then rewrite the trail
+     * undetected (no HMAC to break); the module warns about this at every startup, not only the
+     * first, so the trade-off does not go unnoticed after whoever set it has moved on.
+     */
+    private boolean unkeyed = false;
 
     public String getHmacSecret() {
       return hmacSecret;
@@ -59,6 +86,30 @@ public class AgentGuardProperties {
 
     public void setHmacSecret(String v) {
       this.hmacSecret = v;
+    }
+
+    public String getHmacKeyId() {
+      return hmacKeyId;
+    }
+
+    public void setHmacKeyId(String v) {
+      this.hmacKeyId = v;
+    }
+
+    public java.util.Map<String, String> getHmacKeys() {
+      return hmacKeys;
+    }
+
+    public void setHmacKeys(java.util.Map<String, String> v) {
+      this.hmacKeys = v;
+    }
+
+    public boolean isUnkeyed() {
+      return unkeyed;
+    }
+
+    public void setUnkeyed(boolean v) {
+      this.unkeyed = v;
     }
   }
 

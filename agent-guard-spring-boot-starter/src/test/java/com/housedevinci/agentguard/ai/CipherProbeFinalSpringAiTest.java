@@ -83,6 +83,7 @@ class CipherProbeFinalSpringAiTest {
         .withBean(OrderTools.class)
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "spring.ai.tools.limits.max-total-tool-calls=1",
             "spring.ai.tools.limits.on-limit-exceeded=RETURN_ERROR_RESPONSE")
@@ -170,7 +171,8 @@ class CipherProbeFinalSpringAiTest {
     // the resolver still trusts a live token minted by the provider (that is its purpose)
     new ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class))
-        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY")
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.audit.unkeyed=true", "agentguard.store=MEMORY")
         .run(
             ctx -> {
               var seen =

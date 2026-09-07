@@ -102,32 +102,39 @@ class CipherProbeReverifyJdbcTest {
     sql("ALTER TABLE agentguard_audit ENABLE TRIGGER ALL");
     sql("ALTER TABLE agentguard_audit_anchor ENABLE TRIGGER ALL");
     assertThat(new AuditChainVerifier(sink).verify().status())
-        .isEqualTo(AuditChainVerifier.Status.INTACT);
+        .isEqualTo(AuditChainVerifier.Status.INTACT_UNKEYED);
   }
 
-  @Test // R2 flipped: rows without an anchor re-anchor from the head, and the schema seeds the row
+  /**
+   * R2, superseded by the amendment after the security review's design review of keyed-from-birth: a missing
+   * anchor on a non-empty trail is no longer re-derived from the trail head (that was exactly the
+   * "guess a keyed value from row data" the anchor exists to make unnecessary — the same class of
+   * gap as the retired {@code keyed_from_seq} F1/F2 findings). It is refused instead, on both the
+   * next append and the next verification; the schema step does not resurrect it either, since it
+   * only ever seeds the anchor for a genuinely empty trail.
+   */
+  @Test
   @Order(2)
-  void trail_without_anchor_row_continues_from_the_real_head() throws SQLException {
+  void a_trail_without_an_anchor_row_refuses_to_append_and_reports_no_anchor() throws SQLException {
     var sink = new JdbcAuditSink(ds);
+    sink.append(event(Instant.parse("2026-09-06T11:00:00Z")));
+    sql("ALTER TABLE agentguard_audit_anchor DISABLE TRIGGER ALL");
     sql("DELETE FROM agentguard_audit_anchor");
-    var head = sink.latest(1).get(0);
-    assertThat(new AuditChainVerifier(sink).verify().status())
-        .isEqualTo(AuditChainVerifier.Status.INTACT);
-    var appended = sink.append(event(Instant.parse("2026-09-06T11:00:00Z")));
-    assertThat(appended.prevHash()).isEqualTo(head.hash());
-    var after = new AuditChainVerifier(sink).verify();
-    assertThat(after.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
-    assertThat(sink.anchor()).isPresent();
-    assertThat(sink.anchor().get().rowCount()).isEqualTo(after.verified());
+    sql("ALTER TABLE agentguard_audit_anchor ENABLE TRIGGER ALL");
 
-    // and the idempotent schema step seeds a missing anchor from the existing rows
-    sql("DELETE FROM agentguard_audit_anchor");
-    JdbcSupport.initializeSchema(ds);
-    assertThat(sink.anchor())
-        .contains(
-            new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(
-                appended.hash(), after.verified(), null));
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> sink.append(event(Instant.parse("2026-09-06T11:00:01Z"))))
+        .isInstanceOf(com.housedevinci.agentguard.domain.AgentGuardException.class)
+        .extracting(e -> ((com.housedevinci.agentguard.domain.AgentGuardException) e).code())
+        .isEqualTo(com.housedevinci.agentguard.domain.ErrorCodes.AUDIT_ANCHOR_MISSING);
+
     assertThat(new AuditChainVerifier(sink).verify().status())
-        .isEqualTo(AuditChainVerifier.Status.INTACT);
+        .isEqualTo(AuditChainVerifier.Status.NO_ANCHOR);
+
+    // the schema step does not resurrect it either — it only ever seeds an empty trail
+    JdbcSupport.initializeSchema(ds);
+    assertThat(sink.anchor()).isEmpty();
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> new JdbcAuditSink(ds))
+        .isInstanceOf(com.housedevinci.agentguard.domain.AgentGuardException.class);
   }
 }

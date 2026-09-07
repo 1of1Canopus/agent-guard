@@ -8,12 +8,13 @@ import java.util.Objects;
  * One row of the append-only audit trail. {@code prevHash} and {@code hash} form the chain (see
  * {@link AuditChain}); they are null until the sink links the event. {@code version} records which
  * {@link AuditChain} produced {@code hash} ({@link AuditChain#CANONICAL_VERSION} or {@link
- * AuditChain#KEYED_VERSION}), null until linked: enabling {@code agentguard.audit.hmac-secret} on a
- * running installation must not make rows written before the key unverifiable, so the verifier
- * re-derives the function each row was written with instead of assuming one chain for the whole
- * trail (C6). {@code actorId} is the human or system that caused the row when it differs from the
- * calling principal (the approver of an APPROVED / REJECTED row). Timestamps are truncated to
- * milliseconds so every store round-trips them unchanged.
+ * AuditChain#KEYED_VERSION}), null until linked. {@code keyId} records which key signed the row
+ * ({@link AuditChain#UNKEYED_KEY_ID} for an unkeyed row, otherwise the id of the HMAC secret that
+ * produced {@code hash}), also null until linked; it is part of the hashed material itself, from
+ * row 1, so key rotation is data (a new id, a new secret) rather than a chain-format change. {@code
+ * actorId} is the human or system that caused the row when it differs from the calling principal
+ * (the approver of an APPROVED / REJECTED row). Timestamps are truncated to milliseconds so every
+ * store round-trips them unchanged.
  */
 public record AuditEvent(
     long sequence,
@@ -29,6 +30,7 @@ public record AuditEvent(
     String decisionId,
     String actorId,
     String version,
+    String keyId,
     String prevHash,
     String hash) {
 
@@ -62,6 +64,7 @@ public record AuditEvent(
         decisionId,
         actorId,
         version,
+        keyId,
         prevHash,
         hash);
   }
@@ -81,6 +84,7 @@ public record AuditEvent(
         decisionId,
         actorId,
         version,
+        keyId,
         prevHash,
         hash);
   }
@@ -100,6 +104,7 @@ public record AuditEvent(
         decisionId,
         actorId,
         version,
+        keyId,
         prevHash,
         hash);
   }
@@ -119,13 +124,15 @@ public record AuditEvent(
         decisionId,
         actorId,
         version,
+        keyId,
         prevHash,
         hash);
   }
 
   /**
-   * Links the event without recording which chain version produced the hash; kept for callers that
-   * already know the row's version (or don't care, e.g. forging a broken row in a test).
+   * Links the event without recording which chain version/key produced the hash; kept for callers
+   * that already know the row's version and key id (or don't care, e.g. forging a broken row in a
+   * test).
    */
   public AuditEvent withChain(String prev, String h) {
     return new AuditEvent(
@@ -142,11 +149,15 @@ public record AuditEvent(
         decisionId,
         actorId,
         version,
+        keyId,
         prev,
         h);
   }
 
-  /** Links the event and records the chain version that produced {@code hash} (C6). */
+  /**
+   * Links the event and records the chain version that produced {@code hash} (C6), keeping the
+   * event's current key id.
+   */
   public AuditEvent withChain(String prev, String chainVersion, String h) {
     return new AuditEvent(
         sequence,
@@ -162,13 +173,37 @@ public record AuditEvent(
         decisionId,
         actorId,
         chainVersion,
+        keyId,
         prev,
         h);
   }
 
   /**
-   * Fluent builder; {@code sequence}, {@code version}, {@code prevHash} and {@code hash} are set by
-   * the sink.
+   * Links the event and records both the chain version and the key id that produced {@code hash}.
+   */
+  public AuditEvent withChain(String prev, String chainVersion, String chainKeyId, String h) {
+    return new AuditEvent(
+        sequence,
+        timestamp,
+        principalId,
+        tenantId,
+        tool,
+        argsHash,
+        resultHash,
+        latencyMillis,
+        decision,
+        correlationId,
+        decisionId,
+        actorId,
+        chainVersion,
+        chainKeyId,
+        prev,
+        h);
+  }
+
+  /**
+   * Fluent builder; {@code sequence}, {@code version}, {@code keyId}, {@code prevHash} and {@code
+   * hash} are set by the sink.
    */
   public static final class Builder {
     private Instant timestamp;
@@ -252,6 +287,7 @@ public record AuditEvent(
           correlationId,
           decisionId,
           actorId,
+          null,
           null,
           null,
           null);

@@ -52,8 +52,13 @@ class SchemaStepIntegrationTest {
     var runner =
         new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class))
-            .withBean(DataSource.class, () -> ds)
-            .withPropertyValues("agentguard.enabled=true");
+            // no destroy method: JdbcAuditSink's constructor now opens a connection to check the
+            // trail's keyed state at startup (keyed-from-birth, QUESTIONS.md #20), so this shared
+            // DataSource must survive the first context's shutdown for the second "same DataSource"
+            // context below — Spring's default inferred destroy method (close/shutdown) would
+            // otherwise close the pool when the first context closes.
+            .withBean(DataSource.class, () -> ds, bd -> bd.setDestroyMethodName(""))
+            .withPropertyValues("agentguard.enabled=true", "agentguard.audit.unkeyed=true");
     runner.run(ctx -> assertThat(ctx.getBean(AuditChainVerifier.class).verify().intact()).isTrue());
     runner.run(ctx -> assertThat(ctx).hasNotFailed()); // second context, same DataSource
     long runs =

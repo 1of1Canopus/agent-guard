@@ -120,7 +120,10 @@ class CipherProbeMcpTest {
               AutoConfigurations.of(
                   AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
           .withUserConfiguration(SpecsConfig.class)
-          .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY");
+          .withPropertyValues(
+              "agentguard.enabled=true",
+              "agentguard.audit.unkeyed=true",
+              "agentguard.store=MEMORY");
 
   @AfterEach
   void clear() {
@@ -257,7 +260,8 @@ class CipherProbeMcpTest {
             AutoConfigurations.of(
                 AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
         .withBean(Tools.class)
-        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY")
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.audit.unkeyed=true", "agentguard.store=MEMORY")
         .run(
             ctx -> {
               assertThat(ctx).hasFailed();
@@ -275,7 +279,10 @@ class CipherProbeMcpTest {
                 AgentGuardAutoConfiguration.class, AgentGuardMcpAutoConfiguration.class))
         .withBean(Tools.class)
         .withPropertyValues(
-            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.strict=false")
+            "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
+            "agentguard.store=MEMORY",
+            "agentguard.strict=false")
         .run(ctx -> assertThat(ctx).hasNotFailed());
   }
 }

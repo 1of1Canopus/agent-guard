@@ -3,12 +3,15 @@ package com.housedevinci.agentguard.adapter.jdbc;
 import static com.housedevinci.agentguard.adapter.jdbc.JdbcSupport.instant;
 import static com.housedevinci.agentguard.adapter.jdbc.JdbcSupport.ts;
 
+import com.housedevinci.agentguard.domain.AgentGuardException;
 import com.housedevinci.agentguard.domain.AuditAnchor;
 import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.domain.AuditDecision;
 import com.housedevinci.agentguard.domain.AuditEvent;
 import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.AuditSink;
+import com.housedevinci.agentguard.domain.ErrorCodes;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -23,17 +26,20 @@ import javax.sql.DataSource;
  * PostgreSQL audit sink. Each append runs in its own transaction under a transaction-scoped
  * advisory lock so the chain is linear even under concurrent writers; the table's trigger refuses
  * UPDATE and DELETE.
+ *
+ * <p>A trail is keyed from row 1 or unkeyed forever (design change, QUESTIONS.md #20:
+ * "keyed-from-birth"): the anchor's {@code keyed} column records which, once, at the first append,
+ * and is immutable afterwards. Every append after that — from this instance or any other — must
+ * agree with it, or is refused with {@link ErrorCodes#AUDIT_KEY_MISMATCH}. A missing anchor on a
+ * trail that already has rows is never re-derived by guessing from the trail head: it is refused
+ * with {@link ErrorCodes#AUDIT_ANCHOR_MISSING}, both at construction and on every append, because a
+ * guessed {@code keyed} value is exactly the thing the anchor exists to make unguessable.
  */
 public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor {
 
   private static final String COLUMNS =
       "seq, ts, principal_id, tenant_id, tool, args_hash, result_hash, latency_ms, decision, "
-          + "correlation_id, decision_id, actor_id, chain_version, prev_hash, hash";
-  private static final org.slf4j.Logger log =
-      org.slf4j.LoggerFactory.getLogger(JdbcAuditSink.class);
-  private static final java.util.concurrent.atomic.AtomicBoolean WARNED_MISSING_ANCHOR =
-      new java.util.concurrent.atomic.AtomicBoolean();
-  private static final long LOCK_KEY = 0x41474741554449L; // "AGGAUDI"
+          + "correlation_id, decision_id, actor_id, chain_version, key_id, prev_hash, hash";
 
   private final DataSource dataSource;
   private final AuditChain chain;
@@ -45,6 +51,64 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   public JdbcAuditSink(DataSource dataSource, AuditChain chain) {
     this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
     this.chain = Objects.requireNonNull(chain, "chain");
+    // fail closed at startup, not only on the first append after it (a rolling restart must not be
+    // able to serve traffic for a while before its first guarded call ever reaches append())
+    JdbcSupport.withConnection(
+        dataSource,
+        c -> {
+          refuseIfMismatched(currentTrailState(c));
+          return null;
+        });
+  }
+
+  /**
+   * The anchor's {@code keyed} flag, or {@code null} when the trail is empty (anchor absent, no
+   * rows yet — either mode is still legitimate, the first append decides it).
+   */
+  private record TrailState(boolean anchored, boolean keyed, boolean nonEmpty) {}
+
+  private TrailState currentTrailState(Connection c) throws SQLException {
+    try (PreparedStatement last =
+            c.prepareStatement("SELECT keyed FROM agentguard_audit_anchor WHERE id = 1");
+        ResultSet rs = last.executeQuery()) {
+      if (rs.next()) {
+        return new TrailState(true, rs.getBoolean(1), true);
+      }
+    }
+    // no anchor row: refuse to guess if the trail already has rows (AUDIT_ANCHOR_MISSING); an
+    // empty trail with no anchor is simply not started yet
+    try (PreparedStatement head = c.prepareStatement("SELECT 1 FROM agentguard_audit LIMIT 1");
+        ResultSet rs = head.executeQuery()) {
+      return new TrailState(false, false, rs.next());
+    }
+  }
+
+  private void refuseIfMismatched(TrailState state) {
+    if (!state.anchored() && state.nonEmpty()) {
+      throw new AgentGuardException(
+          ErrorCodes.AUDIT_ANCHOR_MISSING,
+          "agentguard_audit_anchor has no row but agentguard_audit is not empty. The schema seed"
+              + " never invents a keyed value for rows it did not write, so this is refused rather"
+              + " than guessed: either a restore lost the anchor row, or a role that can disable"
+              + " triggers removed it. Remedy: start a new trail (archive agentguard_audit and"
+              + " agentguard_audit_anchor — rename or drop them — and re-run the schema step so it"
+              + " re-seeds an empty pair).");
+    }
+    if (state.anchored() && state.keyed() != chain.isKeyed()) {
+      throw new AgentGuardException(
+          ErrorCodes.AUDIT_KEY_MISMATCH,
+          "agentguard_audit is "
+              + (state.keyed() ? "keyed" : "unkeyed")
+              + " but this instance is "
+              + (chain.isKeyed() ? "keyed" : "unkeyed")
+              + " (agentguard.audit.hmac-secret "
+              + (chain.isKeyed() ? "is set" : "is not set, or agentguard.audit.unkeyed=true")
+              + "). A trail is keyed from row 1 or unkeyed forever; it cannot switch. During a"
+              + " rolling restart that changes agentguard.audit.hmac-secret, stop every instance"
+              + " before starting the first one with the new setting. To change the audit mode for"
+              + " real, start a new trail: archive agentguard_audit and agentguard_audit_anchor (a"
+              + " new table, or a renamed/dropped one, so the schema step re-seeds it empty).");
+    }
   }
 
   @Override
@@ -58,74 +122,45 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
           }
           String prev = AuditChain.GENESIS;
           long count = 0;
-          Long keyedFromSeq = null;
           boolean anchored = false;
           try (PreparedStatement last =
                   c.prepareStatement(
-                      "SELECT head_hash, row_count, keyed_from_seq FROM agentguard_audit_anchor"
+                      "SELECT head_hash, row_count, keyed FROM agentguard_audit_anchor"
                           + " WHERE id = 1");
               ResultSet rs = last.executeQuery()) {
             if (rs.next()) {
               prev = rs.getString(1);
               count = rs.getLong(2);
-              keyedFromSeq = (Long) rs.getObject(3);
+              refuseIfMismatched(new TrailState(true, rs.getBoolean(3), true));
               anchored = true;
             }
           }
           if (!anchored) {
-            // no anchor row (trail older than the anchor, or the row was removed): continue from
-            // the table's actual head rather than restarting the chain at GENESIS
             try (PreparedStatement head =
-                    c.prepareStatement(
-                        "SELECT hash, (SELECT count(*) FROM agentguard_audit) FROM agentguard_audit"
-                            + " ORDER BY seq DESC LIMIT 1");
+                    c.prepareStatement("SELECT 1 FROM agentguard_audit LIMIT 1");
                 ResultSet rs = head.executeQuery()) {
-              if (rs.next()) {
-                prev = rs.getString(1);
-                count = rs.getLong(2);
-                if (WARNED_MISSING_ANCHOR.compareAndSet(false, true)) {
-                  log.warn(
-                      "agentguard_audit_anchor row missing; re-anchoring from the trail head"
-                          + " (seq count {}). Run the schema step to seed it.",
-                      count);
-                }
-              }
-            }
-            // re-derive when the keyed chain first appeared in the existing trail, so a lost or
-            // pre-anchor row does not silently forget it (V2)
-            try (PreparedStatement first =
-                c.prepareStatement(
-                    "SELECT min(seq) FROM agentguard_audit WHERE chain_version = ?")) {
-              first.setString(1, AuditChain.KEYED_VERSION);
-              try (ResultSet rs = first.executeQuery()) {
-                if (rs.next()) {
-                  keyedFromSeq = (Long) rs.getObject(1);
-                }
-              }
+              refuseIfMismatched(new TrailState(false, false, rs.next()));
             }
           }
           var linked = chain.linkEvent(event, prev);
-          if (keyedFromSeq == null && AuditChain.KEYED_VERSION.equals(linked.version())) {
-            keyedFromSeq = count + 1;
-          }
           try (PreparedStatement anchor =
               c.prepareStatement(
                   "INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at,"
-                      + " keyed_from_seq) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET "
+                      + " keyed) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET "
                       + "head_hash = EXCLUDED.head_hash, row_count = EXCLUDED.row_count, "
-                      + "updated_at = EXCLUDED.updated_at, keyed_from_seq = EXCLUDED.keyed_from_seq")) {
+                      + "updated_at = EXCLUDED.updated_at")) {
             anchor.setString(1, linked.hash());
             anchor.setLong(2, count + 1);
             anchor.setObject(3, ts(linked.timestamp()));
-            anchor.setObject(4, keyedFromSeq);
+            anchor.setBoolean(4, chain.isKeyed());
             anchor.executeUpdate();
           }
           try (PreparedStatement ps =
               c.prepareStatement(
                   "INSERT INTO agentguard_audit (ts, principal_id, tenant_id, tool, args_hash, "
                       + "result_hash, latency_ms, decision, correlation_id, decision_id, actor_id, "
-                      + "chain_version, prev_hash, hash) "
-                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
+                      + "chain_version, key_id, prev_hash, hash) "
+                      + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING seq")) {
             int i = 1;
             ps.setObject(i++, ts(linked.timestamp()));
             ps.setString(i++, linked.principalId());
@@ -139,6 +174,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
             ps.setString(i++, linked.decisionId());
             ps.setString(i++, linked.actorId());
             ps.setString(i++, linked.version());
+            ps.setString(i++, linked.keyId());
             ps.setString(i++, linked.prevHash());
             ps.setString(i, linked.hash());
             try (ResultSet rs = ps.executeQuery()) {
@@ -149,6 +185,8 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
         });
   }
 
+  private static final long LOCK_KEY = 0x41474741554449L; // "AGGAUDI"
+
   @Override
   public Optional<Anchor> anchor() {
     return JdbcSupport.withConnection(
@@ -156,11 +194,11 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
         c -> {
           try (PreparedStatement ps =
                   c.prepareStatement(
-                      "SELECT head_hash, row_count, keyed_from_seq FROM agentguard_audit_anchor"
+                      "SELECT head_hash, row_count, keyed FROM agentguard_audit_anchor"
                           + " WHERE id = 1");
               ResultSet rs = ps.executeQuery()) {
             return rs.next()
-                ? Optional.of(new Anchor(rs.getString(1), rs.getLong(2), (Long) rs.getObject(3)))
+                ? Optional.of(new Anchor(rs.getString(1), rs.getLong(2), rs.getBoolean(3)))
                 : Optional.empty();
           }
         });
@@ -233,6 +271,7 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
         rs.getString("decision_id"),
         rs.getString("actor_id"),
         rs.getString("chain_version"),
+        rs.getString("key_id"),
         rs.getString("prev_hash"),
         rs.getString("hash"));
   }

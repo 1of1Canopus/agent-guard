@@ -67,14 +67,23 @@ class CipherProbeFinalJdbcTest {
     }
   }
 
+  /**
+   * Amendment note (the maintainers, after the security review's design review): this probe used to delete the anchor row
+   * on a non-empty trail to model "a pre-anchor installation" and expect the schema step and the
+   * sink to re-anchor it consistently under concurrent load. Under keyed-from-birth that premise no
+   * longer holds — a missing anchor on a non-empty trail is refused (AG-AUDIT-002), not re-derived
+   * — so this probe now keeps the anchor intact throughout and exercises the still-valid part: many
+   * instances starting (schema step) and appending concurrently on an already-anchored trail never
+   * abort each other (R11).
+   */
   @Test
-  void concurrent_first_starts_seed_one_consistent_anchor_while_appends_run() throws Exception {
+  void concurrent_first_starts_and_appends_never_abort_each_other_on_an_anchored_trail()
+      throws Exception {
     JdbcSupport.initializeSchema(ds);
     var sink = new JdbcAuditSink(ds);
     for (int i = 0; i < 5; i++) {
       sink.append(event(i));
     }
-    sql("DELETE FROM agentguard_audit_anchor"); // a pre-anchor installation
     var pool = Executors.newFixedThreadPool(12);
     try {
       var go = new CountDownLatch(1);
@@ -115,7 +124,7 @@ class CipherProbeFinalJdbcTest {
       var report = new AuditChainVerifier(sink).verify();
       System.out.println("report: " + report + " anchor: " + sink.anchor());
       // invariant: whatever the race did, trail and anchor agree and the chain verifies
-      assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
+      assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT_UNKEYED);
       assertThat(sink.anchor().orElseThrow().rowCount()).isEqualTo(report.verified());
       // R11 flipped: schema runs take the sink's advisory lock first and only create what is
       // absent, so neither a startup nor an append is ever aborted
@@ -160,7 +169,7 @@ class CipherProbeFinalJdbcTest {
       var sink = new JdbcAuditSink(ds);
       sink.append(event(1));
       assertThat(new AuditChainVerifier(sink).verify().status())
-          .isEqualTo(AuditChainVerifier.Status.INTACT);
+          .isEqualTo(AuditChainVerifier.Status.INTACT_UNKEYED);
     } finally {
       pool.shutdownNow();
     }

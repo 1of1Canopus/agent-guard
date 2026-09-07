@@ -69,25 +69,41 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     for C4 and are unaffected by this addition.
 
 ## Re-verification round (Cipher, `6f026ff`)
-20. **[decided, scope note]** V2's exact repro (write a fully keyed 2-row trail, rewrite *every* row down to `ag1`,
-    verify with the key) cannot be made to report `BROKEN` by the described fix, or by any fix that only reads the
-    version each row itself claims: that trail is byte-for-byte identical to
+20. **[closed — Dollar's ruling]** V2's exact repro (write a fully keyed 2-row trail, rewrite *every* row down to
+    `ag1`, verify with the key) could not be made to report `BROKEN` by the described fix, or by any fix that only
+    reads the version each row itself claims: that trail is byte-for-byte identical to
     `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`'s scenario (a
     deployment that never used HMAC, verified after a key is later configured) — the whole point of C6, and a test
-    this pass must not weaken. A verifier that treated an all-unkeyed trail as `BROKEN` whenever it happens to be
-    given a key would turn "I just set `agentguard.audit.hmac-secret`" into an outage on every existing installation.
-    There is no cryptographic signal inside the row data that tells the two cases apart; that gap is the pre-existing
-    table-owner residual already documented as Cipher R4 ("a role that owns the tables can rewrite chain and anchor
-    consistently").
-    Implemented instead: version-monotonicity *within the observed trail* (`AuditChainVerifier.verify`, `keyedSeen`)
-    — once a row has actually verified as `KEYED_VERSION`, no later row may fall back to unkeyed and still be
-    trusted. This closes the realistic and detectable form of the attack: an attacker who joins an already-keyed
-    trail partway through (some genuine keyed rows exist and are left alone, since rewriting them would break their
-    own HMAC) and downgrades the tail. `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed`
-    was changed to rewrite the trail's tail (row 2 onward) rather than its head, so it exercises the case the fix
-    actually closes; the full-trail-downgrade case is not, and cannot be, covered by a probe without an external
-    anchor (SECURITY-NOTES already lists this as future pro-item work: "An HMAC-keyed chain and external anchoring
-    stay pro items").
+    this pass must not weaken. There is no cryptographic signal inside the row data that tells the two cases apart;
+    that gap is the pre-existing table-owner residual already documented as Cipher R4 ("a role that owns the tables
+    can rewrite chain and anchor consistently"). First round shipped only version-monotonicity *within the observed
+    trail* (`AuditChainVerifier.verify`, `keyedSeen`) — once a row has actually verified as `KEYED_VERSION`, no
+    later row may fall back to unkeyed and still be trusted — closing the partial-downgrade case (an attacker who
+    joins an already-keyed trail partway through and downgrades the tail) but not the whole-trail one.
+
+    **Dollar's ruling:** the analysis was right, and the external anchor named as the way out (R4's
+    `agentguard_audit_anchor` row, protected by the BEFORE UPDATE monotonic trigger) already exists — use it.
+    Implemented: `agentguard_audit_anchor` gets a nullable `keyed_from_seq` column, set once — in the same
+    transaction as the first row a sink appends under a keyed chain — and never movable afterwards (the trigger
+    now also refuses to change or null out `keyed_from_seq` once set, the same protection `head_hash`/`row_count`
+    already had). `AuditChainVerifier.verify`, given a key, requires every row before `keyed_from_seq` to be
+    unkeyed and every row from it onward to be keyed; anything else, including a keyed row while `keyed_from_seq`
+    is still `null`, is `BROKEN`. A key given when `keyed_from_seq` is `null` and no keyed row exists reports the
+    new `Status.UNKEYED` rather than `INTACT`, so an operator who believes the key is already active on a trail
+    sees that it is not. `InMemoryAuditSink` carries the same bookkeeping (plus a seeding constructor modelling a
+    new sink instance continuing an existing trail) so the logic is store-independent and unit-testable.
+
+    This closes V2 in full, including Cipher's original whole-trail repro: the attacker's row-level rewrite (even
+    of the genuinely keyed head) cannot also move the anchor's `keyed_from_seq`, which is not part of the
+    `agentguard_audit` rows they rewrite. `CipherProbeReverifyTest` keeps the tail-rewrite probe
+    (`probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed`) and restores Cipher's original whole-trail
+    one (`probe_a_fully_downgraded_trail_verifies_as_broken_not_intact`); both fail (report `INTACT`) against the
+    pre-anchor code and pass (report `BROKEN`) against this fix. C6's test was updated to model "enabling the key"
+    as a second sink instance continuing the same trail and appending under the keyed chain — the scenario that
+    actually sets `keyed_from_seq` — rather than a verifier alone reconfigured with a key that no row ever used;
+    it still reports `INTACT`, because the earlier prefix genuinely is unkeyed. Residual, unchanged from R4: a
+    role that *owns* the tables can disable the anchor's trigger and rewrite `keyed_from_seq` along with
+    everything else — this closes the runtime-role attack, not the table-owner one.
 
 ## Build
 13. **[decided]** Error Prone 2.50 on JDK 21 needs `.mvn/jvm.config` (add-exports) and

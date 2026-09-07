@@ -109,9 +109,36 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - V2 (MEDIUM) `AuditChainVerifier.verify` tracks whether a `KEYED_VERSION` row has verified while walking the
   trail; once it has, a later row claiming `CANONICAL_VERSION` is `BROKEN` at its own sequence instead of being
   silently re-verified with plain SHA-256. C6's migration case (an unkeyed prefix, then keyed rows) is unaffected.
-  **Scope:** this closes a *partial* downgrade — a genuinely keyed prefix followed by a downgraded tail. It cannot
-  close a downgrade of the *entire* trail back to GENESIS: that row shape is identical to a deployment that has
-  never used HMAC, which `AuditChainVerifier` must (and does) still report `INTACT` — see QUESTIONS.md #20.
+  **Scope (superseded, see below):** as first fixed, this closed only a *partial* downgrade — a genuinely keyed
+  prefix followed by a downgraded tail — because no purely row-embedded version scheme can tell a whole-trail
+  downgrade to GENESIS apart from a deployment that has genuinely never used HMAC (QUESTIONS.md #20).
+
+### Security (Dollar's ruling on QUESTIONS.md #20: V2 closed in full with an external anchor)
+- `agentguard_audit_anchor` gets a `keyed_from_seq` column (nullable bigint): `null` until the sink appends the
+  first row written under a keyed chain, then that row's sequence, set in the same transaction as the append.
+  The anchor's monotonic trigger (Cipher R4) is extended so `keyed_from_seq` may go from `null` to a value exactly
+  once and never change or return to `null` — the same trigger that already stops a runtime-role attacker from
+  resetting `head_hash`/`row_count` now also stops them erasing where the keyed chain legitimately began.
+- `AuditChainVerifier.verify` reads `keyed_from_seq` from the anchor: every row before it must be unkeyed and
+  verify as such, every row from it onward must be keyed and verify with the given key; anything else — including
+  a keyed row while `keyed_from_seq` is still `null` — is `BROKEN`. A key given to the verifier when
+  `keyed_from_seq` is `null` and no keyed row exists reports the new `Status.UNKEYED`, distinct from `INTACT`, so
+  an operator who believes `agentguard.audit.hmac-secret` is protecting a trail can see that it is not yet. The
+  previous in-trail `keyedSeen` forward-only rule is kept as a fallback for readers that do not implement
+  `AuditAnchor`. **This closes V2 in full**, including Cipher's original whole-trail-downgrade repro (a keyed
+  trail rewritten entirely to `ag1`/GENESIS and re-verified with the key): the attacker's row-level rewrite cannot
+  touch the anchor's `keyed_from_seq`, which lives outside the rows they rewrite.
+- `InMemoryAuditSink` gets the same `keyed_from_seq` bookkeeping (and a seeding constructor,
+  `InMemoryAuditSink(List<AuditEvent>, AuditChain)`, modelling a new sink instance continuing an existing trail —
+  the in-memory analogue of restarting the app with the key now set), so the verifier's logic is exercised the
+  same way regardless of store.
+- `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail` (C6) now models
+  "enabling the key" as a second sink instance continuing the same trail and appending under the keyed chain,
+  matching how the anchor actually learns `keyed_from_seq`; it still reports `INTACT`, because the prefix really
+  is a legitimately-unkeyed one written before the key was ever set.
+- `CipherProbeReverifyTest.probe_a_fully_downgraded_trail_verifies_as_broken_not_intact` restores Cipher's exact
+  original repro alongside the existing tail-rewrite probe; both fail (report `INTACT`) against the pre-anchor
+  fix and pass (report `BROKEN`) against this one.
 - V3 (LOW) the two `args_hash` domains are separated with a fixed prefix hashed into the material:
   `AuditRecorder.recordOversized` hashes `"agraw1:" + argumentsJson`, `ArgumentCanonicalizer.hash` hashes
   `"agcanon1:" + canonical(argumentsJson)` — an oversized denial can no longer share `args_hash` with an allowed

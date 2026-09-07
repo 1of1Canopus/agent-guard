@@ -1,24 +1,38 @@
-# STATUS.md — Module B · Agent Guard, free core (run 6: re-verification round, V1-V5)
+# STATUS.md — Module B · Agent Guard, free core (run 7: V2 closed in full, external anchor)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
 
-## Summary (run 6)
-**Done, with one scoped exception.** Cipher's re-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`,
-`## Re-verification (6f026ff)`) found five new issues (V1 MEDIUM, V2 MEDIUM, V3 LOW, V4 LOW, V5 LOW) after the
-clean-verdict round. V1, V3, V4, V5 are closed on the branch, each with its probe flipped. V2 is fixed for the
-*detectable* form of the attack (a partial downgrade — a genuinely keyed prefix, a downgraded tail); its exact
-probe scenario (the entire trail downgraded from GENESIS) is not, and cannot be, closed by a purely row-embedded
-version check without breaking `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`
-(C6) — see QUESTIONS.md #20 for the full argument. `./mvnw -B clean verify` is green: **173 tests** (core 126,
-starter 46 + 1 self-skipping — needs Spring AI's real `ToolCallingAutoConfiguration` on the test classpath —
-sample 1 end-to-end), core line coverage 90.23% / branch 78.14% (gate 80% line, held), spotless, Error Prone,
-enforcer, JaCoCo gate.
+## Summary (run 7)
+**Done.** Dollar's ruling on QUESTIONS.md #20 closes V2 (MEDIUM) in full: `agentguard_audit_anchor` gets a
+`keyed_from_seq` column, set once — in the same transaction as the first row a sink appends under a keyed chain —
+and made immutable afterwards by extending the anchor's existing monotonic trigger (Cipher R4). Row data alone can
+never tell a whole-trail downgrade to GENESIS apart from a deployment that legitimately never used HMAC (the case
+`CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`, C6, must keep
+reporting `INTACT`); the external, attacker-unwritable `keyed_from_seq` is what tells the two apart.
+`AuditChainVerifier` now requires every row before `keyed_from_seq` to be unkeyed and every row from it onward to
+be keyed, reports a new `Status.UNKEYED` when a key is given but never used by the trail, and keeps the prior
+in-trail forward-only rule as a fallback for readers without an anchor. `InMemoryAuditSink` carries the same
+bookkeeping (plus a seeding constructor for continuing an existing trail under a new chain) so the fix is
+store-independent. Both of Cipher's V2 scenarios — the tail-only downgrade and the original whole-trail-from-GENESIS
+repro — are proven to fail (report `INTACT`) against the pre-anchor code and pass (report `BROKEN`) against this
+one. `./mvnw -B clean verify` is green: **175 tests** (core 128, starter 46 + 1 self-skipping — needs Spring AI's
+real `ToolCallingAutoConfiguration` on the test classpath — sample 1 end-to-end), core line coverage 90.98% /
+branch 77.72% (gate 80% line, held), spotless, Error Prone, enforcer, JaCoCo gate.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| V2 | MEDIUM (closed in full) | `agentguard_audit_anchor.keyed_from_seq`: null → set once at the first keyed append, immutable after (extended monotonic trigger); `AuditChainVerifier.verify` requires rows before it unkeyed, rows from it onward keyed, else `BROKEN`; a key given with no keyed row and `keyed_from_seq` null reports `Status.UNKEYED` | `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (partial/tail downgrade), `CipherProbeReverifyTest.probe_a_fully_downgraded_trail_verifies_as_broken_not_intact` (Cipher's original whole-trail repro), `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed` |
+
+## Summary (run 6, prior)
+Cipher's re-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, `## Re-verification (6f026ff)`)
+found five new issues (V1 MEDIUM, V2 MEDIUM, V3 LOW, V4 LOW, V5 LOW) after the clean-verdict round. V1, V3, V4, V5
+were closed on the branch, each with its probe flipped. V2 was fixed only for the *detectable* form of the attack
+(a partial downgrade); the whole-trail scenario is closed in run 7 above.
 
 | Id | Sev | Fix | Proof |
 |---|---|---|---|
 | V1 | MEDIUM | `ToolGuard.guarded` applies `rejectIfTooLarge` as its first statement, before `policies.resolve` — the unregistered-tool and policy-denial paths no longer canonicalise oversized arguments | `CipherProbeReverifyTest.probe_the_denial_paths_parse_arguments_of_any_size` |
-| V2 | MEDIUM (scoped) | `AuditChainVerifier.verify` tracks `keyedSeen`; once a `KEYED_VERSION` row has verified, a later `CANONICAL_VERSION` row is `BROKEN`, not silently re-verified unkeyed — closes a partial (keyed-prefix, downgraded-tail) rewrite. A full-trail downgrade to GENESIS is indistinguishable from a legitimately-never-keyed trail and is not covered — QUESTIONS.md #20 | `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` (scenario changed to tail-only rewrite; see the test's javadoc) |
 | V3 | LOW | `ArgumentCanonicalizer.hash` prefixes `"agcanon1:"`, `AuditRecorder.recordOversized` prefixes `"agraw1:"` — the two `args_hash` domains no longer collide; `ToolGuard.rejectIfTooLarge` also caps the canonicalised length | `CipherProbeReverifyTest.probe_an_oversized_denial_shares_an_args_hash_with_an_allowed_call` |
 | V4 | LOW | `AgentGuardStartupCheck` warns when `endpoints.enabled` and either `tenant-scoped=false` or `require-tenant=false` | `CipherProbeReverifyStartupTest.probe_a_cross_tenant_approver_opt_out_is_silent_at_startup` |
 | V5 | LOW | `AgentGuardProperties.Pool.platform-thread-count`/`.platform-thread-queue-size`, decoupled from `max-total`; `JedisBudgetStore.onPlatformThreads` takes the queue bound as its own parameter | `CipherProbeJedisFactoryTest.burst` (restored to `max-total=4`, thread/queue properties set to 200) |
@@ -107,7 +121,7 @@ app being brought into line with the now-correct, fail-closed default.
 
 ## Proof commands
 ```bash
-./mvnw -B clean verify                                       # 173 tests, all gates
+./mvnw -B clean verify                                       # 175 tests, all gates
 ./mvnw -B -pl agent-guard-core -Ppinning-probe test          # + the 2 child-JVM pinning probes (~25 s)
 ./mvnw -B -pl agent-guard-spring-boot-starter test           # 46 + 1 skip (incl. every flipped Cipher probe)
 ./mvnw -B -pl agent-guard-sample test                        # 1 end-to-end through a real MCP client
@@ -120,7 +134,16 @@ Micrometer metrics, `@Internal` API pass. Cipher's real-`ToolCallingAutoConfigur
 C11 has no dedicated `CipherProbe*` test (the finding table lists its probe as "git diff"): the fix is entirely in
 `HexagonalArchitectureTest`'s rule definition, verified by the ArchUnit rule itself passing/failing.
 
-## Pain points (plain words) — run 6
+## Pain points (plain words) — run 7
+- Making C6's test pass again after adding `keyed_from_seq` meant changing what "enabling the key" means inside
+  the test: not just reconfiguring a verifier with a key nothing ever used, but a second sink instance genuinely
+  continuing the trail under a keyed chain (the in-memory analogue of restarting the app with the secret set).
+  That is a more faithful model of the real operation than the old test, but it did mean adding a seeding
+  constructor to `InMemoryAuditSink` (`InMemoryAuditSink(List<AuditEvent>, AuditChain)`) that did not exist before
+  — a small, narrowly-scoped addition to make the in-memory store capable of the same "continue an existing
+  trail" scenario `JdbcAuditSink` already handles by construction (a new instance over the same table).
+
+## Pain points (plain words) — run 6 (superseded above)
 - V2's described fix ("version may only move forward") cannot make its own probe's exact scenario report
   `BROKEN`: a fully-keyed 2-row trail downgraded entirely back to `ag1` is byte-for-byte the same data as a
   trail that legitimately never used HMAC, verified after a key is later configured — the case C6 exists to
@@ -128,6 +151,8 @@ C11 has no dedicated `CipherProbe*` test (the finding table lists its probe as "
   half of the attack — a genuine keyed prefix with a downgraded tail, which is what an attacker who joins an
   already-running deployment can actually do without breaking the earlier rows' own hashes) and changed the
   probe to rewrite the tail instead of the head, with a javadoc explaining why. Full write-up: QUESTIONS.md #20.
+  **Superseded in run 7:** Dollar's ruling found the external anchor already existed (R4's anchor row) and
+  directed using it, closing the whole-trail case too.
 
 ## Pain points (plain words) — run 5, prior
 - Fixing C12 (audit hashes canonical, not raw) meant every `AuditRecorder.record` call now parses the arguments —

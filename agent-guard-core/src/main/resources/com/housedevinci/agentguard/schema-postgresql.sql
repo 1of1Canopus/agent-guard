@@ -3,6 +3,27 @@
 -- the sink's advisory lock (see JdbcSupport.initializeSchema).
 SELECT pg_advisory_xact_lock(18374244850549833);
 
+-- Keyed-from-birth (QUESTIONS.md #20) declares agentguard_audit.key_id and
+-- agentguard_audit_anchor.keyed NOT NULL in the CREATE TABLE bodies below, with no backfill: this
+-- branch is unreleased, so there is no upgrade path from a database written by an earlier build.
+-- A pre-redesign agentguard_audit (append-only trigger already installed, no key_id column) or a
+-- pre-redesign anchor (no keyed column) is refused here, with a clear message, rather than left to
+-- fail later on the append-only trigger, the anchor's monotonic trigger, or a missing-column error
+-- from an INSERT.
+DO $$ BEGIN
+  IF (EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'agentguard_audit')
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'agentguard_audit' AND column_name = 'key_id'))
+     OR (EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'agentguard_audit_anchor')
+      AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'agentguard_audit_anchor' AND column_name = 'keyed')) THEN
+    RAISE EXCEPTION
+      'audit schema predates keyed-from-birth; archive the table and start a new trail (see SECURITY-NOTES)';
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS agentguard_decision (
   id               uuid PRIMARY KEY,
   principal_id     varchar(255) NOT NULL,
@@ -45,6 +66,7 @@ CREATE TABLE IF NOT EXISTS agentguard_audit (
   correlation_id varchar(255) NOT NULL DEFAULT '',
   decision_id    varchar(64),
   actor_id       varchar(255),
+  key_id         varchar(64) NOT NULL,
   prev_hash      char(64) NOT NULL,
   hash           char(64) NOT NULL UNIQUE
 );
@@ -60,12 +82,9 @@ ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) N
 
 -- Key id each row was signed with (keyed-from-birth, QUESTIONS.md #20): part of the hashed material
 -- itself, from row 1, so key rotation is data (a new id, a new secret), not a chain-format change.
--- 'none' for unkeyed rows (AuditChain.UNKEYED_KEY_ID); backfilled 'k1' for keyed rows written before
--- this column existed (AuditChain.keyed(byte[])'s historical default id), 'none' for unkeyed ones.
-ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS key_id varchar(64);
-UPDATE agentguard_audit SET key_id = CASE WHEN chain_version = 'ag2h' THEN 'k1' ELSE 'none' END
-  WHERE key_id IS NULL;
-ALTER TABLE agentguard_audit ALTER COLUMN key_id SET NOT NULL;
+-- 'none' for unkeyed rows (AuditChain.UNKEYED_KEY_ID). Declared NOT NULL in the CREATE TABLE body
+-- above: this branch is unreleased, so there is no earlier row to backfill (see the schema-predates
+-- guard above for a database that has one anyway).
 
 -- Append-only: UPDATE, DELETE and TRUNCATE are refused at the database level. A role that owns the
 -- table can still DISABLE TRIGGER: run the application with a role that has INSERT/SELECT only
@@ -96,7 +115,8 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   id         smallint PRIMARY KEY CHECK (id = 1),
   head_hash  char(64) NOT NULL,
   row_count  bigint NOT NULL,
-  updated_at timestamptz NOT NULL
+  updated_at timestamptz NOT NULL,
+  keyed      boolean NOT NULL
 );
 
 -- Design change: keyed-from-birth (QUESTIONS.md #20, Dollar's ruling). A trail is keyed from row 1
@@ -106,14 +126,13 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
 -- its own (it is part of what a table-owning attacker rewrites); `keyed` is what the verifier
 -- checks every row's chain_version against. Replaces the earlier `keyed_from_seq` column (a
 -- sequence position, dropped below): with no mixing allowed there is nothing left to locate.
+-- Kept as a courtesy for an owner cleaning up by hand; inert on a database that never had it.
 ALTER TABLE agentguard_audit_anchor DROP COLUMN IF EXISTS keyed_from_seq;
-ALTER TABLE agentguard_audit_anchor ADD COLUMN IF NOT EXISTS keyed boolean;
--- Backfill an existing anchor row from the trail it anchors (an installation upgrading from
--- before this column existed): the trail's own head says whether it was ever written keyed.
-UPDATE agentguard_audit_anchor a SET keyed = COALESCE(
-    (SELECT t.chain_version = 'ag2h' FROM agentguard_audit t ORDER BY t.seq DESC LIMIT 1),
-    false)
-  WHERE a.id = 1 AND a.keyed IS NULL;
+-- `keyed` is declared NOT NULL in the CREATE TABLE body above, with no backfill: this branch is
+-- unreleased, so there is no earlier anchor row to derive it from, and deriving it from row data
+-- (chain_version) is exactly the re-derivation path this design removed. A database with an
+-- existing agentguard_audit but no key_id column — including one whose anchor predates `keyed` —
+-- is refused by the schema-predates guard above before this table is ever reached.
 
 -- The anchor only moves forward, one row at a time: a runtime role with UPDATE on it cannot reset
 -- it after trimming the trail (the owner can drop the trigger; documented residual). `keyed` may be
@@ -170,8 +189,6 @@ END $$;
 -- anchor, `JdbcAuditSink` refuses to append (AG-AUDIT-002) rather than silently re-anchoring: see
 -- "Audit chain keying" in docs/index.md for the operator remedy (start a new trail). For a genuinely
 -- empty trail there is nothing to seed either way — the first real append creates the anchor row.
-
-ALTER TABLE agentguard_audit_anchor ALTER COLUMN keyed SET NOT NULL;
 
 ALTER TABLE IF EXISTS agentguard_budget ALTER COLUMN key TYPE text;
 

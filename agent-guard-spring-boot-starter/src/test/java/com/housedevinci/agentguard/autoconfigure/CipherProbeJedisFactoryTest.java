@@ -39,14 +39,18 @@ class CipherProbeJedisFactoryTest {
   }
 
   private static void burst(boolean prefill) throws Exception {
+    int threads = 200;
     var pool = new AgentGuardProperties.Pool();
     pool.setPreparePool(prefill);
-    pool.setMaxTotal(4);
+    // each virtual thread has at most one call in flight at a time (its own loop is sequential),
+    // so `threads` concurrent submitters is the real ceiling; size the platform-thread pool (and
+    // its now-bounded queue, Cipher C7) to that ceiling instead of a small fixed pool that would
+    // legitimately reject most of a burst this size under the queue-saturation fix
+    pool.setMaxTotal(threads);
     var store =
         JedisBudgetStoreFactory.create(
             URI.create("redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379)), pool);
     var key = "cipher:factory:" + System.nanoTime();
-    int threads = 200;
     var start = new CountDownLatch(1);
     var done = new CountDownLatch(threads);
     var errors = new AtomicInteger();

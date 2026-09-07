@@ -70,6 +70,37 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - R9 an `AgentGuardException` from the tool path leaves a FAILED row before failing closed.
 - R10 `RunAsAuthentication`: package-private constructor, never serializable, cannot be re-authenticated.
 
+### Security (clean-verdict round: C1-C12, all closed)
+- C4 (MEDIUM) `ToolGuard.gate` and `.dispatch` refuse arguments over `agentguard.guard.max-argument-bytes` as their
+  first step, before anything parses them; the audit row for that refusal hashes the raw text directly instead of
+  through the canonical parser, so a rejected call never triggers the amplification it was rejected for.
+- C1 unpaired UTF-16 surrogates are `\u`-escaped in `JsonText.escape` instead of silently colliding with a literal
+  `?` under UTF-8 encoding, so they no longer dedup two different calls onto one decision.
+- C2 sensitive-key matching also splits on `_ - .` and camel-case boundaries (`userPassword`, `myApiKey`,
+  `password_confirmation` now mask); the existing whole-word-suffix rule is unchanged.
+- C5 four-eyes (`ApprovalService.fourEyes`) compares approver and requester trimmed, case-folded and NFKC-normalised.
+- C7 a Redis call that misses `maxWait` is cancelled and removed from the queue; the platform-thread pool is a
+  bounded `ThreadPoolExecutor` (`ArrayBlockingQueue` sized to the pool, `AbortPolicy`) instead of an unbounded
+  `newFixedThreadPool`, so a saturated pool refuses immediately (`AG-GUARD-001`) instead of queueing forever.
+- C9 `agentguard.endpoints.require-tenant` (default `true` when `tenant-scoped`): an approver whose resolver yields
+  no tenant gets 403 instead of every tenant's decisions and audit rows; set `false` only for a deliberate
+  cross-tenant approver role.
+- C11 the domain ArchUnit rule bans `javax..` again, with an explicit carve-out for `javax.crypto..` (the keyed
+  chain's only use) instead of the three named packages that also re-permitted `javax.naming` / `javax.management` /
+  `javax.net` / `javax.xml`.
+- C3 the hand-written JSON parser accepts only ASCII `0`-`9` as digits and only `[0-9a-fA-F]` in a `\u` escape, so it
+  never treats text Jackson would refuse as structured.
+- C6 the audit chain records the version (`ag1` / `ag2h`) each row was actually written with (`agentguard_audit.
+  chain_version`, backfilled `ag1`) and the verifier applies that row's version instead of whatever chain it is
+  configured with today, so enabling `agentguard.audit.hmac-secret` no longer reports the pre-key trail BROKEN.
+- C8 `JedisBudgetStore implements AutoCloseable`; the platform-thread pool is shut down on close (Spring's default
+  inferred destroy method picks it up).
+- C10 `DecisionStore.findByState(state, tenantId, limit)` and `AuditReader.latest(tenantId, limit)` push the tenant
+  filter into the store query instead of filtering the page after `limit`, so a busy neighbour tenant can no longer
+  hide a tenant's own pending work.
+- C12 `AuditRecorder.record` hashes `ArgumentCanonicalizer.canonical(argumentsJson)`, the same form the decision
+  store hashes, so `agentguard_audit.args_hash` and `agentguard_decision.args_hash` join for the same call again.
+
 ### Added
 - `agent-guard-core` (Apache-2.0, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable

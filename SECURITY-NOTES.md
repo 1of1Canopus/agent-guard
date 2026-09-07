@@ -59,6 +59,14 @@ does about it, and what still needs a reviewer's eye.
   `.tools(obj)` / `ToolCallbacks.from` / resolver-by-name included); MCP single and list specification beans are
   wrapped; async (WebFlux) specifications fail startup; `agentguard.strict=true` fails startup when a scanned
   `@ToolPolicy` is not reachable through a guarded path, and the startup log lists the guarded tools.
+- **Tenant scoping fails closed (the security review C9):** `agentguard.endpoints.require-tenant` defaults `true` whenever
+  `tenant-scoped` is on: an approver whose `TenantResolver` yields no tenant (missing claim, service account,
+  misconfigured resolver) is refused (403, `AG-HTTP-403`) instead of silently seeing and deciding every tenant's
+  decisions and audit rows. A genuinely single-tenant deployment (no `TenantResolver`, as in the sample) should set
+  `agentguard.endpoints.tenant-scoped=false` explicitly; set `require-tenant=false` only for a deliberate
+  cross-tenant approver role. The tenant filter is also pushed into the store query
+  (`DecisionStore.findByState(state, tenantId, limit)`, `AuditReader.latest(tenantId, limit)`, the security review C10) instead of
+  applied after the page's `limit`, so a busy neighbour tenant cannot hide a tenant's own pending work.
 
 ## Threat 6 — Audit tampering
 - **Mitigation:** hash chain (`hash = SHA-256(canonical(row) || prevHash)`) with a **length-prefixed** canonical form
@@ -74,8 +82,15 @@ does about it, and what still needs a reviewer's eye.
   least-privilege role (INSERT + SELECT on `agentguard_audit`, UPDATE on the anchor row only, no DDL, not the table
   owner) and keep `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the
   head hash periodically. An HMAC-keyed chain and external anchoring stay pro items.
+- **Enabling the HMAC key is a one-way step, safely (the security review C6):** each row records the chain version it was written
+  with (`agentguard_audit.chain_version`, `ag1` unkeyed / `ag2h` keyed; backfilled `ag1` for rows written before this
+  column existed). `AuditChainVerifier` recomputes every row with the version *it* carries, not with whichever chain
+  the verifier happens to be constructed with today — so turning on `agentguard.audit.hmac-secret` on a running
+  installation does not make the pre-key trail report `BROKEN`. A row that claims `ag2h` but the verifier was not
+  given the matching secret still fails to recompute: that is a real break, not a version mismatch, and is reported
+  as one.
 - **Test:** `JdbcAdaptersIntegrationTest.audit_*`, `AuditChainVerifierTest`, `CipherProbeJdbcTest`,
-  `CipherProbeAuditChainTest`.
+  `CipherProbeAuditChainTest`, `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail`.
 
 ## Operational hazards
 - **Redis + virtual threads on JDK 21–23 (the security review H3).** The pin is not in Jedis itself but in commons-pool2's growth
@@ -90,6 +105,16 @@ does about it, and what still needs a reviewer's eye.
   removes the pinning. Residual (the security review R6): after a Redis restart or failover the destroyed connections are
   re-created on the next borrow, so the growth path (and the pin) is possible for that window; running
   `JedisBudgetStore` calls on a small platform-thread executor is the belt-and-braces option.
+- **The platform-thread pool fails closed, on purpose (the security review C7/C8):** the pool backing `JedisBudgetStore` is a
+  bounded `ThreadPoolExecutor` (`ArrayBlockingQueue` sized to `agentguard.redis.pool.max-total`, `AbortPolicy`), not
+  an unbounded queue: a call that misses `maxWait` is cancelled and removed from the queue instead of being
+  abandoned there, and a saturated pool refuses new calls immediately with `AG-GUARD-001` rather than queueing
+  behind a growing backlog. This means a burst well past `max-total` concurrent callers gets guard-unavailable
+  errors (the guard fails closed, denying the tool call) instead of eventually succeeding once Redis catches up —
+  size `max-total` at or above the real peak concurrency, the same sizing guidance as above. `JedisBudgetStore`
+  implements `AutoCloseable` and its `close()` shuts the pool down; the auto-configured bean is picked up by
+  Spring's default inferred destroy method, so a context that rebuilds it (devtools restart, `@DirtiesContext`) does
+  not leak `agentguard-redis` threads.
 - **Hand-built managers (the security review R3):** a `DefaultToolCallingManager` built in code and handed to a `ChatModel`
   builder never passes through the context, so it is not guarded and strict mode cannot see it. Use the
   `ToolCallingManager` bean or wrap yours with `AgentGuard.guard(manager)`.
@@ -101,13 +126,16 @@ does about it, and what still needs a reviewer's eye.
   (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
 ## Review status
-the security review's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, four passes): H1–H3, M1–M7, R1, R2, R5
-fixed and re-verified; under the no-allowance rule every LOW and INFO (L1–L10, I1–I9, R3, R4, R6–R11) is fixed on
-the branch with its probe flipped. Documented residuals that remain by design: a role that *owns* the tables can
-drop the append-only and anchor triggers (split roles, see docs "Database roles"; external anchoring and the
-keyed chain reduce what such a role can do silently); a `ToolCallingManager` built by hand and handed to a
-`ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23 Redis calls run
-on platform threads so the pool's growth lock is never touched by a virtual thread.
+the security review's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, five passes): H1–H3, M1–M7, R1, R2, R5
+fixed and re-verified; under the no-allowance rule every LOW and INFO of the first four passes (L1–L10, I1–I9, R3,
+R4, R6–R11) and every finding of the clean-verdict pass (C4 MEDIUM; C1, C2, C5, C7, C9, C11 LOW; C3, C6, C8, C10,
+C12 INFO) is fixed on the branch with its probe flipped. Documented residuals that remain by design: a role that
+*owns* the tables can drop the append-only and anchor triggers (split roles, see docs "Database roles"; external
+anchoring and the keyed chain reduce what such a role can do silently); a `ToolCallingManager` built by hand and
+handed to a `ChatModel` builder is outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23
+Redis calls run on platform threads so the pool's growth lock is never touched by a virtual thread; a burst past
+`agentguard.redis.pool.max-total` concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing
+unboundedly, by design (the security review C7) — size the pool at or above real peak concurrency.
 
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.

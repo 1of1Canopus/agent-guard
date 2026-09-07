@@ -543,3 +543,110 @@ the fixed behaviour, as done for the H/M items.
 ## Not covered
 Real OpenAI/Anthropic `ChatModel` end to end (provider artifacts inspected by bytecode only). The `-Ppinning-probe`
 child-JVM test was not re-run (unchanged code path).
+
+---
+
+## Clean verdict (50ed8d3)
+
+Reviewer: `cipher`, 2026-09-07 (fourth pass, clean-verdict re-verification). Branch `feat/agent-guard-core`,
+HEAD `50ed8d3`, Docker up, everything below run on this machine. New probes: `domain/CipherProbeCleanTest`,
+`application/CipherProbeCleanGuardTest`, `adapter/redis/CipherProbeCleanRedisTest`,
+`web/CipherProbeCleanEndpointsTest` (12 tests). As in every earlier round the probes assert **today's**
+behaviour, so the suite stays green; the fix "flips" each one (rename without `probe_`, invert the assertion).
+
+### Verdict: MERGE WITH FIXES
+
+No HIGH. The whole previous fix list (L1–L10, I1–I9, R3, R4, R6–R11) is closed — verified in the code and by a
+green test for each. What is new is what the fixes themselves brought in: a hand-written JSON parser and a
+canonical hash in the hot path, a bounded Redis executor, and tenant scoping at the endpoints. Twelve findings
+come out of attacking those surfaces: one MEDIUM (C4), six LOW, five INFO. Under the no-allowance rule the
+branch is not mergeable until all twelve are closed. None needs a design change; C4 is a two-line move.
+
+### Numbers
+
+| What | Result |
+|---|---|
+| `./mvnw -B clean verify` (the CI command) | BUILD SUCCESS, 40 s |
+| Tests at `50ed8d3` as delivered | 157 declared: **156 run, 0 failures, 1 skipped** (`CipherProbeFinalSpringAiTest` self-skips without the Spring AI autoconfigure jar) |
+| Tests with this pass's probes | **169 run, 0 failures, 1 skipped** (core 123, starter 45+1, sample 1) |
+| Coverage at `50ed8d3` (core module, the only module with JaCoCo) | line **89.49 %** (1397/1561), branch **78.48 %** (372/474) — the builder's 89.5 / 78.5 confirmed; gate is line ≥ 0.80 |
+| Coverage with this pass's probes | line 90.52 %, branch 79.75 % |
+| Existing `CipherProbe*` classes re-run unchanged | 13 classes, all green: Jdbc(4) ReverifyJdbc(2) FinalJdbc(2) ApprovalGate(10) AuditChain(1) Redactor(5) Endpoints(1) Mcp(4) SpringAi(3) ReverifySpringAi(4) FinalSpringAi(2) JedisFactory(2) Properties(3) |
+| `-Ppinning-probe` (skipped by the last two passes) | run: `CipherProbeJedisPinningTest` 2/2 green, 12.7 s |
+| Real Spring AI autoconfig probe (skipped in the default run) | run with `-Dmaven.test.additionalClasspath=…spring-ai-autoconfigure-model-tool-2.0.1.jar`: 2/2 green, 0 skipped — the R1 chokepoint still holds |
+
+### Supply chain — all pins verified against upstream, not just present
+
+| Pin | Verified |
+|---|---|
+| `actions/checkout@11d5960a…`, `setup-java@cf277c60…`, `upload-artifact@ea165f8d…` | equal to `gh api repos/<a>/git/ref/tags/v4` today; tag kept in a comment |
+| `distributionSha256Sum=0d7125e8…` | downloaded `apache-maven-3.9.11-bin.zip` and hashed it: match (the upstream `.sha256` sidecar 404s; hashed the artifact instead) |
+| `postgres:16-alpine@sha256:57c72fd2…`, `redis:7-alpine@sha256:6ab0b6e7…` | equal to `docker image inspect --format '{{index .RepoDigests 0}}'`; used in all five test classes and the sample compose |
+| `permissions: contents: read` | present, top level, in both workflows |
+| WireMock | now used (`NotifiersTest`), so the unused-dependency point is closed |
+
+### Hexagonal rule
+
+`domain` imports nothing outside the JDK: the only non-`java.*` imports in the package are `javax.crypto.Mac` and
+`javax.crypto.spec.SecretKeySpec` (java.base since JDK 9), used by the keyed chain. That is compliant — but see
+C11 for how the ArchUnit rule was made to accept it. No JDBC test class initialisation errors: every Testcontainers
+class started and ran (47 container lines in the log, `JdbcAdaptersIntegrationTest` 6/6, `SchemaStepIntegrationTest`
+1/1, the three JDBC probe classes 8/8).
+
+### New findings
+
+| Id | Sev | Title | Probe |
+|---|---|---|---|
+| C4 | MEDIUM | The arguments are parsed before the size cap refuses them | `probe_arguments_are_parsed_before_the_size_cap_refuses_them` |
+| C1 | LOW | An unpaired surrogate and `?` share one arguments hash | `probe_an_unpaired_surrogate_and_a_question_mark_share_one_arguments_hash` |
+| C2 | LOW | `userPassword`, `myApiKey`, `password_confirmation` are not masked | `probe_camel_case_and_suffixed_sensitive_keys_are_not_masked` |
+| C5 | LOW | Four-eyes is bypassed by a differently cased approver id | `probe_four_eyes_is_bypassed_by_a_differently_cased_approver_id` |
+| C7 | LOW | A timed-out Redis call stays queued on an unbounded queue | `probe_a_timed_out_redis_call_stays_queued_on_an_unbounded_queue` |
+| C9 | LOW | An approver without a tenant reads (and decides) every tenant | `probe_an_approver_without_a_tenant_reads_every_tenant` |
+| C11 | LOW | The domain ArchUnit rule was weakened to let `javax.crypto` in | git diff (rule change) |
+| C3 | INFO | The parser accepts text that is not JSON | `probe_the_parser_accepts_text_that_is_not_json` |
+| C6 | INFO | Enabling the audit HMAC secret reports the existing trail BROKEN | `probe_enabling_the_audit_hmac_secret_reports_the_existing_trail_as_broken` |
+| C8 | INFO | The platform-thread executor is never shut down | `probe_the_platform_thread_executor_is_never_shut_down` |
+| C10 | INFO | The pending inbox is filtered after the store limit | `probe_the_pending_inbox_is_filtered_after_the_store_limit` |
+| C12 | INFO | Audit hashes the raw arguments, decisions hash the canonical form | `probe_the_audit_row_hashes_the_raw_arguments…` |
+
+### Open items — exact fixes (all required before merge)
+
+| Id | Sev | Exact fix |
+|---|---|---|
+| C4 | MEDIUM | `ToolGuard.gate`: move the `options.maxArgumentBytes()` check to the **first** statement, before `ArgumentCanonicalizer.hash`. Today the hash (a full parse into a `JsonNode` tree) runs first, so the cap that exists to bound model-supplied text no longer bounds anything: measured here, 4 MB of valid JSON becomes ~163 MB of live nodes in ~230 ms — ~40x amplification, and one such call per tool call. Apply the same cap in `dispatch` (the ALLOW path has no size check at all today) before anything hashes or previews the arguments. |
+| C1 | LOW | `JsonText.escape`: emit `\uXXXX` for any unpaired surrogate (they are invalid JSON output anyway), or hash `canonical.getBytes(UTF_16BE)` in `Hashes`. Today `String.getBytes(UTF_8)` turns every unpaired surrogate into `'?'`, so `{"path":"\ud800"}` and `{"path":"?"}` have one `argsHash`: the second call is deduped onto the first one's decision and answered with its stored result without running, and `PendingDecision.argumentsIntact()` accepts the swap. |
+| C2 | LOW | `ArgumentRedactor.isSensitive`: split the key on `_ - .` **and** camel-case boundaries and mask when any part is a sensitive key. Today the match is a whole-word suffix, so `userPassword`, `myApiKey`, `password_confirmation` and `token_value` are printed in the clear into previews, `LoggingNotifier`, the webhook body and `agentguard_decision.args_preview`. Keep the current behaviour for `user_password` and `api_key` (asserted in the probe). |
+| C5 | LOW | `ApprovalService.fourEyes`: compare `approver.strip()` with `decision.principal().id().strip()` using `equalsIgnoreCase`. Today `equals` alone means an operator on a case-insensitive IdP (LDAP, e-mail logins, Keycloak's default username handling) approves their own agent's parked call by logging in as `ALICE`; a trailing space does the same. |
+| C7 | LOW | `JedisBudgetStore.run`: `future.cancel(true)` in the `TimeoutException` branch, and build the pool as a `ThreadPoolExecutor(threads, threads, …, new ArrayBlockingQueue<>(threads), new AbortPolicy())` with `RejectedExecutionException` mapped to `AG-GUARD-001`. Today a timed-out call is abandoned on a `newFixedThreadPool` with an unbounded queue: while Redis is slow every guarded call adds a task nobody waits for, the queue grows without bound, and every later call queues behind the backlog and times out too — the guard stays failed-closed for the whole application long after Redis recovers. |
+| C9 | LOW | `AgentGuardEndpoints`: `agentguard.endpoints.require-tenant` (default `true` when `tenant-scoped`); an approver whose `PrincipalResolver` yields no tenant gets 403 instead of everything. Today tenant scoping only applies when the approver *has* a tenant, so a missing claim, a service account or a mis-wired `TenantResolver` silently reads every tenant's previews and audit rows and can approve them: the scoping fails open. |
+| C11 | LOW | `HexagonalArchitectureTest`: restore the blanket `"javax.."` ban on `..domain..` and carve out only `javax.crypto..` (`dependOnClassesThat(resideInAnyPackage("javax..").and(not(resideInAnyPackage("javax.crypto..")))`). `50ed8d3` replaced `"javax.."` with three named packages so the keyed chain would pass, which also re-permits `javax.naming`, `javax.management`, `javax.net` and `javax.xml` (XXE) in the domain. The code is fine; the guard rail was widened instead of narrowed. |
+| C3 | INFO | `JsonText`: `digits()` must accept only `'0'..'9'` (`Character.isDigit` accepts every Unicode decimal digit, so `{"a":١٢}` parses), and a `\u` escape must be four `[0-9a-fA-F]` (`Integer.parseInt` accepts a sign, so `"\u+041"` becomes `A` and `"\u-001"` becomes U+FFFF). No leak follows — the redactor is *more* permissive than Jackson, never less — but the guard and the tool must agree on what is valid JSON. |
+| C6 | INFO | Store the chain version per row (`ag1`/`ag2h`, a column on `agentguard_audit`) and verify each row with the version it was written with; document that `agentguard.audit.hmac-secret` is a one-way switch. Today enabling the key makes every pre-key row recompute wrong: the verifier reports `BROKEN` at sequence 1, which is exactly what a rewrite looks like. |
+| C8 | INFO | `JedisBudgetStore implements AutoCloseable` (`executor.shutdownNow()`), and let the bean definition pick the destroy method up. Today the executor is created per store and never shut down, so every context that builds one leaks `agentguard-redis` platform threads (devtools restarts, `@DirtiesContext` suites, any app that reopens a context). |
+| C10 | INFO | Push the tenant into the query — `DecisionStore.findByState(state, tenantId, limit)` and `AuditReader.latest(tenantId, limit)` — instead of filtering the page after the store's `limit`. Today three of a neighbour's decisions hide a tenant's own pending approval at `limit=3`: an approval inbox that silently omits work. |
+| C12 | INFO | `AuditRecorder.record`: hash `ArgumentCanonicalizer.canonical(argumentsJson)`. Today the audit row hashes the raw text while the decision hashes the canonical form, so `agentguard_audit.args_hash` and `agentguard_decision.args_hash` differ for the same call whenever the model emitted whitespace or another key order — the join an auditor uses to tie a trail row to the approval that allowed it finds nothing. |
+
+### Attacked and found sound (no change needed)
+
+Parser: trailing garbage rejected; a BOM makes the text unparseable and the redactor full-masks (`"***"`); depth
+capped at 64 (65 rejected, no `StackOverflowError`); control, format, NEL, LS/PS and bidi characters stripped;
+duplicate keys collapse last-wins, the same way Jackson hands them to the tool, so preview and execution agree.
+Webhook: `https` (or loopback) enforced at construction, signature `v1=hex(HMAC-SHA256(secret, ts + "." + body))`
+over the exact body, timestamp header sent, legacy token only behind its flag, `userinfo@host` cannot fake a
+loopback host, verification snippet and window documented. Audit: schema and sink take the **same** advisory lock
+(`0x41474741554449` = 18374244850549833) and `initializeSchema` runs the whole script in one transaction
+(`setAutoCommit(false)`), so `pg_advisory_xact_lock` really holds; triggers created only when absent; the anchor
+monotonic trigger refuses any UPDATE that is not `+1` row with a new head. Keyed chain: min 32 bytes enforced,
+key cloned, domain-separated version string (`ag2h`), secret only via a property whose name Spring Boot's
+actuator sanitiser already masks. Run-as: constructor package-private, `setAuthenticated(true)` throws,
+`writeObject`/`readObject` throw `NotSerializableException`. Schema: eight concurrent first starts on an empty
+database and a schema run concurrent with appends both end `ok` (`CipherProbeFinalJdbcTest`), and the step runs
+once per `DataSource`.
+
+### Not covered
+
+Real OpenAI/Anthropic `ChatModel` end to end (no API key, no network in tests) — unchanged from the earlier
+passes. The anchor's residual: a role holding `DELETE` on `agentguard_audit_anchor` can still delete and re-insert
+it, which the monotonic trigger (BEFORE UPDATE only) does not see; the documented grant is INSERT/SELECT, so this
+is only a warning to keep `DELETE` off that table — no probe written, no code change asked for.

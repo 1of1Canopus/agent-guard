@@ -48,7 +48,15 @@ public final class AuditChainVerifier {
     /** A row does not recompute from its predecessor: {@code brokenAtSequence} says which. */
     BROKEN,
     /** The rows recompute but the head hash or row count differs from the anchor. */
-    ANCHOR_MISMATCH
+    ANCHOR_MISMATCH,
+    /**
+     * V2 (QUESTIONS.md #20): a key was given, every row recomputes, and the anchor's {@code
+     * keyed_from_seq} is {@code null} — no row was ever appended under a keyed chain, i.e. the key
+     * is not actually protecting anything in this trail yet. Distinct from {@code INTACT} so an
+     * operator who believes {@code agentguard.audit.hmac-secret} is active on this trail sees that
+     * it is not, instead of a clean report that looks the same as a genuinely keyed one.
+     */
+    UNKEYED
   }
 
   /**
@@ -64,12 +72,26 @@ public final class AuditChainVerifier {
   }
 
   public Report verify() {
+    // V2 (QUESTIONS.md #20, Dollar's ruling): a row's own chain_version is not enough — it is part
+    // of what a table-owning attacker rewrites, and a whole-trail downgrade to GENESIS/ag1 is then
+    // byte-for-byte the same data as a trail that has never used HMAC (the case
+    // CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail
+    // must keep reporting INTACT). The external signal is the anchor's keyed_from_seq: set once, in
+    // the same transaction as the first row appended under a keyed chain, and never movable
+    // afterwards (the anchor's monotonic trigger, Cipher R4) — an attacker who rewrites audit rows
+    // cannot also move it.
+    Optional<AuditAnchor.Anchor> anchored = anchor.anchor();
+    boolean keyGiven = chain.isKeyed();
+    Long keyedFromSeq = anchored.map(AuditAnchor.Anchor::keyedFromSeq).orElse(null);
+    boolean anchorKnowsKeying = anchored.isPresent();
+
     String prev = AuditChain.GENESIS;
     long after = 0;
     long count = 0;
-    // V2: chain_version is part of what a table-owning attacker can rewrite, so once a row has
-    // verified keyed, no later row may fall back to an unkeyed version and still be trusted — that
-    // would let a rewritten, downgraded trail verify INTACT with a key that never touched it.
+    // Fallback for readers that do not implement AuditAnchor (or report no anchor row yet): the
+    // in-trail forward-only rule from the previous round. It still catches a *partial* downgrade
+    // (a genuine keyed prefix, a downgraded tail) even with no anchor to consult; it cannot catch a
+    // whole-trail downgrade, which is exactly why the anchor check above exists.
     boolean keyedSeen = false;
     while (true) {
       List<AuditEvent> page = reader.readAfter(after, PAGE);
@@ -77,13 +99,19 @@ public final class AuditChainVerifier {
         break;
       }
       for (AuditEvent e : page) {
-        if (keyedSeen && !AuditChain.KEYED_VERSION.equals(e.version())) {
+        boolean isKeyedVersion = AuditChain.KEYED_VERSION.equals(e.version());
+        if (keyGiven && anchorKnowsKeying) {
+          boolean expectKeyed = keyedFromSeq != null && e.sequence() >= keyedFromSeq;
+          if (keyedFromSeq == null ? isKeyedVersion : expectKeyed != isKeyedVersion) {
+            return new Report(Status.BROKEN, count, e.sequence(), prev);
+          }
+        } else if (keyedSeen && !isKeyedVersion) {
           return new Report(Status.BROKEN, count, e.sequence(), prev);
         }
         if (!chainFor(e).verifyEvent(e, prev)) {
           return new Report(Status.BROKEN, count, e.sequence(), prev);
         }
-        if (AuditChain.KEYED_VERSION.equals(e.version())) {
+        if (isKeyedVersion) {
           keyedSeen = true;
         }
         prev = e.hash();
@@ -91,12 +119,15 @@ public final class AuditChainVerifier {
         count++;
       }
     }
-    Optional<AuditAnchor.Anchor> a = anchor.anchor();
-    if (a.isPresent() && (a.get().rowCount() != count || !a.get().headHash().equals(prev))) {
+    if (anchored.isPresent()
+        && (anchored.get().rowCount() != count || !anchored.get().headHash().equals(prev))) {
       return new Report(Status.ANCHOR_MISMATCH, count, -1, prev);
     }
-    if (count == 0 && a.isEmpty()) {
+    if (count == 0 && anchored.isEmpty()) {
       return new Report(Status.EMPTY, 0, -1, prev);
+    }
+    if (keyGiven && anchorKnowsKeying && keyedFromSeq == null) {
+      return new Report(Status.UNKEYED, count, -1, prev);
     }
     return new Report(Status.INTACT, count, -1, prev);
   }

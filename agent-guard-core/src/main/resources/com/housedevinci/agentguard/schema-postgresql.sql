@@ -90,13 +90,27 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   updated_at timestamptz NOT NULL
 );
 
+-- V2 (QUESTIONS.md #20): the external, attacker-unwritable signal for "when did this trail start
+-- using the keyed chain". NULL until the sink appends the first row written with the keyed chain
+-- version, then set to that row's seq in the same transaction as the append. A row's own
+-- chain_version is not enough (Cipher V2: that column is part of what a table-owning attacker
+-- rewrites); this column lives outside the trail an attacker relinks row by row.
+ALTER TABLE agentguard_audit_anchor ADD COLUMN IF NOT EXISTS keyed_from_seq bigint;
+
 -- The anchor only moves forward, one row at a time: a runtime role with UPDATE on it cannot reset
--- it after trimming the trail (the owner can drop the trigger; documented residual).
+-- it after trimming the trail (the owner can drop the trigger; documented residual). Same for
+-- keyed_from_seq: it may go from NULL to a value exactly once and never change or return to NULL
+-- afterwards, so a runtime-role attacker who downgrades or wholesale-rewrites the trail cannot
+-- also erase the record of where the keyed chain legitimately began.
 CREATE OR REPLACE FUNCTION agentguard_audit_anchor_monotonic() RETURNS trigger AS $$
 BEGIN
   IF NEW.row_count <> OLD.row_count + 1 OR NEW.head_hash = OLD.head_hash THEN
     RAISE EXCEPTION 'agentguard_audit_anchor only advances by one row (attempted % -> %)',
       OLD.row_count, NEW.row_count;
+  END IF;
+  IF OLD.keyed_from_seq IS NOT NULL AND NEW.keyed_from_seq IS DISTINCT FROM OLD.keyed_from_seq THEN
+    RAISE EXCEPTION 'agentguard_audit_anchor.keyed_from_seq is immutable once set (attempted % -> %)',
+      OLD.keyed_from_seq, NEW.keyed_from_seq;
   END IF;
   RETURN NEW;
 END;

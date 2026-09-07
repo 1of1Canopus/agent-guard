@@ -14,6 +14,14 @@ import java.util.List;
  * instance (design change, QUESTIONS.md #20: "keyed-from-birth") — there is no persisted state to
  * restart against, so this store has nothing analogous to {@code JdbcAuditSink}'s startup/append
  * key-mismatch check.
+ *
+ * <p><b>No external anchor (Cipher H3):</b> {@link #anchor()} derives {@code headHash}/{@code
+ * rowCount} from the last element of {@link #events} and {@code keyed} from this instance's own
+ * {@link AuditChain}, i.e. from the very list it claims to anchor. Unlike {@code JdbcAuditSink},
+ * whose anchor is a separate, append-only-guarded row, this store cannot detect its own tail being
+ * trimmed: a trimmed trail still verifies {@code INTACT}/{@code INTACT_UNKEYED} with {@code
+ * anchored() == true}. Not a substitute for the JDBC store in any deployment where the audit trail
+ * matters.
  */
 public final class InMemoryAuditSink implements AuditSink, AuditReader, AuditAnchor {
 

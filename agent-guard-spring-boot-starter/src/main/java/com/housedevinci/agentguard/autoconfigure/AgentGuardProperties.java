@@ -487,12 +487,28 @@ public class AgentGuardProperties {
     /** Approvers only see and decide decisions of their own tenant (when they have one). */
     private boolean tenantScoped = true;
 
+    /**
+     * When {@code tenantScoped}, an approver whose {@code TenantResolver} yields no tenant (a
+     * missing claim, a service account, a misconfigured resolver) is refused (403) instead of
+     * seeing and deciding every tenant's work. Set {@code false} only for a deliberate cross-tenant
+     * approver role.
+     */
+    private boolean requireTenant = true;
+
     public boolean isTenantScoped() {
       return tenantScoped;
     }
 
     public void setTenantScoped(boolean v) {
       this.tenantScoped = v;
+    }
+
+    public boolean isRequireTenant() {
+      return requireTenant;
+    }
+
+    public void setRequireTenant(boolean v) {
+      this.requireTenant = v;
     }
 
     public boolean isAllowAnonymous() {

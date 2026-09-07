@@ -47,9 +47,13 @@ public final class InMemoryDecisionStore implements DecisionStore {
   }
 
   @Override
-  public List<PendingDecision> findByState(DecisionState state, int limit) {
+  public List<PendingDecision> findByState(DecisionState state, String tenantId, int limit) {
     return byId.values().stream()
         .filter(d -> d.state() == state)
+        .filter(
+            d ->
+                tenantId == null
+                    || java.util.Objects.equals(d.principal().tenantId().orElse(null), tenantId))
         .sorted(Comparator.comparing(PendingDecision::createdAt))
         .limit(limit)
         .toList();

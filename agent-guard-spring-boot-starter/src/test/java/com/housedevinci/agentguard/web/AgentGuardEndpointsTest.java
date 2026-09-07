@@ -29,6 +29,10 @@ import org.springframework.test.web.servlet.MockMvc;
       "agentguard.enabled=true",
       "agentguard.store=MEMORY",
       "agentguard.endpoints.enabled=true",
+      // list_arguments_approve_reject_and_audit exercises a deliberate cross-tenant approver
+      // (no principal or approver in that test has a tenant); approvers_only_see_their_own_tenant
+      // never logs in with a tenant-less approver, so this does not weaken its assertions (C9)
+      "agentguard.endpoints.require-tenant=false",
       "spring.ai.mcp.server.enabled=false",
       "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration"
     },

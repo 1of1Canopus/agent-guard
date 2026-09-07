@@ -84,7 +84,7 @@ class CipherProbeSpringAiTest {
     }
 
     @Override
-    public List<AuditEvent> latest(int limit) {
+    public List<AuditEvent> latest(String tenantId, int limit) {
       return List.of();
     }
   }

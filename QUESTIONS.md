@@ -105,6 +105,50 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     role that *owns* the tables can disable the anchor's trigger and rewrite `keyed_from_seq` along with
     everything else — this closes the runtime-role attack, not the table-owner one.
 
+    **Superseded (Cipher's final-verification round, HEAD `25da6af`):** the `keyed_from_seq` mechanism above was
+    itself found to have its own plumbing wrong — F1 (MEDIUM, written from `row_count + 1` instead of the row's
+    real `seq`, so a `bigserial` gap makes an untampered trail report permanently `BROKEN`), F2 (MEDIUM, the
+    schema's anchor seed forgot to derive `keyed_from_seq`, beating the sink's own re-derivation on a lost-anchor
+    installation), F3 (MEDIUM, no DELETE/TRUNCATE guard on the anchor table, and the verifier's fallback for a
+    missing anchor was silent — reporting `INTACT` again, the original V2 result), and F4 (LOW, a still-unkeyed
+    instance mid rolling-restart could append after the keying point and permanently break the trail). Isis closed
+    F3(a) (the DELETE/TRUNCATE guard) and started on F1/F2/F4 before Dollar, with Souhaile, ruled the design
+    itself rather than iterating the sequence-position mechanism again: **keyed-from-birth**.
+
+    **Dollar's ruling (keyed-from-birth):** a trail is keyed from row 1 or unkeyed forever — no mixing, no later
+    switch, no accommodating "enabling the key on a running installation" (the C6 goal, now invalid by design).
+    `agentguard.audit.hmac-secret` is required by default (missing → startup fails naming the property and the
+    remedy, `openssl rand -base64 32`); `agentguard.audit.unkeyed=true` is the explicit, WARN-every-startup local
+    dev opt-out. Which mode a trail is in is recorded once, at the first append, as a plain
+    `agentguard_audit_anchor.keyed` boolean, immutable afterwards via the anchor's existing monotonic trigger.
+    Every append after that, from any instance, must agree with it or is refused
+    (`AgentGuardException`/`AG-AUDIT-001`) — this is what actually closes F4 (a fail-closed refusal, not a
+    detectable-after-the-fact break). `AuditChainVerifier` checks every row's `chain_version` against what
+    `keyed` says the whole trail must be; a table-owning attacker's row-level rewrite (even a whole-trail
+    downgrade — Cipher's original V2 repro) cannot flip `keyed`. F1 and F2 do not carry forward: both were about
+    deriving a *sequence position* correctly, and there is no sequence position left in the new design to derive.
+    F3(a) (anchor DELETE/TRUNCATE triggers) ships unchanged, independent of the migration.
+
+    **Amendment (Dollar, after Cipher's design review of the above):** five additions, folded in before push. (1)
+    A key id (`agentguard.audit.hmac-key-id`, default `k1`) is part of the hashed material from row 1
+    (`agentguard_audit.key_id`, `'none'` for unkeyed rows); `AuditChainVerifier` holds a keyring
+    (`hmac-secret`/`hmac-key-id` plus every `agentguard.audit.hmac-keys.<id>`), so rotation is a config change
+    (add the new key, change the appending id) rather than a trail migration — an id the keyring does not hold is
+    `BROKEN`, and this is not a second mode switch: `keyed` still says *whether* a key is required (immutable),
+    `key_id` only says *which* already-trusted key signed a given row. (2) A missing anchor on a non-empty trail
+    now refuses to append (`AG-AUDIT-002`) on both `JdbcAuditSink` and the schema seed, rather than being
+    re-derived from the trail head — the "re-anchor from head" fallback and its one-time warn guard are removed
+    entirely; the schema seed only ever creates the anchor row for a genuinely empty trail. (3) `NO_ANCHOR` is now
+    reported unconditionally (keyed or unkeyed), not only when a key was given to the verifier. (4) `Report` now
+    carries the trail's mode (`anchored`, `keyed`, `keyIds`); an unkeyed trail's clean result is the distinct
+    `Status.INTACT_UNKEYED`, replacing the deleted `Status.UNKEYED` (a different, now-impossible situation) with
+    an honest rendering of the common, by-design-unkeyed case. (5) "Start a new trail" is defined as an owner-run
+    procedure (archive `agentguard_audit`/`agentguard_audit_anchor`, re-run the schema step); the startup-failure
+    message only fires when an anchor exists and disagrees, so a fresh install with a secret starts fine; the
+    secret must not live in the same store as the datasource credentials. Full write-up and the old-probe →
+    new-probe map: `docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Design change: keyed-from-birth" and its
+    "Amendment" subsection.
+
 ## Build
 13. **[decided]** Error Prone 2.50 on JDK 21 needs `.mvn/jvm.config` (add-exports) and
     `-XDaddTypeAnnotationsToSymbol=true`; both are in place. `maven-enforcer` `dependencyConvergence` is on.

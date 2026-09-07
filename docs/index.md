@@ -34,6 +34,9 @@ public class OrderTools {
 agentguard:
   enabled: true
   store: JDBC                 # PostgreSQL via your DataSource; MEMORY for a quick try
+  audit:
+    hmac-secret: ${AGENTGUARD_AUDIT_SECRET} # required; generate with `openssl rand -base64 32`
+                                             # — or, local trial only, `unkeyed: true` instead
   endpoints:
     enabled: true             # /agentguard/decisions, /agentguard/audit — protect them with Spring Security
   budgets:
@@ -91,7 +94,10 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.approval.replay-window` | `= ttl` | How far back an identical call is matched to an existing decision. |
 | `agentguard.approval.allow-self-approval` | `false` | Four-eyes: the parking principal may not decide its own call (`AG-APPROVAL-011`). |
 | `agentguard.approval.notifier.webhook-allow-insecure` | `false` | Trial only; otherwise https or a loopback host. |
-| `agentguard.audit.hmac-secret` | – | Keyed chain (`ag2h`): rewrites by anyone without the key become detectable. |
+| `agentguard.audit.hmac-secret` | – (required) | Keyed chain (`ag2h`): rewrites by anyone without the key become detectable. **Required by default** — missing and without `agentguard.audit.unkeyed=true`, startup fails naming this property and the remedy (`openssl rand -base64 32`). |
+| `agentguard.audit.hmac-key-id` | `k1` | Id of the key above, baked into every row's hashed material from row 1. Change it when rotating to a new secret. |
+| `agentguard.audit.hmac-keys.<id>` | – | Retired keys the verifier must still accept (`agentguard.audit.hmac-keys.k1=...`), by id — never used for appending, only for verifying rows signed under a rotated-away id. |
+| `agentguard.audit.unkeyed` | `false` | Explicit local-dev opt-out: start unkeyed instead of requiring `hmac-secret`. Warns at every startup. |
 | `agentguard.errors.include-tool-message` | `false` | Forward the tool's exception message to the model (default: class + correlation id). |
 | `agentguard.endpoints.tenant-scoped` | `true` | Approvers only see and decide their own tenant's decisions. |
 | `agentguard.redis.pool.platform-threads` | `true` | JDK 21-23: Redis calls on a bounded platform-thread pool. |
@@ -138,7 +144,52 @@ reject timestamps older than a few minutes. The URL must be https unless the hos
 an owner/migration role that runs the schema once, and a runtime role with `SELECT, INSERT` on `agentguard_audit`,
 `SELECT, INSERT, UPDATE` on `agentguard_decision`, `agentguard_budget` and `agentguard_audit_anchor`, and no DDL
 (so it cannot disable the append-only triggers); then set `initialize-schema=false`. The chain verifier reports
-`ANCHOR_MISMATCH` if the tail is trimmed or the table truncated by a role that could.
+`ANCHOR_MISMATCH` if the tail is trimmed or the table truncated by a role that could. `agentguard_audit_anchor`
+itself refuses `DELETE`/`TRUNCATE` the same way `agentguard_audit` does; losing the anchor row is what makes the
+verifier report `NO_ANCHOR` instead of guessing — unconditionally, keyed or unkeyed, whether or not a key was
+given. Only the table owner can disable these triggers — documented residual, same as the append-only ones.
+
+### Audit chain keying (keyed-from-birth)
+A trail is keyed from row 1 or unkeyed forever — there is no mixing and no later switch. `agentguard.audit.hmac-secret`
+is **required by default**: missing, and without the explicit opt-out below, startup fails naming the property and
+the remedy (generate one with `openssl rand -base64 32`). For local development only, set
+`agentguard.audit.unkeyed=true` to start unkeyed instead; it warns at every startup, not only the first, so the
+trade-off does not go unnoticed after whoever set it has moved on. Keep the secret out of the datasource
+credentials' store — it is a second factor only where database write access cannot also reach it; a deployment
+that keeps both in the same place has, in effect, an unkeyed chain.
+
+Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (immutable
+afterwards, same trigger that protects `head_hash`/`row_count`). Every later append — from this instance or any
+other — must agree with it, or is refused with `AG-AUDIT-001`, naming the property and the remedy. This is what
+makes a **rolling restart that changes `agentguard.audit.hmac-secret` unsafe**: stop every instance before starting
+the first one with the new setting, or a still-mismatched instance is refused rather than corrupting the trail.
+Separately, a trail whose anchor row goes missing while it already has rows (a lost anchor row, never a guessed
+one) is also refused — `AG-AUDIT-002` — both on the next append and at the next startup; the schema step never
+re-seeds an anchor from an existing, non-empty trail (only an owner with direct SQL access, or a genuinely fresh,
+empty database, gets a new one — see "Starting a new trail" below).
+
+**Key rotation.** The key id (`agentguard.audit.hmac-key-id`, default `k1`) is part of the hashed material itself,
+from row 1 — this is what makes rotation data, not a chain-format break. To rotate: pick a new id (e.g. `k2`),
+move the old id + secret to `agentguard.audit.hmac-keys.k1=<old secret>`, and set `hmac-secret`/`hmac-key-id` to
+the new pair. The verifier's keyring (current key + every `hmac-keys` entry) accepts rows signed under any of
+them; a row claiming an id the keyring does not hold is `BROKEN`, not skipped. A rolling restart during a
+rotation is safe (unlike changing keyed/unkeyed): every instance is still keyed throughout, just possibly
+signing with a different id, which the keyring covers.
+
+**Starting a new trail.** Changing a trail's keyed/unkeyed mode, or recovering from a lost anchor row on a
+non-empty trail, is an owner-run procedure, not something an application instance does for itself: archive
+`agentguard_audit` and `agentguard_audit_anchor` (rename or drop them) and re-run the schema step so it creates a
+fresh, empty pair; the chain restarts at GENESIS. This is deliberately not automated — the two situations that
+reach it (a real audit-mode change, or a lost anchor) both warrant a human decision, not a silent recovery.
+
+Residual: a database role that owns the tables can disable the append-only and anchor triggers and rewrite
+`agentguard_audit_anchor.keyed` along with everything else — the same table-owner residual as the append-only
+triggers generally. Run the schema with an owner/migration role and the application with the narrower runtime
+role documented above. A consistent point-in-time restore of the trail and its anchor together is also
+undetectable from inside the database; mitigate by exporting the head hash offsite on a schedule. A role holding
+only the documented runtime grant can still poison the chain with one hand-written, correctly-linked row (it has
+INSERT) — this is detected on the next verification, never prevented, and is accepted at spec time rather than
+engineered away.
 
 ### Redis and virtual threads
 On JDK 21–23 a virtual thread blocked on the connection pool's growth lock pins its carrier; with more concurrent
@@ -170,6 +221,8 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-BUDGET-002` | a configured budget scope has no subject (no conversation / tenant id) |
 | `AG-TOOL-001` | the tool itself failed |
 | `AG-GUARD-001` | the guard's own infrastructure failed; the call was not run |
+| `AG-AUDIT-001` | this instance's audit key state (keyed/unkeyed) does not match the trail's; append refused |
+| `AG-AUDIT-002` | the trail has rows but no anchor row; append refused rather than re-anchored by a guess |
 
 ## Free vs Pro
 

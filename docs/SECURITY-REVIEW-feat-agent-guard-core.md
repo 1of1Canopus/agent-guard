@@ -938,3 +938,82 @@ it and the head/count check evaporate without a word when the anchor row is abse
 an operator explicitly turned on into a permanent false alarm; F3 hands the original V2 attack back to anyone
 holding the table or supplying their own reader. Three MEDIUM and one LOW, each with a named fix and a probe to
 flip. Under the no-allowance rule all four ship before merge.
+
+## Design change: keyed-from-birth (Dollar ruling)
+
+Rather than iterate the sequence-position anchor mechanism (`agentguard_audit_anchor.keyed_from_seq`) once more to
+close F1/F2/F3/F4, Dollar and Souhaile decided the design itself: **a trail is keyed from row 1 or unkeyed
+forever.** No mixing, no later switch, no accommodating "enabling the key on a running installation" (the old C6
+goal). `agentguard.audit.hmac-secret` is required by default; missing, startup fails naming the property and the
+remedy (`openssl rand -base64 32`). The explicit opt-out for local development, `agentguard.audit.unkeyed=true`,
+starts unkeyed but warns at every startup. Which mode a trail is in is recorded once, at the first append, as a
+plain `agentguard_audit_anchor.keyed` boolean (immutable afterwards via the anchor's existing monotonic trigger,
+Cipher R4); every later append, from any instance, must agree with it or is refused
+(`AgentGuardException`/`AG-AUDIT-001`), which is what makes a rolling restart that flips `hmac-secret` fail loud on
+the mismatched instance instead of corrupting the trail — the exact hole F4 named. `AuditChainVerifier.verify`
+checks every row's `chain_version` against what `keyed` says the whole trail must be, and, given a key, refuses to
+render an unanchored check as `INTACT` (a distinct `Status.NO_ANCHOR`, WARN-logged) — this closes F3(b)
+independently of the migration. F3(a) — BEFORE DELETE/TRUNCATE triggers on the anchor table — ships unchanged by
+the redesign, since it was always independent of the sequence-position mechanism.
+
+F1 and F2 do not carry forward: both were about deriving a *sequence position* correctly (from `row_count` vs.
+`seq`, and re-deriving it when the anchor row was lost). With no sequence position left to derive — `keyed` is a
+constant boolean for the trail's whole lifetime — there is nothing analogous to get wrong the way F1 and F2 did.
+The schema seed still derives `keyed` from the trail's own head for a lost-anchor installation, and is covered by a
+new regression test, but this is routine correctness, not a named finding.
+
+Old probe → new probe map (`CipherProbeAnchorKeyingJdbcTest` unless noted):
+
+| Old (this pass) | New | Why |
+|---|---|---|
+| `probe_a_bigserial_gap_makes_an_untampered_keyed_trail_report_broken` (F1) | *(removed, no replacement)* | No sequence position is derived any more; a `bigserial` gap cannot corrupt a constant boolean. |
+| `probe_the_schema_anchor_seed_forgets_keyed_from_seq_and_breaks_a_keyed_trail` (F2) | `the_schema_seed_derives_keyed_correctly_for_a_keyed_trail_with_a_lost_anchor` | Same shape (lost anchor, re-seeded by the schema step), asserting the boolean is derived correctly rather than a sequence number. |
+| `probe_deleting_the_anchor_row_restores_the_whole_trail_downgrade_to_intact` (F3, first half) | `the_whole_trail_downgrade_is_broken_because_the_anchor_says_keyed` | Anchor stays intact (DELETE is now refused); asserts the version-vs-`keyed` mismatch is caught without any hash recomputation needed. |
+| `probe_deleting_the_anchor_row_restores_the_whole_trail_downgrade_to_intact` (F3, second half) | `anchor_delete_and_truncate_are_refused` | F3(a): DELETE/TRUNCATE on the anchor now raise, matching `agentguard_audit`'s own triggers. |
+| *(new)* | `a_key_given_with_no_anchor_reader_reports_no_anchor_never_intact` (this class) and `AuditChainVerifierTest.a_key_given_with_no_anchor_reports_no_anchor_never_intact` | F3(b): a reader that is not an `AuditAnchor`, or has no anchor row, reports `NO_ANCHOR`, replacing the old `Status.UNKEYED` probe (`a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed`), which tested a scenario (`keyed_from_seq` null) that no longer exists. |
+| `probe_an_unkeyed_instance_appending_after_the_keying_point_breaks_the_trail_forever` (F4) | `an_unkeyed_instance_is_refused_once_the_trail_is_keyed` | Same rolling-restart scenario; asserts the append (now the construction) is refused with `AG-AUDIT-001`, not that the trail ends up `BROKEN`. |
+| *(new, F4's mirror image, not covered before since one-way "enable the key" was the only direction considered)* | `a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed` | A newly-keyed instance must not silently start signing a trail that began unkeyed. |
+| *(new)* | `the_mismatch_is_also_refused_on_append_not_only_at_construction` | The refusal is not only a startup check: an instance constructed while the trail was still empty must also be refused on its first append once another instance has keyed it. |
+| `CipherProbeCleanGuardTest.enabling_the_audit_hmac_secret_does_not_break_the_existing_trail` (C6) | `CipherProbeAnchorKeyingJdbcTest.a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed` (message assertions) | C6's premise — accommodating a later-enabled key on an existing unkeyed trail — is invalid under keyed-from-birth; the replacement asserts the refusal and its remedy message instead. |
+| `CipherProbeReverifyTest.probe_a_keyed_trail_verifies_after_it_is_rewritten_as_unkeyed` / `probe_a_fully_downgraded_trail_verifies_as_broken_not_intact` | *(kept, unchanged assertions)* | Both already modelled the whole/partial downgrade against an immutable external anchor field; only the javadoc referring to `keyed_from_seq` was updated to `keyed`. Still pass unmodified against the new verifier logic. |
+| `AgentGuardAutoConfigurationTest.hmac_secret_must_be_long_enough_and_keys_the_chain` | *(kept, unchanged)* | Length validation is orthogonal to the required-by-default change. |
+| *(new)* | `AgentGuardAutoConfigurationTest.missing_hmac_secret_fails_startup_naming_the_property_and_the_remedy` | `agentguard.audit.hmac-secret` required by default. |
+| *(new)* | `AgentGuardAutoConfigurationTest.unkeyed_opt_out_starts_but_warns_every_time` | The explicit `agentguard.audit.unkeyed=true` opt-out, warning at every startup. |
+
+### Amendment (Dollar, after Cipher's design review of keyed-from-birth)
+
+Five additions to the ruling above, folded into the same branch before push:
+
+1. **Key id per row, inside the hashed material, from v1.** `agentguard_audit.key_id` (`'none'` for unkeyed rows);
+   `AuditChain`'s canonical form now includes it (`version|key_id|timestamp|…`). `keyed` still decides *whether* a
+   key is required (immutable); `key_id` only says *which* key signed a row. `AuditChainVerifier` holds a keyring
+   (`agentguard.audit.hmac-key-id`/`hmac-secret` plus every `agentguard.audit.hmac-keys.<id>`); an id it does not
+   hold is `BROKEN`. Rotation is then a config change, not a trail migration.
+2. **Missing anchor on a non-empty trail refuses to append**, on both `JdbcAuditSink` (construction and every
+   append) and the schema seed. The "re-anchor from the trail head" fallback and its `WARNED_MISSING_ANCHOR`
+   one-time-log guard are removed entirely; the schema seed's `INSERT … ON CONFLICT DO NOTHING` no longer derives
+   values from an existing trail — it only ever matches a genuinely empty one.
+3. **`NO_ANCHOR` unconditionally**, not only when a key is given: an unanchored verification is never `INTACT`
+   (or now `INTACT_UNKEYED`) regardless of whether the trail is meant to be keyed.
+4. **The `Report` carries the trail's mode** (`anchored`, `keyed`, `keyIds`); an unkeyed trail's clean result is
+   the distinct `Status.INTACT_UNKEYED`, replacing the deleted `Status.UNKEYED` (which was about a different,
+   now-impossible situation — a key configured on the verifier that no row ever used) with an honest rendering of
+   the common case (a real, by-design unkeyed deployment).
+5. **"Start a new trail" is defined** in docs/index.md and SECURITY-NOTES.md as an owner-run procedure (archive
+   `agentguard_audit`/`agentguard_audit_anchor`, re-run the schema step), and the startup-failure message only
+   fires when an anchor exists and disagrees — a fresh install with a secret starts fine. Documented: the secret
+   must not live in the same store as the datasource credentials, or it is a second factor over nothing.
+
+Old-probe → new-probe map, additions to the table above (`CipherProbeAnchorKeyingJdbcTest` unless noted):
+
+| Old / superseded | New | Why |
+|---|---|---|
+| `an_unkeyed_instance_is_refused_once_the_trail_is_keyed` (unchanged assertions) | *(kept)* | Append-time refusal is orthogonal to key ids: a keyed-vs-unkeyed mismatch, not a key-id mismatch. |
+| `the_schema_seed_derives_keyed_correctly_for_a_keyed_trail_with_a_lost_anchor` (this amendment's own first draft, never shipped) | `an_orphaned_keyed_trail_without_an_anchor_refuses_to_append` | Point 2: the schema no longer re-derives `keyed` for a lost anchor on a non-empty trail; it refuses instead. |
+| `CipherProbeReverifyJdbcTest.trail_without_anchor_row_continues_from_the_real_head` (R2) | `CipherProbeReverifyJdbcTest.a_trail_without_an_anchor_row_refuses_to_append_and_reports_no_anchor` | Same point 2, on the unkeyed side: a non-empty trail that loses its anchor is refused, not continued. |
+| `CipherProbeFinalJdbcTest.concurrent_first_starts_seed_one_consistent_anchor_while_appends_run` | `concurrent_first_starts_and_appends_never_abort_each_other_on_an_anchored_trail` | The probe used to delete the anchor from a non-empty trail to model "pre-anchor install"; that scenario is now a refusal, not a race to re-seed. Kept the still-valid part: concurrent schema runs and appends on an *anchored* trail never abort each other (R11). |
+| *(new)* | `mixed_key_rows_verify_intact_with_both_keys_in_the_keyring` | Point 1: a trail with rows signed under two different key ids, both known to the verifier, is `INTACT`. |
+| *(new)* | `an_unknown_key_id_is_broken` | Point 1: a row's `key_id` absent from the keyring is `BROKEN`, not skipped. |
+| *(new)* | `a_stale_key_second_instance_appends_but_only_verifies_with_its_own_id_in_the_keyring` | Point 1: a rotation window (two keyed instances, different ids) appends fine on both; verifying with only the new key reports `BROKEN` at the old instance's row, naming the sequence. |
+| `AuditChainVerifierTest.a_key_given_to_the_verifier_but_never_used_by_the_sink_reports_unkeyed` (`Status.UNKEYED`, already replaced above) | `AuditChainVerifierTest.an_unkeyed_trail_never_renders_plain_intact` (new) | Point 4: the deleted `UNKEYED` status is not reused; a genuinely unkeyed, by-design trail gets its own honest status instead. |
+| all `Status.INTACT` assertions against an unkeyed sink across `CipherProbeJdbcTest`, `CipherProbeReverifyJdbcTest`, `CipherProbeFinalJdbcTest`, `AuditChainVerifierTest` | `Status.INTACT_UNKEYED` | Point 4, mechanical rename following the `Report` widening; `Status.INTACT` on a keyed sink is unchanged. |

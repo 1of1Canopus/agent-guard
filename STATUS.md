@@ -1,9 +1,53 @@
-# STATUS.md — Module B · Agent Guard, free core (run 7: V2 closed in full, external anchor)
+# STATUS.md — Module B · Agent Guard, free core (run 8: keyed-from-birth design change + amendment)
 
 Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
 (https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
 
-## Summary (run 7)
+## Summary (run 8)
+**Done.** Cipher's final-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, `25da6af`) found run 7's
+external anchor (`keyed_from_seq`) had its own plumbing wrong: F1 (MEDIUM, written from `row_count + 1` instead of
+the row's real `seq`, so an ordinary sequence gap makes an untampered trail permanently `BROKEN`), F2 (MEDIUM, the
+schema's anchor seed forgot to derive `keyed_from_seq`, beating the sink's own re-derivation on a lost-anchor
+install), F3 (MEDIUM, no DELETE/TRUNCATE guard on the anchor and a silent fallback to `INTACT` when it is
+missing), F4 (LOW, a still-unkeyed instance mid rolling-restart could append after the keying point and
+permanently break the trail). Rather than iterate the sequence-position mechanism again, Dollar (with Souhaile)
+ruled the design itself — **keyed-from-birth**: a trail is keyed from row 1 or unkeyed forever, no mixing, no
+later switch. `agentguard.audit.hmac-secret` is required by default (missing → startup fails naming the property
+and the remedy, `openssl rand -base64 32`); `agentguard.audit.unkeyed=true` is the explicit, WARN-every-startup
+local-dev opt-out. Which mode a trail is in is recorded once, at the first append, as a plain
+`agentguard_audit_anchor.keyed` boolean, immutable afterwards (the anchor's existing monotonic trigger); every
+append after that, from any instance, must agree with it or is refused (`AgentGuardException`/`AG-AUDIT-001`) —
+this closes F4 by construction (fail-closed, not detectable-after-the-fact). F1/F2 do not carry forward (no
+sequence position is derived any more); F3(a) — anchor DELETE/TRUNCATE triggers — ships unchanged, independent of
+the migration.
+
+Dollar then amended the ruling once more after Cipher's design review of the above, before push: (1) a key id
+(`agentguard.audit.hmac-key-id`, default `k1`) is baked into every row's hashed material from row 1
+(`agentguard_audit.key_id`), so rotation is a config change (add a key to `agentguard.audit.hmac-keys.<id>`,
+change the appending id) rather than a trail migration — `AuditChainVerifier` holds a keyring and reports `BROKEN`
+for an id it does not hold; (2) a missing anchor on a non-empty trail refuses to append (`AG-AUDIT-002`) rather
+than being re-derived from the trail head — the schema seed only ever creates the anchor row for a genuinely
+empty trail; (3) `NO_ANCHOR` is reported unconditionally (keyed or unkeyed), not only when a key was given; (4)
+`Report` carries the trail's mode (`anchored`, `keyed`, `keyIds`) and an unkeyed trail's clean result is the
+distinct `Status.INTACT_UNKEYED`, never the same word as a keyed trail's `INTACT`; (5) "start a new trail" is
+documented as an owner-run procedure. `./mvnw -B clean verify` is green: **190 tests** (core 141, starter 48 + 1
+self-skipping — needs Spring AI's real `ToolCallingAutoConfiguration` on the test classpath — sample 1
+end-to-end), core line coverage **90.48%** / branch **78.14%** (gate 80% line, held), spotless, Error Prone,
+enforcer, JaCoCo gate.
+
+| Id | Sev | Fix | Proof |
+|---|---|---|---|
+| F1 | MEDIUM (superseded, does not carry forward) | Not applicable under keyed-from-birth: there is no sequence position (`keyed_from_seq`) left to derive incorrectly — `agentguard_audit_anchor.keyed` is a constant boolean for the trail's whole lifetime. | — |
+| F2 | MEDIUM (superseded, does not carry forward) | Same reason as F1: the schema seed no longer derives any value from an existing trail — see "anchor-missing refuses" below. | — |
+| F3(a) | MEDIUM | `BEFORE DELETE`/`BEFORE TRUNCATE` triggers on `agentguard_audit_anchor`, created only when absent | `CipherProbeAnchorKeyingJdbcTest.anchor_delete_and_truncate_are_refused` |
+| F3(b) | MEDIUM | `AuditChainVerifier.verify` reports `Status.NO_ANCHOR` (never `INTACT`/`INTACT_UNKEYED`) whenever the reader is not an `AuditAnchor`, or has no anchor row, and the trail is not empty — unconditionally, keyed or unkeyed | `AuditChainVerifierTest.a_key_given_with_no_anchor_reports_no_anchor_never_intact`, `CipherProbeAnchorKeyingJdbcTest.a_key_given_with_no_anchor_reader_reports_no_anchor_never_intact` |
+| F4 | LOW (closed by construction) | `JdbcAuditSink` refuses to append (or construct) when this instance's keyed state does not match the trail's recorded `keyed`, naming `agentguard.audit.hmac-secret` and the remedy (`AG-AUDIT-001`) | `CipherProbeAnchorKeyingJdbcTest.an_unkeyed_instance_is_refused_once_the_trail_is_keyed`, `.a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed`, `.the_mismatch_is_also_refused_on_append_not_only_at_construction` |
+| — | design | `agentguard.audit.hmac-secret` required by default; `agentguard.audit.unkeyed=true` explicit opt-out, WARN every startup | `AgentGuardAutoConfigurationTest.missing_hmac_secret_fails_startup_naming_the_property_and_the_remedy`, `.unkeyed_opt_out_starts_but_warns_every_time` |
+| — | amendment | Key id in the hashed material from row 1; verifier keyring; unknown id `BROKEN` | `CipherProbeAnchorKeyingJdbcTest.mixed_key_rows_verify_intact_with_both_keys_in_the_keyring`, `.an_unknown_key_id_is_broken`, `.a_stale_key_second_instance_appends_but_only_verifies_with_its_own_id_in_the_keyring` |
+| — | amendment | Missing anchor on a non-empty trail refuses to append (`AG-AUDIT-002`), never re-derived | `CipherProbeAnchorKeyingJdbcTest.an_orphaned_keyed_trail_without_an_anchor_refuses_to_append`, `CipherProbeReverifyJdbcTest.a_trail_without_an_anchor_row_refuses_to_append_and_reports_no_anchor` |
+| — | amendment | `Status.INTACT_UNKEYED` distinct from `Status.INTACT` | `AuditChainVerifierTest.an_unkeyed_trail_never_renders_plain_intact` |
+
+## Summary (run 7, prior)
 **Done.** Dollar's ruling on QUESTIONS.md #20 closes V2 (MEDIUM) in full: `agentguard_audit_anchor` gets a
 `keyed_from_seq` column, set once — in the same transaction as the first row a sink appends under a keyed chain —
 and made immutable afterwards by extending the anchor's existing monotonic trigger (Cipher R4). Row data alone can
@@ -121,11 +165,28 @@ app being brought into line with the now-correct, fail-closed default.
 
 ## Proof commands
 ```bash
-./mvnw -B clean verify                                       # 175 tests, all gates
+./mvnw -B clean verify                                       # 190 tests, all gates
 ./mvnw -B -pl agent-guard-core -Ppinning-probe test          # + the 2 child-JVM pinning probes (~25 s)
-./mvnw -B -pl agent-guard-spring-boot-starter test           # 46 + 1 skip (incl. every flipped Cipher probe)
+./mvnw -B -pl agent-guard-spring-boot-starter test           # 48 + 1 skip (incl. every flipped Cipher probe)
 ./mvnw -B -pl agent-guard-sample test                        # 1 end-to-end through a real MCP client
 ```
+
+## Interface changes run 8 (breaking: chain-format addition + Status/Anchor rename)
+- `AuditEvent` gains a `keyId` component (record position: after `version`, before `prevHash`); `AuditChain`'s
+  canonical form includes it, so every row this version writes carries a `key_id`. `AuditChain.keyed(byte[])` now
+  defaults key id `k1`; `AuditChain.keyed(byte[], String keyId)` is the explicit form used for rotation.
+- `AuditAnchor.Anchor.keyedFromSeq` (`Long`) is replaced by `Anchor.keyed` (`boolean`).
+- `AuditChainVerifier.Status.UNKEYED` is removed (the situation it modelled — a key configured on the verifier
+  that no row ever used — cannot arise once `keyed_from_seq` is gone); `Status.INTACT_UNKEYED` is added, and
+  every pre-existing `Status.INTACT` assertion against an *unkeyed* trail across the test suite was renamed to it
+  (a keyed trail's `INTACT` is unchanged).
+- `AuditChainVerifier.Report` gains `anchored`, `keyed`, `keyIds` components (all trailing the existing four).
+- `AuditChainVerifier` gains a `Map<String, byte[]>`-keyring constructor and `of(reader, Map<String, byte[]>)`
+  factory alongside the existing single-`AuditChain` ones (both kept, unchanged behaviour for a single key).
+- `ErrorCodes.AUDIT_KEY_MISMATCH` (`AG-AUDIT-001`) and `ErrorCodes.AUDIT_ANCHOR_MISSING` (`AG-AUDIT-002`) are new.
+- `agentguard.audit.hmac-key-id` (default `k1`) and `agentguard.audit.hmac-keys.<id>` (retired keys) are new
+  properties; `AgentGuardAutoConfiguration` gains an `auditKeyring` bean (`Map<String, byte[]>`) the
+  `auditChainVerifier` bean now depends on instead of the single `AuditChain`.
 
 ## Still open (outside the review)
 Release plumbing (Maven Central signing, org decision), async (WebFlux) MCP servers (fail startup today),
@@ -133,6 +194,29 @@ Micrometer metrics, `@Internal` API pass. Cipher's real-`ToolCallingAutoConfigur
 `-Dmaven.test.additionalClasspath=<spring-ai-autoconfigure-model-tool-2.0.1.jar>` and self-skips otherwise.
 C11 has no dedicated `CipherProbe*` test (the finding table lists its probe as "git diff"): the fix is entirely in
 `HexagonalArchitectureTest`'s rule definition, verified by the ArchUnit rule itself passing/failing.
+
+## Pain points (plain words) — run 8
+- The coordinator's direction changed twice in the same session: first a plain F1–F4 fix list against
+  `keyed_from_seq`, then (before any of it was committed) a full design change to keyed-from-birth, then an
+  amendment to that design after Cipher's own review of it. No partial F1–F4 work was ever committed or pushed —
+  the working tree was clean when each new direction arrived, so nothing needed discarding.
+- Adding `key_id` to `AuditEvent` and the canonical hash material is a genuine chain-format change (not additive
+  the way `chain_version`/`actor_id` were): every row this version writes is shaped differently from every row
+  the pre-run-8 code wrote. Backfilled via the same idempotent-migration pattern as `chain_version` (derive from
+  what's there, `NOT NULL` only after the backfill), but it is the first column in this schema that is also part
+  of what gets hashed, so getting the backfill's *value* right (not just present) mattered: an unkeyed row must
+  backfill to `'none'`, not to whatever placeholder was convenient.
+- `AuditChainVerifier`'s single-`AuditChain` constructors could not be expressed in terms of the new
+  `Map<String, byte[]>`-keyring constructor, because `AuditChain` deliberately never exposes its raw secret bytes
+  (by design, for the same reason a `SecretKeySpec` doesn't hand back its key material casually). Kept both
+  constructors as genuinely separate code paths (one keyed by `AuditChain` instances, one by raw bytes converted
+  to `AuditChain` instances internally) rather than forcing one through the other.
+- `SchemaStepIntegrationTest` (pre-existing, not a Cipher probe) started failing once `JdbcAuditSink`'s
+  constructor began opening a connection at construction time (the new startup fail-closed check): the test reused
+  one `HikariDataSource` bean across two separate `ApplicationContextRunner` contexts, relying on Spring *not*
+  closing it when the first context shut down — true only because nothing had previously touched the connection
+  during construction. Fixed by registering the bean with an explicit empty destroy-method name
+  (`bd.setDestroyMethodName("")`), not by weakening the new startup check.
 
 ## Pain points (plain words) — run 7
 - Making C6's test pass again after adding `keyed_from_seq` meant changing what "enabling the key" means inside

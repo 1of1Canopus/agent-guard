@@ -50,6 +50,24 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     (behind `agentguard.endpoints.enabled`): a developer must be able to try the loop. The Pro line is the inbox UI,
     search/filters, exports, retention, per-tenant views.
 
+## Clean-verdict round (Cipher, `50ed8d3`)
+18. **[decided]** C9's `agentguard.endpoints.require-tenant=true` default (correctly) refuses an approver with no
+    tenant when `tenant-scoped=true`. This is a genuine behaviour change for any `tenant-scoped=true` deployment
+    that never wired a `TenantResolver` (previously treated as "no scoping needed"). Fixed by declaring intent
+    explicitly rather than by relying on silent fallback: the sample app now sets
+    `agentguard.endpoints.tenant-scoped=false` (it has no tenant concept at all), and
+    `AgentGuardEndpointsTest`'s single-tenant test method sets `agentguard.endpoints.require-tenant=false` at the
+    class level (its sibling method, which does exercise real per-tenant scoping, never logs in with a tenant-less
+    approver, so the property does not weaken it). No probe assertion was weakened; see `STATUS.md`.
+19. **[decided]** C4's fix, read literally, only moves the size check inside `gate()`/`dispatch()`. C12's fix makes
+    `AuditRecorder.record` canonicalise (parse) every call's arguments, including the early
+    policy-denied/unregistered-tool paths in `ToolGuard.guarded()` that C4 does not touch — which would have quietly
+    reintroduced C4's amplification on the one path C4 itself creates (the oversized-rejection audit call). Closed
+    with `AuditRecorder.recordOversized`, a narrow addition used only by the size-cap rejection, hashing the raw
+    text directly instead of through `ArgumentCanonicalizer`. This is a smallest-correct-change addition, not a
+    widening of either finding: it does not touch the Deny/PENDING/ALLOWED audit paths, which were never in scope
+    for C4 and are unaffected by this addition.
+
 ## Build
 13. **[decided]** Error Prone 2.50 on JDK 21 needs `.mvn/jvm.config` (add-exports) and
     `-XDaddTypeAnnotationsToSymbol=true`; both are in place. `maven-enforcer` `dependencyConvergence` is on.

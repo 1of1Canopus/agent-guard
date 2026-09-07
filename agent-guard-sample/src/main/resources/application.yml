@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: agent-guard-sample
+  datasource:
+    url: ${AGENTGUARD_DB_URL:jdbc:postgresql://localhost:5432/agentguard}
+    username: ${AGENTGUARD_DB_USER:agentguard}
+    password: ${AGENTGUARD_DB_PASSWORD:agentguard}
+  ai:
+    mcp:
+      server:
+        name: agent-guard-sample
+        version: 0.1.0
+        protocol: STREAMABLE
+
+agentguard:
+  enabled: true
+  store: JDBC            # decisions + hash-chained audit in PostgreSQL (tables agentguard_*)
+  audit:
+    # A trail is keyed from row 1 or unkeyed forever; agentguard.audit.hmac-secret is required by
+    # default so an audit trail is never unkeyed by accident. This sample opts out explicitly for
+    # local trial only — set agentguard.audit.hmac-secret (openssl rand -base64 32) instead in any
+    # real deployment; it starts warning at every boot until you do.
+    unkeyed: true
+  endpoints:
+    enabled: true        # POST /agentguard/decisions/{id}/approve, GET /agentguard/audit
+    tenant-scoped: false # this sample has no TenantResolver / no tenant concept; a multi-tenant
+                          # deployment leaves tenant-scoped=true (the default) and wires a
+                          # TenantResolver, at which point an approver with no tenant is refused
+                          # (403) by default rather than seeing every tenant's work (Cipher C9) —
+                          # set agentguard.endpoints.require-tenant=false only for a deliberate
+                          # cross-tenant approver role
+  approval:
+    ttl: 1h
+  budgets:
+    limits:
+      - scope: PRINCIPAL
+        kind: TOOL_CALLS
+        window: 1m
+        limit: 3         # the 4th call inside a minute gets a structured BUDGET_EXCEEDED error

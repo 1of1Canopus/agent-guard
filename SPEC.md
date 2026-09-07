@@ -30,6 +30,17 @@ Works with (a) Spring AI tool calling (`ToolCallback` / `@Tool`) and (b) Spring 
 ## Threats (security notes to write)
 Prompt-injected tool calls (policy is evaluated on the *actual* call, never on model intent); argument tampering between approval and execution (args hash bound to the decision; resume verifies hash); replay of approvals (single-use decision ids); log injection (args preview redacted + length-capped); privilege escalation via tool chaining (policy evaluated per call, budgets per conversation).
 
+### Cipher spec review (2026-09-07) — Threat 6, audit trail
+The audit trail claims that a party who can write the database cannot alter history undetectably. A plain hash chain does not make that claim: SHA-256 is public, so anyone with UPDATE on `agentguard_audit` recomputes the chain in a loop. Unkeyed, the guarantee reduces to PostgreSQL privilege separation plus the append-only triggers — real, but defeated silently by a table owner, a DBA, or a restore.
+- The chain is **keyed from its first row**. `agentguard.audit.hmac-secret` is required to start. An unkeyed trail is an explicit opt-out for demos and tests, WARNed at every startup, and its verification result must never render with the same word as a keyed one.
+- Keyed-ness is a property of a **trail**, not of a row and not of a running instance: recorded once on the anchor at first append, immutable, enforced on every append. No per-row mode and no in-flight switch — a mode that can change is a mode an attacker can claim.
+- The chain format is the one thing that cannot be migrated later, so it carries a **key id** from v1, inside the hashed material. Key rotation, a mixed-key window during a rolling restart, and a future asymmetric signing tier are then data, not a format break. The verifier holds a keyring; an id it does not hold is `BROKEN`.
+- The key is a second factor **on top of** database credentials, and only where DB write access cannot reach it. A deployment keeping the secret in the same store as the datasource password has the unkeyed chain. Verification runs off-host.
+- Residuals accepted at spec time, documented rather than engineered away: a consistent point-in-time restore of trail and anchor together is undetectable from inside the database — mitigate by exporting the head hash offsite on a schedule; a role holding the documented INSERT grant can poison the chain with one hand-written row and can only be detected, not stopped; a leaked key cannot be un-leaked, so post-compromise rotation means a new trail segment, and that procedure is documented, not improvised.
+- Every verification result states the trail's mode and whether an anchor was present. An unanchored or unkeyed trail never reports as `INTACT`.
+
+*Process note:* this section was written after build started (the module predates the spec-time review rule of 2026-09-07). Origin: the HMAC key entered as an optional PR-review fix (I7) and its backward-compat requirement (C6) produced three review rounds; Dollar's keyed-from-birth ruling and this section replace them.
+
 ## Tests
 - Unit: policy evaluation matrix; state machine transitions (all illegal transitions throw); budget windows; redaction.
 - Integration (Testcontainers Postgres/Redis): approval round-trip with resume; audit chain verify; budget exhaustion under concurrency (virtual threads).

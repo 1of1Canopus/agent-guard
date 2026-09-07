@@ -81,7 +81,10 @@ class CipherProbeReverifySpringAiTest {
               AutoConfigurations.of(
                   AgentGuardAutoConfiguration.class, AgentGuardSpringAiAutoConfiguration.class))
           .withUserConfiguration(ToolsConfig.class)
-          .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY");
+          .withPropertyValues(
+              "agentguard.enabled=true",
+              "agentguard.audit.unkeyed=true",
+              "agentguard.store=MEMORY");
 
   @AfterEach
   void clearSecurity() {

@@ -15,6 +15,12 @@ spring:
 agentguard:
   enabled: true
   store: JDBC            # decisions + hash-chained audit in PostgreSQL (tables agentguard_*)
+  audit:
+    # A trail is keyed from row 1 or unkeyed forever; agentguard.audit.hmac-secret is required by
+    # default so an audit trail is never unkeyed by accident. This sample opts out explicitly for
+    # local trial only — set agentguard.audit.hmac-secret (openssl rand -base64 32) instead in any
+    # real deployment; it starts warning at every boot until you do.
+    unkeyed: true
   endpoints:
     enabled: true        # POST /agentguard/decisions/{id}/approve, GET /agentguard/audit
     tenant-scoped: false # this sample has no TenantResolver / no tenant concept; a multi-tenant

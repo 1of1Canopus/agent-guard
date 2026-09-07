@@ -106,6 +106,18 @@ public class AgentGuardAutoConfiguration {
   public AuditChain auditChain(AgentGuardProperties props) {
     String secret = props.getAudit().getHmacSecret();
     if (secret == null || secret.isBlank()) {
+      if (!props.getAudit().isUnkeyed()) {
+        throw new AgentGuardConfigurationException(
+            "agentguard.audit.hmac-secret is required (a trail is keyed from row 1 or unkeyed"
+                + " forever; unkeyed-by-accident is the wrong default for an audit trail). Set it"
+                + " from an environment variable — generate one with `openssl rand -base64 32` — or,"
+                + " for local development only, set agentguard.audit.unkeyed=true to start unkeyed"
+                + " (a database writer can then rewrite the trail undetected).");
+      }
+      log.warn(
+          "agentguard.audit.unkeyed=true: the audit trail is unkeyed; a database writer can rewrite"
+              + " it undetected. Local development only; set agentguard.audit.hmac-secret in"
+              + " production.");
       return AuditChain.unkeyed();
     }
     byte[] key = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -113,7 +125,41 @@ public class AgentGuardAutoConfiguration {
       throw new AgentGuardConfigurationException(
           "agentguard.audit.hmac-secret must be at least " + AuditChain.MIN_KEY_BYTES + " bytes");
     }
-    return AuditChain.keyed(key);
+    return AuditChain.keyed(key, props.getAudit().getHmacKeyId());
+  }
+
+  /**
+   * Every key the verifier must accept: the current appending key ({@code hmac-secret}/{@code
+   * hmac-key-id}) plus every retired one in {@code agentguard.audit.hmac-keys}, so historical rows
+   * signed under a rotated-away id still verify.
+   */
+  @Bean
+  @ConditionalOnMissingBean
+  public java.util.Map<String, byte[]> auditKeyring(
+      AgentGuardProperties props, AuditChain auditChain) {
+    var keyring = new java.util.LinkedHashMap<String, byte[]>();
+    if (auditChain.isKeyed()) {
+      keyring.put(
+          auditChain.keyId(),
+          props.getAudit().getHmacSecret().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    props
+        .getAudit()
+        .getHmacKeys()
+        .forEach(
+            (id, secret) -> {
+              byte[] bytes = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+              if (bytes.length < AuditChain.MIN_KEY_BYTES) {
+                throw new AgentGuardConfigurationException(
+                    "agentguard.audit.hmac-keys."
+                        + id
+                        + " must be at least "
+                        + AuditChain.MIN_KEY_BYTES
+                        + " bytes");
+              }
+              keyring.put(id, bytes);
+            });
+    return java.util.Map.copyOf(keyring);
   }
 
   @Bean
@@ -285,8 +331,9 @@ public class AgentGuardAutoConfiguration {
 
   @Bean
   @ConditionalOnMissingBean
-  public AuditChainVerifier auditChainVerifier(AuditReader reader, AuditChain chain) {
-    return AuditChainVerifier.of(reader, chain);
+  public AuditChainVerifier auditChainVerifier(
+      AuditReader reader, java.util.Map<String, byte[]> auditKeyring) {
+    return AuditChainVerifier.of(reader, auditKeyring);
   }
 
   @Bean

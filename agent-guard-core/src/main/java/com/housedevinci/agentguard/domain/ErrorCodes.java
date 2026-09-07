@@ -62,4 +62,23 @@ public final class ErrorCodes {
 
   /** The tool itself threw. */
   public static final String TOOL_FAILED = "AG-TOOL-001";
+
+  /**
+   * A trail is keyed from row 1 or unkeyed forever (no mixing). This sink's {@code
+   * agentguard.audit.hmac-secret} (present or absent) does not match the trail's own keyed/unkeyed
+   * state as recorded, once, on {@code agentguard_audit_anchor.keyed}. Refused rather than
+   * appended, so a still-unkeyed instance mid rolling-restart cannot silently corrupt a keyed
+   * trail, and a newly-keyed instance cannot silently start signing rows in a trail nothing else
+   * ever keyed.
+   */
+  public static final String AUDIT_KEY_MISMATCH = "AG-AUDIT-001";
+
+  /**
+   * {@code agentguard_audit_anchor} has no row for a non-empty {@code agentguard_audit}. The schema
+   * seed only ever creates the anchor row for an empty trail (it must never invent a {@code keyed}
+   * value for rows it did not write); a missing anchor on a non-empty trail means the row was lost
+   * after the trail was written, or this database predates the anchor and was never migrated while
+   * empty. Refused rather than guessed, on both startup and every append.
+   */
+  public static final String AUDIT_ANCHOR_MISSING = "AG-AUDIT-002";
 }

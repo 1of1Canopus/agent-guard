@@ -39,6 +39,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=PRINCIPAL",
             "agentguard.budgets.limits[0].kind=TOOL_CALLS",
@@ -64,7 +65,7 @@ class AgentGuardAutoConfigurationTest {
   @Test
   void jdbc_store_without_datasource_fails_fast_naming_the_property() {
     runner
-        .withPropertyValues("agentguard.enabled=true")
+        .withPropertyValues("agentguard.enabled=true", "agentguard.audit.unkeyed=true")
         .run(
             ctx -> {
               assertThat(ctx).hasFailed();
@@ -80,7 +81,10 @@ class AgentGuardAutoConfigurationTest {
   void redis_budgets_without_uri_fail_fast() {
     runner
         .withPropertyValues(
-            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.budgets.store=REDIS")
+            "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
+            "agentguard.store=MEMORY",
+            "agentguard.budgets.store=REDIS")
         .run(
             ctx -> {
               assertThat(ctx).hasFailed();
@@ -95,6 +99,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].limit=0")
         .run(ctx -> assertThat(ctx).hasFailed());
@@ -119,6 +124,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=TENANT",
             "agentguard.budgets.limits[0].limit=3")
@@ -130,7 +136,10 @@ class AgentGuardAutoConfigurationTest {
             });
     runner
         .withPropertyValues(
-            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.strict=false")
+            "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
+            "agentguard.store=MEMORY",
+            "agentguard.strict=false")
         .run(
             ctx ->
                 assertThat(ctx.getBean(BudgetEnforcer.class).missingSubjectPolicy())
@@ -142,6 +151,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=PRINCIPAL",
             "agentguard.budgets.limits[0].kind=STEPS")
@@ -156,6 +166,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=CONVERSATION",
             "agentguard.budgets.limits[0].kind=TOOL_CALLS")
@@ -168,6 +179,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=CONVERSATION",
             "agentguard.budgets.limits[0].kind=STEPS")
@@ -176,6 +188,56 @@ class AgentGuardAutoConfigurationTest {
               assertThat(ctx).hasNotFailed();
               assertThat(output).contains("CONVERSATION limit but no PRINCIPAL limit");
             });
+  }
+
+  /**
+   * Design change (QUESTIONS.md #20, "keyed-from-birth"): {@code agentguard.audit.hmac-secret} is
+   * required by default. Missing, and without the explicit {@code agentguard.audit.unkeyed=true}
+   * opt-out, startup fails naming the property and the remedy (generate a secret with {@code
+   * openssl rand -base64 32}).
+   */
+  @Test
+  void missing_hmac_secret_fails_startup_naming_the_property_and_the_remedy() {
+    runner
+        .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .hasMessageContaining("agentguard.audit.hmac-secret")
+                  .hasMessageContaining("agentguard.audit.unkeyed")
+                  .hasMessageContaining("openssl rand -base64 32");
+            });
+  }
+
+  /**
+   * The explicit local-dev opt-out: {@code agentguard.audit.unkeyed=true} starts (the trail is not
+   * protected against a database writer rewriting it) but warns at every startup, not just the
+   * first, so the trade-off cannot go unnoticed after the person who set it has moved on.
+   */
+  @Test
+  void unkeyed_opt_out_starts_but_warns_every_time(
+      org.springframework.boot.test.system.CapturedOutput output) {
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.audit.unkeyed=true")
+        .run(
+            ctx -> {
+              assertThat(ctx).hasNotFailed();
+              assertThat(ctx.getBean(com.housedevinci.agentguard.domain.AuditChain.class).isKeyed())
+                  .isFalse();
+              assertThat(output)
+                  .contains("audit trail is unkeyed")
+                  .contains("a database writer can rewrite it undetected");
+            });
+    runner
+        .withPropertyValues(
+            "agentguard.enabled=true", "agentguard.store=MEMORY", "agentguard.audit.unkeyed=true")
+        .run(
+            ctx ->
+                assertThat(output.getAll().split("audit trail is unkeyed", -1).length - 1)
+                    .isGreaterThanOrEqualTo(2));
   }
 
   @Test
@@ -209,6 +271,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.approval.notifier.webhook-url=http://hooks.example.com/x")
         .run(
@@ -223,6 +286,7 @@ class AgentGuardAutoConfigurationTest {
     runner
         .withPropertyValues(
             "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
             "agentguard.store=MEMORY",
             "agentguard.approval.notifier.webhook-url=http://hooks.example.com/x",
             "agentguard.approval.notifier.webhook-allow-insecure=true")

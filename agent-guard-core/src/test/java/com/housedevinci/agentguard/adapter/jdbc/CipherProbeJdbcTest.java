@@ -93,7 +93,7 @@ class CipherProbeJdbcTest {
     assertThat(stored.timestamp()).isEqualTo(appended.timestamp());
     assertThat(stored.timestamp()).isEqualTo(Instant.parse("2026-09-06T10:00:00.123Z"));
     var report = new AuditChainVerifier(sink).verify();
-    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT);
+    assertThat(report.status()).isEqualTo(AuditChainVerifier.Status.INTACT_UNKEYED);
   }
 
   @Test // M2 flipped
@@ -116,7 +116,7 @@ class CipherProbeJdbcTest {
     var last = sink.append(event(t0.plusSeconds(1)));
     assertThat(new AuditChainVerifier(sink).verify().verified()).isEqualTo(3);
     assertThat(sink.anchor())
-        .contains(new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(last.hash(), 3, null));
+        .contains(new com.housedevinci.agentguard.domain.AuditAnchor.Anchor(last.hash(), 3, false));
 
     sql("ALTER TABLE agentguard_audit DISABLE TRIGGER agentguard_audit_append_only");
     sql("DELETE FROM agentguard_audit WHERE seq = " + last.sequence());

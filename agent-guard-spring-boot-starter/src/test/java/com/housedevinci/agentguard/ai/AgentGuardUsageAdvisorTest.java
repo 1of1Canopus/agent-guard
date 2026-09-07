@@ -50,10 +50,13 @@ class AgentGuardUsageAdvisorTest {
                 AgentGuardSpringAiAutoConfiguration.class,
                 AgentGuardChatClientAutoConfiguration.class))
         .withPropertyValues(
-            "agentguard.enabled=true", "agentguard.store=MEMORY",
+            "agentguard.enabled=true",
+            "agentguard.audit.unkeyed=true",
+            "agentguard.store=MEMORY",
             "agentguard.budgets.limits[0].scope=PRINCIPAL",
-                "agentguard.budgets.limits[0].kind=TOKENS",
-            "agentguard.budgets.limits[0].window=P1D", "agentguard.budgets.limits[0].limit=1000")
+            "agentguard.budgets.limits[0].kind=TOKENS",
+            "agentguard.budgets.limits[0].window=P1D",
+            "agentguard.budgets.limits[0].limit=1000")
         .run(
             ctx -> {
               var auth = new TestingAuthenticationToken("bob", "n/a", "ROLE_USER");

@@ -194,6 +194,7 @@ class CipherProbeApprovalGateTest {
             approved.decisionId(),
             "mallory",
             approved.version(),
+            approved.keyId(),
             approved.prevHash(),
             approved.hash());
     assertThat(AuditChain.verify(forged, approved.prevHash())).isFalse();

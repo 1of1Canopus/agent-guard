@@ -58,6 +58,15 @@ ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS actor_id varchar(255);
 -- pre-key trail report BROKEN; the verifier applies the function each row actually recorded.
 ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) NOT NULL DEFAULT 'ag1';
 
+-- Key id each row was signed with (keyed-from-birth, QUESTIONS.md #20): part of the hashed material
+-- itself, from row 1, so key rotation is data (a new id, a new secret), not a chain-format change.
+-- 'none' for unkeyed rows (AuditChain.UNKEYED_KEY_ID); backfilled 'k1' for keyed rows written before
+-- this column existed (AuditChain.keyed(byte[])'s historical default id), 'none' for unkeyed ones.
+ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS key_id varchar(64);
+UPDATE agentguard_audit SET key_id = CASE WHEN chain_version = 'ag2h' THEN 'k1' ELSE 'none' END
+  WHERE key_id IS NULL;
+ALTER TABLE agentguard_audit ALTER COLUMN key_id SET NOT NULL;
+
 -- Append-only: UPDATE, DELETE and TRUNCATE are refused at the database level. A role that owns the
 -- table can still DISABLE TRIGGER: run the application with a role that has INSERT/SELECT only
 -- (see docs, "Database roles"); the anchor below makes tail deletion and truncation detectable.
@@ -90,27 +99,36 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   updated_at timestamptz NOT NULL
 );
 
--- V2 (QUESTIONS.md #20): the external, attacker-unwritable signal for "when did this trail start
--- using the keyed chain". NULL until the sink appends the first row written with the keyed chain
--- version, then set to that row's seq in the same transaction as the append. A row's own
--- chain_version is not enough (Cipher V2: that column is part of what a table-owning attacker
--- rewrites); this column lives outside the trail an attacker relinks row by row.
-ALTER TABLE agentguard_audit_anchor ADD COLUMN IF NOT EXISTS keyed_from_seq bigint;
+-- Design change: keyed-from-birth (QUESTIONS.md #20, Dollar's ruling). A trail is keyed from row 1
+-- or unkeyed forever; there is no mixing and no later switch. `keyed` is the external,
+-- attacker-unwritable record of which one this trail is: set once, at the first append, and
+-- immutable afterwards (the monotonic trigger below). A row's own chain_version is not enough on
+-- its own (it is part of what a table-owning attacker rewrites); `keyed` is what the verifier
+-- checks every row's chain_version against. Replaces the earlier `keyed_from_seq` column (a
+-- sequence position, dropped below): with no mixing allowed there is nothing left to locate.
+ALTER TABLE agentguard_audit_anchor DROP COLUMN IF EXISTS keyed_from_seq;
+ALTER TABLE agentguard_audit_anchor ADD COLUMN IF NOT EXISTS keyed boolean;
+-- Backfill an existing anchor row from the trail it anchors (an installation upgrading from
+-- before this column existed): the trail's own head says whether it was ever written keyed.
+UPDATE agentguard_audit_anchor a SET keyed = COALESCE(
+    (SELECT t.chain_version = 'ag2h' FROM agentguard_audit t ORDER BY t.seq DESC LIMIT 1),
+    false)
+  WHERE a.id = 1 AND a.keyed IS NULL;
 
 -- The anchor only moves forward, one row at a time: a runtime role with UPDATE on it cannot reset
--- it after trimming the trail (the owner can drop the trigger; documented residual). Same for
--- keyed_from_seq: it may go from NULL to a value exactly once and never change or return to NULL
--- afterwards, so a runtime-role attacker who downgrades or wholesale-rewrites the trail cannot
--- also erase the record of where the keyed chain legitimately began.
+-- it after trimming the trail (the owner can drop the trigger; documented residual). `keyed` may be
+-- set exactly once (at the row's creation, alongside the first head_hash/row_count) and never
+-- change afterwards, so a runtime-role attacker who downgrades or wholesale-rewrites the trail
+-- cannot also flip the record of which mode this trail legitimately started in.
 CREATE OR REPLACE FUNCTION agentguard_audit_anchor_monotonic() RETURNS trigger AS $$
 BEGIN
   IF NEW.row_count <> OLD.row_count + 1 OR NEW.head_hash = OLD.head_hash THEN
     RAISE EXCEPTION 'agentguard_audit_anchor only advances by one row (attempted % -> %)',
       OLD.row_count, NEW.row_count;
   END IF;
-  IF OLD.keyed_from_seq IS NOT NULL AND NEW.keyed_from_seq IS DISTINCT FROM OLD.keyed_from_seq THEN
-    RAISE EXCEPTION 'agentguard_audit_anchor.keyed_from_seq is immutable once set (attempted % -> %)',
-      OLD.keyed_from_seq, NEW.keyed_from_seq;
+  IF NEW.keyed IS DISTINCT FROM OLD.keyed THEN
+    RAISE EXCEPTION 'agentguard_audit_anchor.keyed is immutable once set (attempted % -> %)',
+      OLD.keyed, NEW.keyed;
   END IF;
   RETURN NEW;
 END;
@@ -123,11 +141,37 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Seed the anchor from an existing trail (installations that predate the anchor, or a lost row).
-INSERT INTO agentguard_audit_anchor (id, head_hash, row_count, updated_at)
-SELECT 1, a.hash, (SELECT count(*) FROM agentguard_audit), a.ts
-FROM agentguard_audit a ORDER BY a.seq DESC LIMIT 1
-ON CONFLICT (id) DO NOTHING;
+-- Append-only, mirroring agentguard_audit: nothing refuses DELETE/TRUNCATE on the anchor without
+-- this (Cipher F3(a)) — an anchor row is only as protective as it is hard to lose, and losing it
+-- silently reopened the exact V2/whole-trail-downgrade attack the anchor exists to close.
+CREATE OR REPLACE FUNCTION agentguard_audit_anchor_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'agentguard_audit_anchor is append-only (attempted %)', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_no_delete') THEN
+    CREATE TRIGGER agentguard_audit_anchor_no_delete
+      BEFORE DELETE ON agentguard_audit_anchor
+      FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_append_only();
+  END IF;
+END $$;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_no_truncate') THEN
+    CREATE TRIGGER agentguard_audit_anchor_no_truncate
+      BEFORE TRUNCATE ON agentguard_audit_anchor
+      FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_anchor_append_only();
+  END IF;
+END $$;
+
+-- Amendment (Dollar, after Cipher's design review): the schema step never seeds an anchor row from
+-- an existing, non-empty trail — deriving `keyed` (or, before it, `keyed_from_seq`) from row data
+-- is exactly the guess the anchor exists to make unnecessary. If a trail already has rows and no
+-- anchor, `JdbcAuditSink` refuses to append (AG-AUDIT-002) rather than silently re-anchoring: see
+-- "Audit chain keying" in docs/index.md for the operator remedy (start a new trail). For a genuinely
+-- empty trail there is nothing to seed either way — the first real append creates the anchor row.
+
+ALTER TABLE agentguard_audit_anchor ALTER COLUMN keyed SET NOT NULL;
 
 ALTER TABLE IF EXISTS agentguard_budget ALTER COLUMN key TYPE text;
 

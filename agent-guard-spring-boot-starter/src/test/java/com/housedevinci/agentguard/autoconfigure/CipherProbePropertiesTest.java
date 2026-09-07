@@ -21,7 +21,10 @@ class CipherProbePropertiesTest {
   private final ApplicationContextRunner runner =
       new ApplicationContextRunner()
           .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class))
-          .withPropertyValues("agentguard.enabled=true", "agentguard.store=MEMORY");
+          .withPropertyValues(
+              "agentguard.enabled=true",
+              "agentguard.audit.unkeyed=true",
+              "agentguard.store=MEMORY");
 
   private static String messages(Throwable t) {
     var sb = new StringBuilder();

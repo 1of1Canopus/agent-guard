@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(
     properties = {
       "agentguard.enabled=true",
+      "agentguard.audit.unkeyed=true",
       "agentguard.store=MEMORY",
       "agentguard.endpoints.enabled=true",
       // list_arguments_approve_reject_and_audit exercises a deliberate cross-tenant approver

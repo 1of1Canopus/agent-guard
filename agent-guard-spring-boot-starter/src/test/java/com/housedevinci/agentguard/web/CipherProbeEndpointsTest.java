@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(
     properties = {
       "agentguard.enabled=true",
+      "agentguard.audit.unkeyed=true",
       "agentguard.store=MEMORY",
       "agentguard.endpoints.enabled=true",
       "spring.ai.mcp.server.enabled=false",

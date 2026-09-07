@@ -1335,3 +1335,210 @@ tests and development only, derives its anchor from the very list it anchors and
 detect its own tail being trimmed. There is no upgrade path from a database written by an earlier
 build of this unreleased branch: such a database is refused at startup and the operator archives it
 and starts a new trail, deliberately, by hand.
+
+## Final verdict (05f209d)
+
+Cipher, 2026-09-08. Branch `feat/agent-guard-core`, HEAD `05f209d`, diffed against `11dc8c3`.
+Full `./mvnw -B clean verify`, Docker up, no module skipped.
+
+**Verdict: MERGE WITH FIXES.** J1 is genuinely improved and its probe is correctly inverted, but it
+is not closed: the new guard is scoped to search_path *visibility*, and the statement it is
+protecting is scoped to the search_path's *creation* schema. Those are different sets, and a stale
+pre-redesign table in the gap between them still refuses a fresh install. One new LOW, **K1**, no
+HIGH, no MEDIUM. Under the no-allowance rule that is a fix list, not a merge. The fix is one clause
+in one SQL file and it changes no existing probe's expected outcome.
+
+### Numbers
+
+| | Isis reported (05f209d) | Cipher measured (05f209d) | With Cipher's probes |
+|---|---|---|---|
+| Tests run | 215 | 215 (156 core + 58 starter + 1 sample) | 220 (161 + 58 + 1) |
+| Failed | 0 | 0 | 0 |
+| Skipped | 1 | 1 (`CipherProbeFinalSpringAiTest`, `assumeTrue` on the Spring AI tool autoconfiguration) | 1 |
+| Line coverage (`agent-guard-core/target/site/jacoco/jacoco.csv`) | 90.60% | 90.60% (1552/1713) | 90.60% (1552/1713) |
+| Branch coverage | 78.14% | 78.14% (461/590) | 78.14% (461/590) |
+| JaCoCo 80% line gate | — | met | met |
+
+Every number Isis reported reproduces exactly. Coverage is unchanged from `11dc8c3`, as it should be
+for a two-clause SQL rewrite that adds no Java branch.
+
+### Probe diff against `11dc8c3`
+
+`git diff 11dc8c3 05f209d` touches exactly one test file, `CipherProbeCleanVerdictJdbcTest`, and
+within it exactly one method: `probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`,
+inverted from `assertThatThrownBy(...).hasMessageContaining("audit schema predates keyed-from-birth")`
+to `assertThatCode(...).doesNotThrowAnyException()` — the J1 inversion and nothing else. No probe
+was deleted, renamed, weakened or narrowed. All 25 `CipherProbe*` classes (97 probe tests) are green,
+including the two same-schema G1/G2 probes
+(`probe_a_fresh_empty_database_never_trips_the_predates_guard`,
+`probe_the_predates_message_offers_no_in_place_upgrade`), which are byte-identical to `11dc8c3`.
+
+### J1, verified in code
+
+The `DO $$` guard in `agent-guard-core/src/main/resources/com/housedevinci/agentguard/schema-postgresql.sql`
+now reads both existence checks through `to_regclass('agentguard_audit')` and
+`to_regclass('agentguard_audit_anchor')`, and both column checks through
+`pg_attribute WHERE attrelid = to_regclass(…) AND attname = … AND attnum > 0 AND NOT attisdropped`.
+`git grep information_schema` over the module returns nothing. The guard still sits inside the
+`pg_advisory_xact_lock` at the top of the script, so the serialisation the previous pass verified is
+untouched. That is the fix as prescribed, applied literally.
+
+### The attack on the change
+
+Run directly against PostgreSQL 16 as a truth table, once with the shipped guard and once with the
+fix proposed below, over the seven scenarios that matter:
+
+| Scenario | Correct answer | Shipped guard | With the K1 fix |
+|---|---|---|---|
+| Fresh empty database | allow | allow | allow |
+| Pre-redesign `agentguard_audit` in the current schema | refuse | refuse | refuse |
+| Pre-redesign `agentguard_audit_anchor` in the current schema | refuse | refuse | refuse |
+| Pre-redesign copy in a schema **off** the search_path (the J1 probe) | allow | allow | allow |
+| Pre-redesign copy in a schema **on** the search_path, behind the creation schema | allow | **refuse** | allow |
+| Pre-redesign copy in the creation schema itself (`search_path = archive, public`) | refuse | refuse | refuse |
+| Current-schema table that already has `key_id` | allow | allow | allow |
+
+One row is wrong, and it is K1. The other four attacks Dollar named came back clean:
+
+- **`to_regclass` with a quoted / mixed-case name.** `to_regclass('agentguard_audit')` parses its
+  argument with ordinary identifier rules and folds it to lower case — the same folding the
+  unquoted `CREATE TABLE IF NOT EXISTS agentguard_audit` in the same script applies. A table created
+  as `"AgentGuard_Audit"` is a different object to both, trips nothing, and is not shadowed by
+  anything. The argument is a literal in a resource file, never operator or model input, so there is
+  no injection surface to fold a name into either. The replaced `information_schema` predicate
+  compared against the stored, already-folded `table_name`, so this is a behavioural no-change, not
+  a regression. (`confirms_a_quoted_mixed_case_lookalike_table_does_not_trip_the_guard`.)
+- **`pg_attribute` on a dropped-and-re-added column.** Correct in both directions. A dropped column
+  leaves a `pg_attribute` row whose `attname` is rewritten to `........pg.dropped.N........`, so
+  `attname = 'key_id'` could not match it even without the `NOT attisdropped` clause; the guard
+  fires, which is right, because the column really is gone. Re-adding `key_id` inserts a fresh live
+  row and the guard goes quiet. `attnum > 0` excludes the system columns, none of which can collide
+  with these names. (`confirms_a_dropped_and_readded_key_id_column_is_read_correctly`.)
+- **App role without SELECT on `pg_catalog`.** **Fails closed.** With the default PUBLIC grant on
+  `pg_attribute` revoked and a pre-redesign table present, the `DO` block raises `permission denied
+  for table pg_attribute`, `JdbcSupport.initializeSchema` propagates it, and startup aborts. It
+  never silently decides the column is absent, and never silently decides it is present. On an empty
+  schema the `to_regclass` test short-circuits before `pg_attribute` is read, so a fresh install on a
+  hardened database still works — which is the right shape: the catalog is only consulted when there
+  is something to guard. Worth knowing that this is a behavioural *improvement* over the replaced
+  code: `information_schema.tables` and `.columns` are privilege-filtered views that show a role only
+  what it has some privilege on, so the old guard's answer depended on the runtime role's grants,
+  while `pg_attribute` returns the true column set regardless. Revoking the catalog grant is a
+  deliberate, non-default hardening step and the failure is loud and legible, so this is recorded,
+  not raised. (`confirms_the_guard_fails_closed_when_the_role_cannot_read_pg_catalog`.)
+- **Temp-table shadow.** `pg_temp` is searched ahead of everything for name *resolution* but is never
+  the target of an unqualified `CREATE TABLE`. A session-local `CREATE TEMP TABLE agentguard_audit`
+  therefore makes `to_regclass` return the temp table while `current_schema()` still says `public`,
+  and the shipped guard refuses. Demonstrated at the SQL level only, not as a Java probe: it needs
+  the temp table and the schema step on one connection, and `initializeSchema` takes its own. It is
+  not separately exploitable — an attacker who can run DDL in the schema step's own session has more
+  direct options — but it is the same root cause as K1 and the same fix closes it.
+
+### Finding
+
+**K1 — LOW — the guard is scoped to search_path visibility, but the statement it protects is scoped
+to the creation schema; a stale copy in the gap still blocks a fresh install.** `to_regclass` resolves
+a name the way a *reference* resolves: the first schema on the search_path that holds it, anywhere
+along the path. `CREATE TABLE IF NOT EXISTS agentguard_audit` does not do that — an unqualified
+CREATE targets `current_schema()`, the first *existing* entry of the search_path, and creates there
+regardless of what a later entry holds (PostgreSQL documents `current_schema()` as exactly "the
+schema that will be used for any tables or other named objects that are created without specifying a
+target schema"). So with `search_path = public, archive` and a pre-redesign `agentguard_audit` sitting
+in `archive`, the guard sees it and refuses, while the step it is guarding would have created a
+brand-new, fully correct table in `public`. Verified that the refusal is a false positive and not a
+protection: with the guard removed, that exact database installs the whole schema cleanly, the new
+`public.agentguard_audit` has `key_id`, and every unqualified reference afterwards — the two `ALTER
+TABLE … ADD COLUMN IF NOT EXISTS`, both triggers, and the sink's `INSERT` — resolves to `public`, not
+to the stale copy. This is J1's own symptom, narrowed from "any schema the role can see" to "any
+schema on the search_path" rather than closed, and it still lands on the two operators J1 named: the
+one who archived by `ALTER TABLE agentguard_audit SET SCHEMA archive` and keeps `archive` on the
+role's search_path, and the schema-per-tenant database where an unmigrated tenant's schema is on the
+path behind the current one. No integrity impact, denial of startup, fires in the safe direction —
+LOW. Repro:
+`CipherProbeFinalVerdictJdbcTest.probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install`
+(written green, asserting today's behaviour — the fix inverts it), with
+`confirms_a_pre_redesign_copy_behind_the_creation_schema_is_harmless_to_the_install` as the proof
+that the refusal has nothing to protect.
+
+Fix (Isis): scope both lookups to the creation schema instead of to visibility. Bind the two oids
+once, in a `DECLARE`, and test against those:
+
+```sql
+DO $$
+DECLARE
+  a oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit');
+  n oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit_anchor');
+BEGIN
+  IF (a IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM pg_attribute
+                      WHERE attrelid = a AND attname = 'key_id'
+                        AND attnum > 0 AND NOT attisdropped))
+     OR (n IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM pg_attribute
+                      WHERE attrelid = n AND attname = 'keyed'
+                        AND attnum > 0 AND NOT attisdropped)) THEN
+    RAISE EXCEPTION
+      'audit schema predates keyed-from-birth; archive the table and start a new trail (see SECURITY-NOTES)';
+  END IF;
+END $$;
+```
+
+`quote_ident` is required, not decoration: a schema named with capitals or a dot would otherwise be
+re-parsed as a different name. Binding the oids in `DECLARE` also removes the shipped guard's second
+`to_regclass` call per branch. Then invert
+`probe_a_pre_redesign_copy_behind_the_creation_schema_blocks_a_fresh_install` to
+`assertThatCode(...).doesNotThrowAnyException()`. Every other probe keeps its current expectation —
+this fix was run against all seven scenarios in the table above and changes exactly the one wrong
+row. In particular the J1 probe
+(`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`)
+and both G1/G2 same-schema probes stay green untouched.
+
+### Not verified
+
+Unchanged from the previous pass, and repeated here so nothing is carried silently:
+
+- PostgreSQL 16 only — the Testcontainers digest is pinned to `postgres:16-alpine@sha256:57c72f…`.
+  `to_regclass`, `current_schema()` and `pg_attribute` behave the same on 13–17, but that is read,
+  not run.
+- No run against a managed PostgreSQL where the runtime role's grants differ from the owner's. The
+  catalog-permission case above is the closest this pass gets, and it is a hand-built role in a
+  container, not a real managed instance.
+- The rolling-restart scenarios are still same-JVM, different sink instances against one database;
+  they are not separate processes or pods.
+- The G1/G2 and J1/K1 pre-redesign scenarios are reproduced by building a table that lacks the
+  column, not by checking out `25da6af`, initialising, and starting this build against it. The
+  condition the guard tests — table present, column absent — is identical either way.
+- The concurrency check remains twelve threads in one JVM against one database, which exercises the
+  advisory lock exactly and nothing beyond it.
+- The sample app still runs with `agentguard.audit.unkeyed=true`, so its end-to-end test covers the
+  unkeyed path only.
+
+### What the audit trail guarantees today, in plain words
+
+Once K1 is fixed this is ready to merge, and here is what it will mean. Every audit row is signed
+with a secret the database never sees, and each row's signature covers the row before it, so the
+trail is a chain: change one row, or delete one from the middle, and the next row stops matching. A
+separate anchor row — which the database itself refuses to let anyone update backwards, delete, or
+truncate — records the head of the chain and its length, so cutting rows off the *end*, the one
+attack a chain alone cannot see, is caught too. The decision the last two rounds settled is that a
+trail is keyed from its very first row or unkeyed forever: there is no switching, no guessing, and
+no code path anywhere that infers whether a trail was keyed by looking at the rows themselves —
+that inference was the last hole and it is now gone. An instance configured differently from the
+trail it finds refuses to start and refuses to append, rather than quietly writing rows nobody can
+verify later. Rotating the signing key is ordinary data, not a break: each row records which key id
+signed it, the verifier holds the old keys as well as the new one, and a row naming a key nobody
+holds reads as broken rather than being skipped. Running without a key at all is still possible for
+local development, but it is now an explicit property that warns at every single startup, and
+asking for both at once is refused outright.
+
+The documented residuals, unchanged and accepted: a database role that *owns* these tables can turn
+the guard triggers off and rewrite the chain and its anchor together — so run the application with a
+narrower role that can only insert and read; a role with only that narrow grant can still append one
+hand-written, correctly-linked row, which is detected at the next verification rather than
+prevented; a point-in-time restore of the trail and its anchor together is invisible from inside the
+database, so the head hash should be exported off-box on a schedule; and the in-memory store, for
+tests and development only, derives its anchor from the very list it anchors and therefore cannot
+detect its own tail being trimmed. There is no upgrade path from a database written by an earlier
+build of this unreleased branch: such a database is refused at startup and the operator archives it
+and starts a new trail, deliberately, by hand. K1 is the last thing standing between that sentence
+and a merge, and it is one clause of SQL.

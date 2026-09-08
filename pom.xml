@@ -374,12 +374,16 @@
                 The key never touches the repository. CI imports it from the GPG_PRIVATE_KEY
                 secret into a throwaway keyring and puts GPG_PASSPHRASE in the
                 MAVEN_GPG_PASSPHRASE environment variable, which is the name this plugin
-                reads by default. loopback pinentry is required because there is no tty.
+                reads by default.
+
+                N11/I1: no <gpgArguments> here. maven-gpg-plugin 3.2.8 already passes
+                `--pinentry-mode loopback` itself whenever a passphrase is supplied - verified
+                off the real command line it runs: `gpg --pinentry-mode loopback --batch
+                --pinentry-mode loopback --passphrase-fd 0 ...`. An explicit block here only
+                duplicated the flag; the comment that used to sit on it ("required because
+                there is no tty") credited the wrong actor. There is no tty either way -
+                that part was true - but the plugin is what already handles it.
               -->
-              <gpgArguments>
-                <arg>--pinentry-mode</arg>
-                <arg>loopback</arg>
-              </gpgArguments>
             </configuration>
           </plugin>
           <plugin>

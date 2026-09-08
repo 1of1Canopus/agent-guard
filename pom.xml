@@ -292,6 +292,19 @@
             <configuration>
               <executable>${maven.multiModuleProjectDirectory}/tools/check-third-party-licences.sh</executable>
               <workingDirectory>${maven.multiModuleProjectDirectory}</workingDirectory>
+              <!--
+                N1: scope the check to THIS module's own build directory and packaging, not
+                the whole tree. The execution is inherited by every module and Maven runs the
+                parent's lifecycle first, before any module has produced a
+                THIRD-PARTY-NOTICES.txt - a tree-wide `find` there either fails closed on a
+                clean checkout (breaking `./mvnw verify` on every fresh clone and in CI) or,
+                worse, in a working tree with stale target/ directories, silently validates a
+                PREVIOUS build's notices file. Each module now checks only its own evidence.
+              -->
+              <arguments>
+                <argument>${project.build.directory}</argument>
+                <argument>${project.packaging}</argument>
+              </arguments>
             </configuration>
           </execution>
         </executions>

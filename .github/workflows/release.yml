@@ -34,7 +34,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  # L2: keyed on the version, not the ref. A workflow_dispatch of 0.1.0 on main and a
+  # push of tag v0.1.0 are different refs and would otherwise run, sign and upload the
+  # same deployment name twice at once.
+  group: release-${{ inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -44,8 +47,79 @@ jobs:
   publish:
     name: Verify, sign, upload to the Central Portal
     runs-on: ubuntu-latest
+    # M5: gate the job that holds the signing key behind a required reviewer. This can
+    # only be enforced once the repository is public (GitHub Environments need a paid plan
+    # on a private repo: `environments` -> total_count 0 today, see L7). The line stays:
+    # it becomes the actual gate the day the `release` environment is created with
+    # Souhaile as a required reviewer, which is itself a precondition of the first
+    # release (docs/RELEASING.md Part 2 step 1). Do not remove it to make the workflow
+    # "work" before then.
+    environment: release
     steps:
+      # M5/L3: full history for the ancestry check below, and the checkout token is
+      # never written to .git/config - the release job never talks to git again after
+      # the ancestry/signature checks, so there is nothing here that should be able to.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # M5: any tag on any commit could otherwise start a release, including one that
+      # lives only on a scratch branch and was never reviewed. Only meaningful on the
+      # tag-push path; workflow_dispatch releases whatever is checked out on its own ref,
+      # which is already gated by who can trigger a workflow_dispatch run.
+      - name: Verify the released commit is on main
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_SHA is not an ancestor of origin/main"; exit 1; }
+
+      # M5: require the tag itself to be signed and verifiable, not just its commit to be
+      # reviewed. Only runs when a signing key id is configured (docs/RELEASING.md names
+      # the release gate); until then this step is a no-op rather than a hard failure, so
+      # it does not block the workflow_dispatch rehearsal path that has no tag at all.
+      - name: Verify the tag signature
+        if: github.event_name == 'push'
+        env:
+          RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_SIGNING_KEY_ID:-}" ]; then
+            echo "::warning::RELEASE_SIGNING_KEY_ID is not configured; tag signature not verified. See docs/RELEASING.md release gates."
+            exit 0
+          fi
+          gpg --keyserver keyserver.ubuntu.com --recv-keys "$RELEASE_SIGNING_KEY_ID"
+          git verify-tag "$GITHUB_REF_NAME"
+
+      # I4: Maven's debug output (`-X` / `--debug`, and `-e` for stack traces on error)
+      # prints the whole process environment, including CENTRAL_TOKEN, CENTRAL_USERNAME
+      # and MAVEN_GPG_PASSPHRASE, in clear. GitHub's secret masking only replaces exact
+      # registered strings, so a value that reaches the log through any transformation
+      # (e.g. a stack trace fragment) is not masked. Nothing today adds a debug flag; this
+      # step is refusing to let a future "just add -X to see what's wrong" change reach
+      # the Maven invocations in this job.
+      - name: Refuse Maven debug output in this job
+        run: |
+          set -euo pipefail
+          if printf '%s\n%s\n' "${MAVEN_ARGS:-}" "${MAVEN_OPTS:-}" \
+              | grep -Eq '(^|[[:space:]])(-X|--debug|-e)([[:space:]]|$)'; then
+            echo "::error::refusing to run Maven with -X, --debug or -e: MAVEN_ARGS/MAVEN_OPTS carries a debug flag that prints secrets in clear (I4)"
+            exit 1
+          fi
+          # Static check that the Maven invocations further down this same job never pass
+          # one of the three flags on their own command line either. Scoped to the two
+          # "run:" blocks that actually invoke mvnw in the publish job (by line range, sed
+          # between their "- name:" and the next), so this does not match its own source
+          # (this step also mentions -X/--debug/-e, in a string, not as a flag).
+          for step in 'Set the release version in the checkout' 'Verify, licence check, sign, upload'; do
+            if printf '%s' "$(sed -n "/- name: ${step}\$/,/^      - name:/p" .github/workflows/release.yml)" \
+                | grep -vE '^\s*#' \
+                | grep -Eq '(^|[[:space:]])(-X|--debug|-e)([[:space:]]|$)'; then
+              echo "::error::forbidding a Maven debug flag (-X/--debug/-e) on the '$step' command line (I4)"
+              exit 1
+            fi
+          done
 
       - name: Derive the release version
         id: v
@@ -119,6 +193,9 @@ jobs:
       - name: Reproducibility check (two clean builds, identical jars)
         env:
           MAVEN_OPTS: -Dmaven.repo.local=${{ runner.temp }}/m2repo
+          # L1: written outside target/, which `clean deploy` below is about to wipe and
+          # rebuild a third time. This is what the post-deploy step compares against.
+          REPRODUCIBLE_SHA_FILE: ${{ runner.temp }}/reproducible-sha256.txt
         run: scripts/verify-reproducible.sh
 
       # One Maven invocation runs the whole release lifecycle in order:
@@ -138,8 +215,82 @@ jobs:
             -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
             -Dproject.build.outputTimestamp="${{ steps.v.outputs.timestamp }}"
 
+      # L5: agent-guard-sample is the last module in the reactor, so it is the module that
+      # assembles and uploads the aggregate bundle. <excludeArtifacts> in the release
+      # profile is the only mechanism keeping the sample's own coordinates out of it; a
+      # silent regression there (or in a future plugin version) would upload the wrong
+      # bundle, or nothing, while still reporting success. Fail loudly instead: the bundle
+      # must contain exactly the three published coordinates and never the sample.
+      - name: Confirm the bundle contains exactly the three published coordinates
+        if: success()
+        run: |
+          set -euo pipefail
+          bundle="agent-guard-sample/target/central-publishing/central-bundle.zip"
+          [ -f "$bundle" ] || { echo "::error::$bundle was not created"; exit 1; }
+          listing="$(unzip -l "$bundle")"
+          echo "$listing"
+          if printf '%s' "$listing" | grep -q 'agent-guard-sample'; then
+            echo "::error::the bundle contains agent-guard-sample, which must never be published"
+            exit 1
+          fi
+          for coord in agent-guard-parent agent-guard-core agent-guard-spring-boot-starter; do
+            if ! printf '%s' "$listing" | grep -q "com/housedevinci/${coord}/"; then
+              echo "::error::the bundle is missing $coord"
+              exit 1
+            fi
+          done
+
+      # L1: the jars that were just signed and uploaded come from this third build, which
+      # was never itself compared against the two builds verify-reproducible.sh proved
+      # identical. Recompute SHA-256 of every published jar and fail if it does not match
+      # the checksum recorded from build 1, so the human about to press Publish is looking
+      # at a build that was actually proved reproducible, not just a sibling of one.
+      - name: Confirm the deployed jars match the reproducibility check
+        if: success()
+        run: |
+          set -euo pipefail
+          sha_file="${{ runner.temp }}/reproducible-sha256.txt"
+          status=0
+          {
+            echo "### Published jars vs. the reproducibility check"
+            echo
+            printf '| %s | %s | %s |\n' "artifact" "verdict" "sha256"
+            printf '|---|---|---|\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+          for jar in agent-guard-core/target/*.jar agent-guard-spring-boot-starter/target/*.jar; do
+            [ -e "$jar" ] || continue
+            name="$(basename "$jar")"
+            expected="$(grep -F " $name" "$sha_file" | awk '{print $1}' | head -1)"
+            actual="$(shasum -a 256 "$jar" | cut -d' ' -f1)"
+            if [ -z "$expected" ]; then
+              echo "::error::$name has no recorded checksum from the reproducibility check"
+              printf '| %s | %s | %s |\n' "$name" "NO RECORD" "$actual" >>"$GITHUB_STEP_SUMMARY"
+              status=1
+            elif [ "$expected" = "$actual" ]; then
+              printf '| %s | %s | %s |\n' "$name" "matches" "$actual" >>"$GITHUB_STEP_SUMMARY"
+            else
+              case "$name" in
+                *-javadoc.jar)
+                  echo "::warning::$name differs from the reproducibility check (not enforced, see QUESTIONS #24)"
+                  printf '| %s | %s | %s |\n' "$name" "differs (not enforced)" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  ;;
+                *)
+                  echo "::error::$name does not match its reproducibility-check checksum: $expected vs $actual"
+                  printf '| %s | %s | %s |\n' "$name" "MISMATCH" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  status=1
+                  ;;
+              esac
+            fi
+          done
+          exit "$status"
+
+      # L4: signing happens at `verify`, the Portal upload after; a run that fails at
+      # upload must not still hand out a downloadable artifact with a valid signature for
+      # a version that was never actually published and may never be. Jars and .asc only
+      # when the run actually succeeded; on failure, only the evidence that helps diagnose
+      # why, named so it cannot be mistaken for a real release artifact.
       - name: Upload the release evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ steps.v.outputs.version }}
@@ -151,6 +302,16 @@ jobs:
             agent-guard-spring-boot-starter/target/*.asc
           if-no-files-found: error
 
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.v.outputs.version }}-FAILED
+          path: |
+            **/target/THIRD-PARTY-NOTICES.txt
+            **/target/surefire-reports/**
+          if-no-files-found: ignore
+
   sample-smoke:
     # RELEASE-PROCESS.md step 6: the sample app is re-run from a clean clone and timed.
     # This job shares nothing with the publish job: fresh checkout, fresh container,
@@ -158,7 +319,10 @@ jobs:
     name: Sample app from a clean clone
     runs-on: ubuntu-latest
     steps:
+      # L3: this job never talks to git after checkout either.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0

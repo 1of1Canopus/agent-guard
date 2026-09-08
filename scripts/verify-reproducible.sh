@@ -21,8 +21,18 @@
 # in some JDK versions, generation-time detail that -notimestamp does not remove. Maven
 # Central requires a javadoc jar; nobody diffs one. See QUESTIONS.md #24.
 #
+# Also writes a checksum file, "<sha256>  <filename>" per jar from build 1 (the two
+# builds already matched by the time this is written, or the script has already exited
+# non-zero). This is what L1 compares the actually-deployed jars against after
+# `clean deploy`, so a reproducible tree is not just proved in the abstract, it is proved
+# to be what got published. Written OUTSIDE target/ by default (target/*.jar is what
+# `mvn clean deploy` deletes and rebuilds next, a third time, right after this script
+# runs) - override with REPRODUCIBLE_SHA_FILE to put it somewhere that survives that
+# clean, e.g. $RUNNER_TEMP in CI. See docs/SECURITY-REVIEW-feat-release-pipeline.md L1.
+#
 set -euo pipefail
 cd "$(dirname "$0")/.."
+SHA_FILE="${REPRODUCIBLE_SHA_FILE:-reproducible-sha256.txt}"
 
 TS="$(scripts/git-commit-timestamp.sh)"
 WORK="$(mktemp -d)"
@@ -52,6 +62,9 @@ echo "  build 2 ..."
 collect "$WORK/two"
 
 status=0
+mkdir -p "$(dirname "$SHA_FILE")"
+sha_file="$SHA_FILE"
+: > "$sha_file"
 printf '\n%-56s %-8s %s\n' "artifact" "verdict" "sha256 (build 1)"
 for f in "$WORK/one"/*.jar; do
   name="$(basename "$f")"
@@ -65,10 +78,14 @@ for f in "$WORK/one"/*.jar; do
   b="$(shasum -a 256 "$other" | cut -d' ' -f1)"
   if [ "$a" = "$b" ]; then
     printf '%-56s %-8s %s\n' "$name" "same" "$a"
+    printf '%s  %s\n' "$a" "$name" >> "$sha_file"
   else
     case "$name" in
       *-javadoc.jar)
         printf '%-56s %-8s %s\n' "$name" "differs" "$a  (not enforced, see QUESTIONS #24)"
+        # Recorded anyway, not-enforced marker and all: L1's post-deploy comparison needs
+        # a line to look up, and it applies the same not-enforced rule for *-javadoc.jar.
+        printf '%s  %s  # not enforced, see QUESTIONS #24\n' "$a" "$name" >> "$sha_file"
         ;;
       *)
         printf '%-56s %-8s %s\n' "$name" "DIFFERS" "$a vs $b"
@@ -81,6 +98,7 @@ done
 echo
 if [ "$status" -eq 0 ]; then
   echo "reproducible: every enforced artifact is byte-identical across two clean builds"
+  echo "  wrote: $sha_file"
 else
   echo "NOT reproducible: see DIFFERS above" >&2
 fi

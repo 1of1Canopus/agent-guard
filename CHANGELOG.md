@@ -37,6 +37,50 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - **`docs/RELEASING.md`**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
   with the exact export commands) and the per-release steps.
 
+### Fixed (the security review security review, `docs/SECURITY-REVIEW-feat-release-pipeline.md`)
+Every MEDIUM, LOW and the one INFO that needed a code change, closed under the no-allowance
+rule (the maintainer, 2026-09-07). `tools/cipher-probe-release-pipeline.sh`: 12 of 13 probes FIXED;
+see QUESTIONS.md #27 for why the thirteenth, a static check of the vendored `mvnw` script's
+general behaviour, is not chased.
+- **M1/M2 licence gate**: the plugin's `includedLicenses` is an any-of permission check, so
+  `Apache-2.0 OR GPL-3.0` slipped through on its permissive half. Added
+  `tools/check-third-party-licences.sh`, an all-of denial pass over every
+  `THIRD-PARTY-NOTICES.txt`, wired via `exec-maven-plugin` at `verify` in the default build,
+  with an explicit coordinate allowlist (not a licence pattern) for the two genuinely
+  dual-licensed dependencies. `<excludedLicenses>` is commented as the anti-pattern it is: it
+  makes the build pass by deleting the denied licence from the evidence file.
+- **M3 signing-job cache**: `cache: maven` on the `publish` job also restored
+  `~/.m2/wrapper/dists`, which `mvnw` execs with no checksum check at all. Dropped from that
+  job (kept where nothing is signed), any pre-existing wrapper distribution is removed before
+  `mvnw` runs, every Maven invocation in the job uses a fresh `maven.repo.local`, and `deploy`
+  runs with `-C`/`--strict-checksums`.
+- **M4 version validation**: the `workflow_dispatch` `version` input was checked with a
+  line-oriented `grep -E`, so a value containing a newline injected extra lines into
+  `$GITHUB_OUTPUT`. Replaced with a whole-string bash `=~` test.
+- **M5 release gate**: any tag on any commit could start a release. Added
+  `environment: release` (a release gate, enforceable once the repository is public),
+  `git merge-base --is-ancestor` against `origin/main`, and a conditional `git verify-tag`.
+- **M6 key handling**: `docs/RELEASING.md` put the armoured private key on the macOS
+  clipboard and left a `mktemp` keyring on disk. Rewritten to export straight into
+  `gh secret set` and to remove the sanity-check keyring with a `trap` on exit.
+- **M7 licence text**: `LICENSE` and `NOTICE` added at the repository root and copied into
+  `META-INF/` of both published jars.
+- **L1** the deployed jars, from a third build, were never compared against the two
+  `verify-reproducible.sh` proves identical; it now also writes a checksum file, and a
+  post-deploy step recomputes and compares.
+- **L2** concurrency group is now keyed on the version, not the ref.
+- **L3** `persist-credentials: false` on both checkouts in `release.yml`.
+- **L4** the evidence upload ran with `if: always()` and included signed jars and `.asc`
+  files; split so those upload only on success, with a diagnostics-only artifact on failure.
+- **L5** `agent-guard-sample`'s `skipPublishing` did nothing (the sample is the last module
+  in the reactor and assembles the bundle regardless); removed, and a post-deploy step now
+  asserts the bundle contains exactly the three published coordinates and never the sample.
+- **L6** added `SECURITY.md`.
+- **L7** documented as a release gate in `docs/RELEASING.md` (cannot be fixed by this branch:
+  the repository must go public first).
+- **I4** added a guard step that fails the job if a Maven debug flag (`-X`/`--debug`/`-e`)
+  reaches `MAVEN_ARGS`/`MAVEN_OPTS` or either `mvnw` invocation in the job.
+
 ### Changed
 - **Licence gate is now an allowlist and now actually runs.** `license-maven-plugin` moves from
   `excludedLicenses` (four hand-guessed copyleft spellings) to

@@ -381,9 +381,10 @@
                 confirmed off the real command line it runs (it shows the flag TWICE: once
                 added by the plugin, once from an explicit gpgArguments block that used to
                 sit here). That explicit block only duplicated the flag; the comment that
-                used to sit on it, claiming the flag was "required because there is no tty",
-                credited the wrong actor. There is no tty either way, that part was true,
-                but the plugin is what already handles it.
+                used to sit on it credited the flag to the absence of a tty in this job,
+                which is the wrong actor - true that there is no interactive terminal here,
+                but the plugin is what already supplies the flag for that reason, not this
+                pom.
               -->
             </configuration>
           </plugin>

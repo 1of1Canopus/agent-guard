@@ -112,10 +112,20 @@ probe_concurrency_group_is_ref_scoped_not_version_scoped() {
 probe_checkout_persists_credentials() { ! grep -q 'persist-credentials' "$WF"; }
 
 # ---------------------------------------------------------------------------
-# L4 - signed jars and .asc files of a FAILED release are uploaded anyway.
+# L4 - signed jars and .asc files of a FAILED release are uploaded anyway. Scoped to the
+#      single step that uploads them: a whole-file grep for both strings anywhere false-
+#      positives once the workflow legitimately has an unrelated `if: always()` step
+#      (e.g. a `docker compose down` teardown) that has nothing to do with the evidence
+#      upload.
 # ---------------------------------------------------------------------------
 probe_evidence_uploaded_even_when_the_release_failed() {
-  grep -q 'if: always()' "$WF" && grep -q '\*\.asc' "$WF"
+  awk '
+    /^      - name:.*[Rr]elease evidence/ { instep=1; found=0 }
+    instep && /if: always\(\)/ { found=1 }
+    instep && /\*\.asc/ { has_asc=1 }
+    instep && /^      - name:/ && !/[Rr]elease evidence/ { instep=0 }
+    END { exit !(found && has_asc) }
+  ' "$WF"
 }
 
 # ---------------------------------------------------------------------------

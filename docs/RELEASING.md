@@ -111,35 +111,43 @@ It is shown once. Generating a new token invalidates the old one. These are the 
 values Tenantify uses as `mavenCentralUsername` / `mavenCentralPassword`.
 
 **Exporting the GPG private key in the format the workflow expects.** ASCII-armoured, the
-whole block including the `BEGIN`/`END` lines, no other text:
+whole block including the `BEGIN`/`END` lines, no other text - and it must never touch the
+clipboard, the filesystem, or a shell argument. `gh secret set` reading from a pipe is the
+only sanctioned path: the key goes straight from `gpg`'s stdout to the encrypted secret
+store and nowhere else.
 
 ```bash
-gpg --armor --export-secret-keys <KEY_ID> | pbcopy
+gpg --armor --export-secret-keys <KEY_ID> | gh secret set GPG_PRIVATE_KEY --repo 1of1Canopus/agent-guard
+gh secret set GPG_PASSPHRASE --repo 1of1Canopus/agent-guard   # prompts, reads from the tty, no history
 ```
 
-Then paste into the `GPG_PRIVATE_KEY` secret box. It must start with
+Why not `pbcopy`: the macOS pasteboard is readable by every process running as your user
+with no prompt, is captured by clipboard-history utilities, and - with Handoff/Universal
+Clipboard on, the default - is copied to every other Apple device signed into the same
+iCloud account, where it stays until something else is copied.
 
-```
------BEGIN PGP PRIVATE KEY BLOCK-----
-```
+If your shell logs history to a file, disable it for this session first
+(`HISTCONTROL=ignorespace` and a leading space on the command, or `set +o history` /
+`unset HISTFILE` for the shell you are in) - `gh secret set ... < <(gpg ...)` does not put
+the key on the command line, but a copy-pasted one-liner easily could later.
 
-and end with
+If you must use the web UI instead of `gh`: select the block in the terminal, paste into
+the secret box, then immediately copy something harmless to clear the pasteboard.
 
-```
------END PGP PRIVATE KEY BLOCK-----
-```
-
-GitHub secrets keep newlines; do not reflow, indent or base64 it again. This is the same
-armoured block Tenantify puts in the `signingKey` Gradle property.
-
-Sanity check before pasting, on a throwaway keyring so you do not touch your own:
+Sanity check before setting the secret, on a throwaway keyring so you do not touch your
+own - cleaned up automatically, key included, even if a step above it fails:
 
 ```bash
-export GNUPGHOME=$(mktemp -d) && chmod 700 "$GNUPGHOME"
+GNUPGHOME=$(mktemp -d) && chmod 700 "$GNUPGHOME" && export GNUPGHOME
+trap 'gpgconf --kill all 2>/dev/null; rm -rf "$GNUPGHOME"; unset GNUPGHOME' EXIT
 gpg --armor --export-secret-keys <KEY_ID> | gpg --batch --import
 gpg --list-secret-keys                    # the key must appear
-unset GNUPGHOME
 ```
+
+The `trap` fires on normal exit, on error, and on the shell closing the terminal tab: the
+scratch keyring directory `mktemp -d` created is always removed, unlike `unset GNUPGHOME`
+on its own, which only forgets the path and leaves the directory (with the imported secret
+key inside it) sitting under `$TMPDIR` indefinitely.
 
 ### 5. Optional - publishing from your laptop
 
@@ -161,6 +169,30 @@ Only needed if you ever want to run the release by hand. Put the token in
 The server **id must be `central`**: it matches `<publishingServerId>central</publishingServerId>`
 in the release profile. Then `./mvnw -B clean deploy -Prelease`.
 
+### 6. The `release` environment and the tag signing key id
+
+Two more one-off items, both release gates rather than merge gates - see
+`docs/SECURITY-REVIEW-feat-release-pipeline.md` M5 and L7. Neither can be done from a
+private repository on the free plan (`gh api repos/1of1Canopus/agent-guard/environments`
+returns `total_count: 0`, and rulesets return HTTP 403). Do them together, after the
+repository goes public and before tagging `v0.1.0`.
+
+**The `release` environment.** Repository -> **Settings** -> **Environments** -> **New
+environment** -> name it exactly `release` (the `publish` job in `release.yml` already
+declares `environment: release`). Add Souhaile as a **required reviewer**. Then move the
+four secrets from Part 1 step 4 out of repository secrets and into this environment's own
+secrets, so they are unreachable from any workflow other than a run that has passed the
+reviewer gate.
+
+**The tag signing key id.** `git verify-tag` in `release.yml` only runs when
+`vars.RELEASE_SIGNING_KEY_ID` is set (a public value - it is a key id, not a secret,
+**Settings** -> **Secrets and variables** -> **Actions** -> **Variables**). Set it to the
+long key id of the GPG key you sign release tags with (`gpg --list-secret-keys
+--keyid-format LONG`), then tag releases with `git tag -s` (not `-a`) so there is a
+signature to verify. Until this variable is set, the workflow logs a warning and does not
+verify the tag - it is intentionally not a hard failure, so it does not block the
+`workflow_dispatch` rehearsal path, which has no tag at all.
+
 ---
 
 ## Part 2 - every release
@@ -172,10 +204,23 @@ cd modules/B-agent-guard
 ./mvnw -B clean verify                     # 220 tests, 1 skip, coverage gate, licence check
 ./mvnw -B clean verify -Prelease -Dgpg.skip=true   # + sources and javadoc jars
 scripts/verify-reproducible.sh             # two builds, identical jars
+tools/cipher-probe-release-pipeline.sh     # every probe FIXED, script exits 0
 ```
 
 `QUESTIONS.md` must have a decision on every open item, and the Cipher review for the
 branch must be closed. That is `specs/RELEASE-PROCESS.md` steps 1 to 3.
+
+**Release gates - true before the first tag, not before any PR merges:**
+
+- [ ] The repository is **public** (L7). Nothing above it - the `release` environment, tag
+      rulesets, and Central's own expectation of a resolvable `scm`/`url` - is available on
+      a private repo.
+- [ ] `oss@housedevinci.com` exists and forwards (QUESTIONS.md #21); `security@
+      housedevinci.com` exists and forwards (`SECURITY.md`).
+- [ ] The `release` environment exists with Souhaile as a required reviewer, and the four
+      secrets live in it, not in repository secrets (Part 1 step 6, M5).
+- [ ] `vars.RELEASE_SIGNING_KEY_ID` is set and release tags are signed (`git tag -s`) (Part
+      1 step 6, M5).
 
 ### 2. Write the CHANGELOG entry
 
@@ -191,13 +236,15 @@ release from ever being a `-SNAPSHOT`.
 
 ```bash
 git commit -am "docs(release): changelog for 0.1.0"
-git tag -a v0.1.0 -m "agent-guard 0.1.0"
+git tag -s v0.1.0 -m "agent-guard 0.1.0"    # -s: signed, not -a. See Part 1 step 6 (M5).
 git push origin main
 git push origin v0.1.0        # this starts the Release workflow
 ```
 
 The tag must be `v` + the version: `v0.1.0` releases `0.1.0`. A tag whose version ends in
-`-SNAPSHOT`, or that is not plain semver, is refused by the workflow's first step.
+`-SNAPSHOT`, or that is not plain semver, is refused by the workflow's first step. The
+workflow also refuses a tag whose commit is not on `main`, and - once
+`vars.RELEASE_SIGNING_KEY_ID` is set - a tag that is not signed with that key.
 
 ### 4. Watch the workflow
 

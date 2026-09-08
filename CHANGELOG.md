@@ -4,6 +4,58 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (Cipher re-verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Re-verification (30aec6f)")
+Every MEDIUM, LOW and INFO from the re-verification pass closed (Isis, 2026-09-08). All 23
+probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
+- **N1 (merge blocker)**: `./mvnw verify` failed on a fresh clone - the licence denial
+  `exec:exec` execution ran once, tree-wide, on `agent-guard-parent`, before any module had
+  written a `THIRD-PARTY-NOTICES.txt`. It now runs per module, with
+  `${project.build.directory}`/`${project.packaging}` passed as arguments; a `pom`-packaged
+  module with no notices file passes, everything else must have one. Proved on a fresh
+  `git clone` + `./mvnw -B verify`.
+- **N2**: the denial pass matched hyphenated SPDX ids and the literal substring `gpl`, so
+  prose licence names ("GNU General Public License v3", "Mozilla Public License, Version
+  2.0", …) passed on their permissive half. Matching is now on a normalised
+  (lowercased, non-alphanumeric-stripped) form against SPDX-id fragments and prose
+  word-patterns; `tools/check-third-party-licences.sh --self-test` table-tests every
+  phrasing from Cipher's repro.
+- **N3**: the dependency coordinate used for the allowlist was read from the *first*
+  `(g:a:v - url)`-shaped group on the notices line, which a dependency's own `<name>` could
+  forge; and a version containing `+` matched no coordinate and was silently skipped. Now
+  reads the *last* parenthesised group, widens the version character class, and fails the
+  build on any line whose coordinate does not parse.
+- **N4**: the "bundle contains exactly the three coordinates" assertion pointed at
+  `agent-guard-sample/target/...`, a path the plugin never writes (it assembles the bundle
+  in the top-level `target/`), so the step failed on every release run after the upload had
+  already happened, and the checksum-comparison and evidence-upload steps after it never
+  ran. Fixed to `target/central-publishing/central-bundle.zip`; confirmed with a real
+  `deploy -Prelease` against a fake token.
+- **N5**: the tag-signature check skipped itself (warning, `exit 0`) whenever
+  `RELEASE_SIGNING_KEY_ID` was unset, and even when set only asserted that *some* key in the
+  keyring produced a good signature, never that it was the configured one. Now a hard
+  failure when unset or not a full 40-hex fingerprint, bound to that fingerprint via
+  `git verify-tag --raw` + a `VALIDSIG` match.
+- **N6**: the debug-output guard matched three literal flags; `--errors` and setting the
+  slf4j simple-logger level directly via `MAVEN_OPTS` printed the identical clear-text
+  secret dump without tripping it. Guard extended, and `MAVEN_ARGS`/`MAVEN_OPTS` pinned at
+  workflow level so an externally supplied override cannot win.
+- **N7**: `docs/RELEASING.md`'s scratch-keyring sanity check set `trap ... EXIT` at the top
+  level of the pasted shell, which only fires when the terminal tab closes, not when a step
+  in the block fails. Wrapped in a subshell so the trap fires at the closing parenthesis
+  either way.
+- **N8**: the ancestry check ran only on the tag-push trigger; `workflow_dispatch` skipped
+  it entirely even though the same people can use either path. Now runs on both.
+- **N9**: the `classpath-exception`/`cpe` carve-out in the denial pass was a licence-token
+  pattern, which the script's own design forbids. Removed; a genuine classpath-exception
+  dependency is admitted the same way logback is, by coordinate.
+- **N10**: an empty `()` licence token crashed the scan under `set -u`. Now handled without
+  aborting the rest of the file.
+- **N11 (I1, never closed in the first pass)**: `pom.xml` still passed a duplicate
+  `--pinentry-mode loopback` to `maven-gpg-plugin`, which supplies it itself, and credited
+  the wrong reason in its comment. Removed.
+- **N12**: `docs/RELEASING.md`'s "How the pieces fit" table still listed the removed
+  `skipPublishing` property. Corrected.
+
 ### Added (release pipeline, `feat/release-pipeline`)
 - **Maven Central publishing**, in a `release` profile so `./mvnw verify` is byte-for-byte the
   build it always was. `org.sonatype.central:central-publishing-maven-plugin` 0.11.0 with

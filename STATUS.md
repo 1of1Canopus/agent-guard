@@ -1,8 +1,38 @@
-# STATUS.md - Module B - Agent Guard, free core (run 13: Isis closes the Cipher findings)
+# STATUS.md - Module B - Agent Guard, free core (run 14: Isis closes the re-verification findings)
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.
+
+## Summary (run 14)
+**Done.** Closed all twelve items from Cipher's re-verification at `30aec6f`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Re-verification (30aec6f)"): N1-N4
+(MEDIUM), N5-N8 (LOW), N9-N12 (INFO, including I1 from the first pass, never actually closed
+there). Full detail in `CHANGELOG.md`'s "Fixed (Cipher re-verification)" entry; commits
+carry `Cipher-Finding:` footers per id.
+
+N1 was flagged a merge blocker independent of severity - `./mvnw verify` failed on any
+fresh clone, which meant `ci.yml` was red on every push of this branch. Proved fixed on an
+actual fresh `git clone` + `./mvnw -B verify` (BUILD SUCCESS), not just by reading the diff.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **23/23 probes FIXED**,
+script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` | green |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `./mvnw -B verify` on a fresh `git clone` | green (N1) |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 23/23 FIXED, exits 0 |
+| `deploy -Prelease` on a `versions:set 0.1.0` clone, fake token | bundle built at `target/central-publishing/central-bundle.zip` (45 files, no `agent-guard-sample`, all three coordinates present), upload stopped at the Portal's 401 - proves N4's assertion step now points at the real path |
+| GitHub CI on the pushed branch | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+One correction made along the way, not a finding: the N11 fix's first pass introduced an
+invalid `--` sequence inside an XML comment in `pom.xml` (illegal in XML comments), caught
+by the fresh-clone `verify` run and fixed in a follow-up commit before the branch was
+considered done - see the two `fix(release): ... N11 ...` commits.
 
 ## Summary (run 13)
 **Done, under the no-allowance rule.** Closed every MEDIUM (M1-M7), every LOW (L1-L7) and

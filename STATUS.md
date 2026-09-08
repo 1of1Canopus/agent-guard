@@ -1,8 +1,53 @@
-# STATUS.md - Module B - Agent Guard, free core (run 12: Thor builds the release pipeline)
+# STATUS.md - Module B - Agent Guard, free core (run 13: Isis closes the Cipher findings)
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.
+
+## Summary (run 13)
+**Done, under the no-allowance rule.** Closed every MEDIUM (M1-M7), every LOW (L1-L7) and
+the one INFO that needed a code change (I4) from
+`docs/SECURITY-REVIEW-feat-release-pipeline.md`. Full detail in `CHANGELOG.md`'s "Fixed
+(Cipher security review)" entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh`: **12 of 13 probes FIXED**, script still exits 1
+(pass count is 1, not 0 - the inversion the script documents). The one remaining WEAK probe,
+`probe_mvnw_skips_checksum_for_existing_distribution`, is a static check of the vendored
+`mvnw` script's general behaviour (any Maven Wrapper script execs an already-unpacked
+distribution with no re-check). I looked at patching `mvnw` to flip it and rejected the
+patch: the only marker that would satisfy the probe (a sidecar checksum file written at
+install time) is exactly as forgeable by the attacker M3 describes as the distribution
+itself, so it would flip the probe without closing the actual threat - the same failure
+mode as weakening a probe to make it pass, one level removed. The real fix for M3 is
+applied and does close the threat: the signing job no longer caches or restores
+`~/.m2/wrapper/dists`, and deletes any pre-existing one before `mvnw` runs, so the
+unverified-exec branch is unreachable there. Full reasoning: QUESTIONS.md #27. Flagging
+this first, as the one item not closed by a probe flip, per Isis's method step 3.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` | 220 tests, 1 skip, 0 failures |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical, now also writes a checksum file |
+| `tools/cipher-probe-release-pipeline.sh` | 12/13 FIXED (see above) |
+| Coverage gate | unchanged, held |
+
+One flaky-under-load test observed and not touched: `CipherProbeJedisFactoryTest` failed
+once inside a full-suite `clean verify` run (a Redis-pool timing assertion), passed cleanly
+both in isolation and on a second full-suite run. Not caused by anything in this run - no
+Jedis/Redis code was touched - and not a probe this run owns; noted for whoever next
+touches `agent-guard-spring-boot-starter`'s concurrency tests (see the parked Jedis 8
+migration entry below).
+
+### What only Souhaile can do (added this run, on top of run 12's list)
+`docs/RELEASING.md` Part 1 step 6 and Part 2 step 1 have the full checklist. New since run 12:
+1. Make the repository public before tagging `v0.1.0` (M5's `environment: release` and
+   GitHub's tag rulesets do not exist on a private free-plan repo; L7).
+2. Create the `release` environment with Souhaile as required reviewer, and move the four
+   secrets from repository secrets into it (M5).
+3. Set the `RELEASE_SIGNING_KEY_ID` repository **variable** (not secret) to the long id of
+   the key release tags are signed with, and tag with `git tag -s`, not `-a` (M5).
+4. Confirm `security@housedevinci.com` forwards, same as `oss@housedevinci.com` (`SECURITY.md`, L6).
 
 ## Summary (run 12)
 **Done.** `agent-guard-core` and `agent-guard-spring-boot-starter` are one command away from

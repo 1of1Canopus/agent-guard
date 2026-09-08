@@ -4,7 +4,9 @@ Your MCP server has authentication. It has no authorization, no "ask a human bef
 auditor can read, and no budget that stops an agent at 3 a.m. Agent Guard adds the four, as one Spring Boot starter,
 with the same policy engine for Spring AI tool calling (`@Tool` / `ToolCallback`) and MCP servers (`@McpTool`).
 
-Spring Boot 4.0.x, Spring Framework 7, Spring AI 2.0.x, Java 21. Core is Apache-2.0.
+Spring Boot 4.0.x, Spring Framework 7, Spring AI 2.0.x, Java 21. Core is fair source
+(FSL-1.1-ALv2): free to use, not as a base for a competing product, becomes Apache-2.0 two years
+after each release. Pro edition under a separate commercial licence.
 
 ## Quickstart (about 60 lines)
 
@@ -226,7 +228,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 
 ## Free vs Pro
 
-| | Core (Apache-2.0) | Pro |
+| | Core (FSL-1.1-ALv2) | Pro |
 |---|---|---|
 | `@ToolPolicy`, registry, Spring Security integration | yes | yes |
 | Approval gate, log + webhook notifier, JSON endpoints | yes | + inbox UI, Slack/Teams/email with action links, SLA timers |

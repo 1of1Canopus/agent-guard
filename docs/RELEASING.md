@@ -135,19 +135,25 @@ If you must use the web UI instead of `gh`: select the block in the terminal, pa
 the secret box, then immediately copy something harmless to clear the pasteboard.
 
 Sanity check before setting the secret, on a throwaway keyring so you do not touch your
-own - cleaned up automatically, key included, even if a step above it fails:
+own, run inside a subshell so cleanup runs on any failing step, not only when you close the
+terminal tab (N7 - a `trap ... EXIT` set at the top level of an interactive shell fires when
+*that shell* exits, which is when the tab closes, not when one of the commands above it
+fails; until then the directory holding `private-keys-v1.d` for the release key is still on
+disk under `$TMPDIR` and `GNUPGHOME` is still exported over the rest of the session,
+including step 3's `gpg --send-keys`):
 
 ```bash
-GNUPGHOME=$(mktemp -d) && chmod 700 "$GNUPGHOME" && export GNUPGHOME
-trap 'gpgconf --kill all 2>/dev/null; rm -rf "$GNUPGHOME"; unset GNUPGHOME' EXIT
-gpg --armor --export-secret-keys <KEY_ID> | gpg --batch --import
-gpg --list-secret-keys                    # the key must appear
+(
+  GNUPGHOME=$(mktemp -d) && chmod 700 "$GNUPGHOME" && export GNUPGHOME
+  trap 'gpgconf --kill all 2>/dev/null; rm -rf "$GNUPGHOME"' EXIT
+  gpg --armor --export-secret-keys <KEY_ID> | gpg --batch --import
+  gpg --list-secret-keys                    # the key must appear
+)
 ```
 
-The `trap` fires on normal exit, on error, and on the shell closing the terminal tab: the
-scratch keyring directory `mktemp -d` created is always removed, unlike `unset GNUPGHOME`
-on its own, which only forgets the path and leaves the directory (with the imported secret
-key inside it) sitting under `$TMPDIR` indefinitely.
+The subshell - the parentheses around the block - is what makes this true: the `trap` fires
+when the subshell exits, at the closing `)`, whether the commands inside it succeed or one
+of them fails, and `GNUPGHOME` never leaks into the outer shell you keep using afterwards.
 
 ### 5. Optional - publishing from your laptop
 
@@ -296,7 +302,7 @@ version, launch article draft, announcements, then triage issues daily for two w
 | `pom.xml`, `central-publishing-maven-plugin` | `autoPublish=false`, `waitUntil=validated`, `excludeArtifacts=agent-guard-sample`. |
 | `pom.xml`, `license-maven-plugin` | `THIRD-PARTY-NOTICES.txt` + the licence allowlist. Runs on **every** build, not only releases. |
 | `pom.xml`, `project.build.outputTimestamp` | reproducible archives; the workflow overrides it with the committer date of the released commit. |
-| `agent-guard-sample/pom.xml` | `maven.deploy.skip`, `maven.source.skip`, `maven.javadoc.skip`, `gpg.skip`, `skipPublishing` - the sample is never signed or published. |
+| `agent-guard-sample/pom.xml` | `maven.deploy.skip`, `maven.source.skip`, `maven.javadoc.skip`, `gpg.skip` - the sample is never signed or published. Kept out of the release bundle by `<excludeArtifacts>` in the release profile (L5), not by anything in this module's own pom. |
 | `scripts/git-commit-timestamp.sh` | HEAD's committer date, in Maven's ISO form. |
 | `scripts/verify-reproducible.sh` | builds twice, compares SHA-256 of every published jar. |
 | `.github/workflows/release.yml` | the whole thing, on a tag `v*` or on demand. |

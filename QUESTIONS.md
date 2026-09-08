@@ -248,3 +248,29 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     Recommendation: put it in `META-INF/` of both jars in a follow-up, once someone decides
     whether the starter's notices should list the whole Spring Boot tree (88 entries) or only
     what the starter itself adds. Deliberately out of scope here: it changes jar contents.
+
+## Fix-list round (Isis, `feat/release-pipeline`, 2026-09-08)
+27. **[decided, alternative applied]** M3's second probe,
+    `probe_mvnw_skips_checksum_for_existing_distribution`, greps the vendored `mvnw` script
+    itself for a `sha256sum -c` inside the "found existing MAVEN_HOME, exec it" branch and
+    is WEAK unconditionally: that branch really does exec an already-unpacked distribution
+    with no re-check, and it always will, because `distributionSha256Sum` is only ever
+    checked against the freshly downloaded zip (`mvnw` lines 226-250). Cipher's own prescribed
+    fix for M3 is operational, not a change to `mvnw`: "verify distributionSha256Sum is
+    enforced by deleting any cached dist before mvnw runs" (docs/SECURITY-REVIEW…, M3 §2;
+    the release workflow's `Remove any pre-existing Maven wrapper distribution` step). Once
+    `cache: maven` is gone from the `publish` job and the step removes
+    `~/.m2/wrapper/dists` before every `mvnw` invocation, that branch is dead code in the
+    signing job specifically: `[ -d "$MAVEN_HOME" ]` is always false there, so `mvnw` always
+    takes the download-and-verify path. That is the actual fix and it is applied.
+    I did not patch `mvnw` to make the static probe pass. I looked at doing it (a sidecar
+    `$MAVEN_HOME/mvnw.sha256` written at install time, checked before reuse) and rejected
+    it: whoever can write a poisoned distribution into the cache directory can write a
+    matching sidecar file in the same write, so the marker adds no real defence against the
+    attacker M3 describes, only against accidental corruption. Patching third-party Apache
+    Software Foundation code to make a text-matching probe pass, for a change that does not
+    close the actual threat, is exactly the kind of thing I refuse to do (Isis's brief:
+    "Delete, weaken, or skip a probe test to make it green"; this is the same failure mode
+    one level removed). Flagging this rather than silently leaving the probe WEAK: the probe
+    script and this entry both say so; `M3` is closed in the workflow, this one static probe
+    is not and, on the reasoning above, should not be chased.

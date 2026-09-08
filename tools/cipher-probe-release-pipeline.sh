@@ -31,13 +31,32 @@ probe() { # probe <name> <"still weak" message>; body returns 0 when the weaknes
 # ---------------------------------------------------------------------------
 # M4 - the workflow_dispatch version input is validated with a line-oriented grep,
 #      so a value containing a newline passes and injects extra lines into
-#      $GITHUB_OUTPUT. This replays the exact snippet from release.yml.
+#      $GITHUB_OUTPUT. Extracts the actual "Derive the release version" step body from
+#      release.yml and runs it for real against the malicious input, so this probe tests
+#      the workflow's own current logic and not a frozen copy of the old snippet.
 # ---------------------------------------------------------------------------
 probe_multiline_version_accepted() {
-  local version
-  version=$(printf '0.1.0\nmalicious=1')
-  case "$version" in *-SNAPSHOT) return 1 ;; esac
-  printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+  local step out rc
+  step=$(awk '
+    /- name: Derive the release version/ { infield=0; instep=1 }
+    instep && /run: \|/ { inrun=1; next }
+    instep && !inrun && /^      - name:/ && !/Derive the release version/ { exit }
+    inrun && /^      - name:/ { exit }
+    inrun { print }
+  ' "$WF")
+  [ -n "$step" ] || return 0   # step vanished: cannot prove the fix, count as still weak
+  out="$(mktemp)"
+  GITHUB_EVENT_NAME=workflow_dispatch \
+  INPUT_VERSION="$(printf '0.1.0\nmalicious=1')" \
+  GITHUB_OUTPUT="$out" \
+  bash -c "$step" >/dev/null 2>&1
+  rc=$?
+  # Weak: the step exited 0 (accepted the input) and the injected extra line landed in
+  # $GITHUB_OUTPUT. Fixed: the step rejected the multiline input (non-zero exit).
+  if [ "$rc" -eq 0 ] && grep -q '^malicious=1$' "$out" 2>/dev/null; then
+    rm -f "$out"; return 0
+  fi
+  rm -f "$out"; return 1
 }
 
 # ---------------------------------------------------------------------------

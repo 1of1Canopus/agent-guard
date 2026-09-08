@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# All-of denial pass over every generated THIRD-PARTY-NOTICES.txt, outside the
+# All-of denial pass over ONE module's generated THIRD-PARTY-NOTICES.txt, outside the
 # license-maven-plugin allowlist execution (pom.xml, third-party-notices). The plugin's
 # <includedLicenses> is an any-of *permission* check: a dependency passes if ANY one of its
 # declared licences is on the allowlist, which is the legally correct answer for a genuinely
@@ -9,24 +9,39 @@
 # lists two CUMULATIVE licences, e.g. "Apache-2.0 OR GPL-3.0" declared as two licence blocks.
 # The plugin has no way to tell the two cases apart; this script is the second pass that does,
 # by only ever allowing the exception for a coordinate a human wrote down. See
-# docs/SECURITY-REVIEW-feat-release-pipeline.md M1/M2, QUESTIONS.md #22.
+# docs/SECURITY-REVIEW-feat-release-pipeline.md M1/M2/N2/N3/N9/N10, QUESTIONS.md #22.
 #
 # Never add <excludedLicenses> to the plugin execution instead of this script: it makes the
 # build pass AND deletes the GPL-3.0 declaration from the notices file that ships as release
 # evidence (M2). The denial pass must run outside the plugin, against the evidence the plugin
 # already produced, so a rejected dependency's full licence declaration stays on record.
 #
-#   tools/check-third-party-licences.sh
+# N1: this script is invoked per module, not once for the whole tree. `pom.xml`'s
+# `check-third-party-licences` execution passes two arguments: ${project.build.directory}
+# and ${project.packaging}. Running against a tree-wide `find` meant the PARENT module's
+# `verify` (which runs first in the reactor, before any module has built) either failed
+# closed on a clean checkout - breaking every fresh clone and CI run - or, in a working tree
+# with stale target/ directories left from an earlier build, silently validated the PREVIOUS
+# build's notices file instead of the current one. Each module now checks only its own.
 #
-# Exit 0: every dependency in every THIRD-PARTY-NOTICES.txt found under */target/ is clean.
-# Exit 1: at least one dependency carries a denied licence token, named with its coordinate.
+#   tools/check-third-party-licences.sh <module-build-dir> <module-packaging>
+#   tools/check-third-party-licences.sh --self-test
+#
+# Exit 0: the module's THIRD-PARTY-NOTICES.txt is clean (or the module is `pom`-packaged and
+#         declares no notices file at all - a parent POM ships no dependencies of its own).
+# Exit 1: a denied licence token was found, a dependency line could not be parsed, the parsed
+#         dependency count does not match the plugin's own header, or (for a jar/war/etc.
+#         module) no notices file exists at all.
 #
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # Coordinates that are known, by a human, to be genuinely dual-licensed under a permissive
 # OR a copyleft term (never both applying at once). An exception is a coordinate, never a
-# licence-token pattern: it names precisely which dependency the human accepted.
+# licence-token pattern: it names precisely which dependency the human accepted. N9: this is
+# the ONLY form of exception. There is deliberately no licence-token carve-out (e.g. for
+# "classpath-exception") any more - a dependency needing one is admitted here, by a human, by
+# coordinate, the same way logback is.
 ALLOWED_COORDINATES=(
   "ch.qos.logback:logback-classic"
   "ch.qos.logback:logback-core"
@@ -35,19 +50,60 @@ ALLOWED_COORDINATES=(
 
 # Denied licence tokens (normalised, case-insensitive). Any dependency declaring ANY of
 # these among its licences fails, regardless of what else it also declares.
-DENIED_TOKENS=(
-  gpl-1.0 gpl-2.0 gpl-3.0
-  lgpl-2.0 lgpl-2.1 lgpl-3.0
-  agpl-1.0 agpl-3.0
-  sspl-1.0
-  cddl-1.0 cddl-1.1
-  mpl-1.1 mpl-2.0
+#
+# N2: matching used to be done on the raw token - an exact-string match against a handful of
+# hyphenated SPDX ids, plus a substring check for the literal letters "gpl". Real POMs write
+# prose ("GNU General Public License, version 3"), and prose licence names contain none of
+# those substrings, so they passed the denial pass on their permissive half - the exact M1
+# hole, respelled. Matching is now done on a NORMALISED form (lowercased, everything that is
+# not [a-z0-9] stripped) against both SPDX-id fragments and prose word-patterns, so
+# "GPL-3.0", "GPL 3.0", "gplv3", "GPL_3" and "GNU General Public License v3" all normalise to
+# a form containing "gpl3" / "generalpubliclicense" and are all denied the same way.
+DENIED_PATTERNS=(
+  # "gpl" as a bare substring catches every SPDX spelling in one go: GPL-1.0/2.0/3.0, every
+  # "-only"/"-or-later" suffix, GPLv2/GPLv3, and (because the letters "gpl" occur inside
+  # "lgpl" and "agpl" too) LGPL and AGPL in all their versions, with no separate entries
+  # needed. It does NOT catch prose that spells the words out without the letters "g", "p",
+  # "l" running together ("GNU General Public License" has no contiguous "gpl") - that is
+  # what "generalpubliclicense" below is for.
+  gpl
+  sspl10
+  cddl10 cddl11
+  mpl11 mpl20
   cpol
-  eupl-1.2
-  busl-1.1
-  elastic-2.0
-  cc-by-nc
+  eupl12
+  busl11
+  elastic20
+  ccbyncsa ccbync ccbysa
+  # Prose word-patterns, for spellings that contain none of the SPDX-id fragments above.
+  generalpubliclicense
+  lessergeneralpublic
+  affero
+  mozillapubliclicense
+  mpl
+  commondevelopmentanddistribution
+  cddl
+  serversidepublic
+  businesssourcelicense
+  businesssource
+  europeanunionpublic
+  noncommercial
 )
+
+# Any occurrence of one of these substrings, in the normalised token, denies it outright -
+# this is deliberately a substring test (not an exact-match test like the coordinate
+# allowlist): "gpl30" must deny "GNU General Public License, version 3.0 (GPL-3.0)" and every
+# other real-world spelling variant, not just the bare id.
+is_denied_token() {
+  local raw="$1" norm p
+  # Normalise: lowercase, strip everything that is not [a-z0-9].
+  norm="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')"
+  [ -n "$norm" ] || return 1   # an empty token (N10: a bare "()") denies nothing, matches nothing
+  for p in "${DENIED_PATTERNS[@]}"; do
+    [[ "$norm" == *"$p"* ]] && return 0
+  done
+  return 1
+}
 
 is_allowed_coordinate() {
   local coord="$1" c
@@ -57,70 +113,188 @@ is_allowed_coordinate() {
   return 1
 }
 
-is_denied_token() {
-  local raw="$1" norm t
-  norm="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-  # Any token whose normalised form contains "gpl" without a classpath-exception
-  # qualifier is denied outright, even if it is not one of the exact strings below
-  # (catches spellings such as "GPL-2.0-only" or "GNU General Public License v3").
-  # "classpath-exception", "classpath exception" and the abbreviation "cpe" (as in
-  # POM-declared "GPL2 w/ CPE") are all recognised forms of the qualifier.
-  if [[ "$norm" == *gpl* ]] \
-    && [[ "$norm" != *classpath-exception* ]] \
-    && [[ "$norm" != *classpath\ exception* ]] \
-    && [[ "$norm" != *cpe* ]]; then
-    return 0
-  fi
-  for t in "${DENIED_TOKENS[@]}"; do
-    [ "$norm" = "$t" ] && return 0
-  done
-  return 1
+# ---------------------------------------------------------------------------------------
+# Parses one THIRD-PARTY-NOTICES.txt on stdin. Each dependency line looks like:
+#   (Apache-2.0) Gson (com.google.code.gson:gson:2.13.2 - https://...)
+#   (Apache-2.0) (GPL-3.0) syn-dual (cipher.synthetic:syn-dual:1.0 - no url defined)
+#
+# N3: the coordinate is read from the LAST "(...)" group on the line, never the first. The
+# earlier version took the first `(group:artifact:version - url)`-shaped group with a
+# non-greedy match, and a dependency's own POM <name> is free text that lands on the SAME
+# line, BEFORE its real coordinate - a dependency named
+# "evil (ch.qos.logback:logback-core:1.5.6 - http://x)" was read as logback-core (on the
+# coordinate allowlist) and skipped entirely, licences unchecked. The notices format always
+# places the real coordinate last, so the last paren group is the one that is trusted, and
+# its content is validated against the g:a:v shape (version now allowing `+`, in addition to
+# `.` and `-`, since Maven versions legally contain it) before being trusted as a coordinate.
+#
+# A line that starts like a dependency line (a leading run of "(...)" groups) but whose last
+# paren group does not parse as a coordinate is NOT skipped - it is printed as UNPARSEABLE,
+# and the caller fails the build on it (fail closed, per N3: "a line with no parsable
+# coordinate fails closed").
+# ---------------------------------------------------------------------------------------
+parse_notices() {
+  perl -ne '
+    if (/^\s*((?:\([^()]*\)\s*)+)(\S.*)$/) {
+      my ($lic_run, $rest) = ($1, $2);
+      my @parens;
+      while ($rest =~ /\(([^()]*)\)/g) { push @parens, $1; }
+      if (@parens) {
+        my $last = $parens[-1];
+        if ($last =~ /^\s*([\w.\-]+):([\w.\-]+):([\w.+\-]+)\s*-\s*.*$/) {
+          my ($g, $a, $v) = ($1, $2, $3);
+          my @tokens;
+          while ($lic_run =~ /\(([^()]*)\)/g) { push @tokens, $1; }
+          print "OK\t$g:$a:$v\t" . join("|", @tokens) . "\n";
+          next;
+        }
+      }
+      print "UNPARSEABLE\t$rest\n";
+    }
+  '
 }
 
-status=0
-found_any=0
+# Runs the full gate against one notices file. Prints denial / parse-failure diagnostics on
+# stderr, prefixed with the file. Returns non-zero on any denial or parse failure.
+check_notices_file() {
+  local notices="$1" status=0 expected_count="" parsed_count=0
 
-while IFS= read -r -d '' notices; do
-  found_any=1
-  # Each dependency line looks like:
-  #   (Apache-2.0) Gson (com.google.code.gson:gson:2.13.2 - https://...)
-  #   (Apache-2.0) (GPL-3.0) syn-dual (cipher.synthetic:syn-dual:1.0 - no url defined)
-  # perl extracts: every leading "(...)" licence token, plus the coordinate paren
-  # ("group:artifact:version - url") that follows the dependency name.
-  while IFS=$'\t' read -r coord tokens; do
-    [ -n "$coord" ] || continue
-    # Compare group:artifact only; the exception is a coordinate a human wrote down,
-    # not a coordinate-plus-whatever-version-happens-to-be-on-the-classpath-today.
+  expected_count="$(grep -oE 'Lists of [0-9]+ third-party dependenc(y|ies)' "$notices" \
+    | grep -oE '[0-9]+' | head -1 || true)"
+
+  while IFS=$'\t' read -r kind a b; do
+    if [ "$kind" = "UNPARSEABLE" ]; then
+      echo "check-third-party-licences: DENIED unparseable dependency line in $notices: $a" >&2
+      status=1
+      continue
+    fi
+    parsed_count=$((parsed_count + 1))
+    coord="$a"; tokens="$b"
     ga="${coord%:*}"
     if is_allowed_coordinate "$ga"; then
       continue
     fi
-    IFS='|' read -ra tok_list <<<"$tokens"
-    for tok in "${tok_list[@]}"; do
+    # N10: an empty "()" token must not crash the scan under `set -u`. `IFS='|' read -ra`
+    # on an empty string leaves the array unset in some bash versions rather than empty,
+    # so both the split and every later expansion of it are defensive.
+    tok_list=()
+    IFS='|' read -ra tok_list <<<"$tokens" || true
+    for tok in "${tok_list[@]:-}"; do
       [ -n "$tok" ] || continue
       if is_denied_token "$tok"; then
         echo "check-third-party-licences: DENIED licence '$tok' on $coord (from $notices)" >&2
         status=1
       fi
     done
-  done < <(perl -ne '
-      if (/^\s*((?:\([^()]*\)\s*)+)\S.*?\(([\w.\-]+:[\w.\-]+:[\w.\-]+)\s*-/) {
-        my ($licences, $coord) = ($1, $2);
-        my @tokens;
-        while ($licences =~ /\(([^()]*)\)/g) { push @tokens, $1; }
-        print "$coord\t" . join("|", @tokens) . "\n";
-      }
-    ' "$notices")
-done < <(find . -path '*/target/THIRD-PARTY-NOTICES.txt' -print0)
+  done < <(parse_notices <"$notices")
 
-if [ "$found_any" -eq 0 ]; then
-  echo "check-third-party-licences: no THIRD-PARTY-NOTICES.txt found under */target/ (did third-party-notices run first?)" >&2
+  if [ -n "$expected_count" ] && [ "$parsed_count" -ne "$expected_count" ]; then
+    echo "check-third-party-licences: DENIED $notices declares $expected_count dependencies but only $parsed_count parsed cleanly" >&2
+    status=1
+  fi
+
+  return "$status"
+}
+
+# ---------------------------------------------------------------------------------------
+# --self-test: a table test covering every phrasing from N2's repro table, run against the
+# in-process is_denied_token function directly (no Maven, no notices file). Every "should
+# deny" row must return denied; every "should allow" row must return not-denied.
+# ---------------------------------------------------------------------------------------
+run_self_test() {
+  local failures=0
+
+  # tokens that must be DENIED (Cipher's N2 repro table, plus the original SPDX spellings).
+  local -a deny_cases=(
+    "GPL-3.0"
+    "GPLv3"
+    "GNU General Public License v3"
+    "GNU General Public License, version 3"
+    "GNU Lesser General Public License, version 2.1"
+    "GNU Affero General Public License v3"
+    "Mozilla Public License, Version 2.0"
+    "MPL 2.0"
+    "Common Development and Distribution License (CDDL) v1.0"
+    "CDDL-1.0"
+    "Server Side Public License, v 1"
+    "SSPL-1.0"
+    "European Union Public Licence 1.2"
+    "EUPL-1.2"
+    "Business Source License 1.1"
+    "BUSL-1.1"
+    "Creative Commons Attribution-NonCommercial 4.0"
+    "CC-BY-NC-4.0"
+    "GPL-3.0-with-classpath-exception"
+    "GPL2 w/ CPE"
+  )
+  # tokens that must be ALLOWED (permissive licences this project actually ships under).
+  local -a allow_cases=(
+    "Apache-2.0"
+    "Apache License 2.0"
+    "MIT"
+    "BSD-3-Clause"
+    "EPL-2.0"
+    "Public Domain"
+    ""
+  )
+
+  local c
+  for c in "${deny_cases[@]}"; do
+    if is_denied_token "$c"; then
+      echo "self-test OK    deny  '$c'"
+    else
+      echo "self-test FAIL  deny  '$c' was NOT denied"
+      failures=$((failures + 1))
+    fi
+  done
+  for c in "${allow_cases[@]}"; do
+    if is_denied_token "$c"; then
+      echo "self-test FAIL  allow '$c' was denied"
+      failures=$((failures + 1))
+    else
+      echo "self-test OK    allow '$c'"
+    fi
+  done
+
+  echo
+  if [ "$failures" -eq 0 ]; then
+    echo "check-third-party-licences --self-test: all cases correct"
+    return 0
+  else
+    echo "check-third-party-licences --self-test: $failures case(s) FAILED" >&2
+    return 1
+  fi
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit $?
+fi
+
+build_dir="${1:-}"
+packaging="${2:-}"
+
+if [ -z "$build_dir" ] || [ -z "$packaging" ]; then
+  echo "usage: check-third-party-licences.sh <module-build-dir> <module-packaging>" >&2
+  echo "       check-third-party-licences.sh --self-test" >&2
   exit 1
 fi
 
-if [ "$status" -eq 0 ]; then
-  echo "check-third-party-licences: clean"
+notices="$build_dir/THIRD-PARTY-NOTICES.txt"
+
+if [ ! -f "$notices" ]; then
+  if [ "$packaging" = "pom" ]; then
+    echo "check-third-party-licences: $packaging module, no THIRD-PARTY-NOTICES.txt (declares no shipped dependencies of its own)"
+    exit 0
+  fi
+  echo "check-third-party-licences: no THIRD-PARTY-NOTICES.txt found at $notices (did third-party-notices run first?)" >&2
+  exit 1
+fi
+
+if check_notices_file "$notices"; then
+  echo "check-third-party-licences: clean ($notices)"
+  exit 0
 else
   echo "check-third-party-licences: FAILED, see DENIED lines above" >&2
+  exit 1
 fi
-exit "$status"

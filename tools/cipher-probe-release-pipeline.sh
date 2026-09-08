@@ -217,7 +217,10 @@ licence_verdict() { # licence_verdict <notices line>
   mkdir -p "$work/tools" "$work/mod/target"
   cp tools/check-third-party-licences.sh "$work/tools/"
   printf '\nLists of 1 third-party dependencies.\n%s\n' "$1" > "$work/mod/target/THIRD-PARTY-NOTICES.txt"
-  "$work/tools/check-third-party-licences.sh" >/dev/null 2>&1
+  # N1: the script now takes the module build directory and packaging as arguments (it
+  # checks one module's own notices, not a tree-wide `find`); jar is the packaging exercised
+  # by every synthetic case below.
+  "$work/tools/check-third-party-licences.sh" "$work/mod/target" jar >/dev/null 2>&1
   rc=$?
   rm -rf "$work"
   return "$rc"
@@ -261,7 +264,7 @@ probe_denial_pass_crashes_on_an_empty_licence_token() {
   cp tools/check-third-party-licences.sh "$work/tools/"
   printf '\nLists of 1 third-party dependencies.\n     () x (c.s:syn:1.0 - no url defined)\n' \
     > "$work/mod/target/THIRD-PARTY-NOTICES.txt"
-  out=$("$work/tools/check-third-party-licences.sh" 2>&1)
+  out=$("$work/tools/check-third-party-licences.sh" "$work/mod/target" jar 2>&1)
   rm -rf "$work"
   printf '%s' "$out" | grep -q 'unbound variable'
 }

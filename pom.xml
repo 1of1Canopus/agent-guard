@@ -376,13 +376,14 @@
                 MAVEN_GPG_PASSPHRASE environment variable, which is the name this plugin
                 reads by default.
 
-                N11/I1: no <gpgArguments> here. maven-gpg-plugin 3.2.8 already passes
-                `--pinentry-mode loopback` itself whenever a passphrase is supplied - verified
-                off the real command line it runs: `gpg --pinentry-mode loopback --batch
-                --pinentry-mode loopback --passphrase-fd 0 ...`. An explicit block here only
-                duplicated the flag; the comment that used to sit on it ("required because
-                there is no tty") credited the wrong actor. There is no tty either way -
-                that part was true - but the plugin is what already handles it.
+                N11/I1: no gpgArguments block here. maven-gpg-plugin 3.2.8 already passes
+                the loopback pinentry mode flag itself whenever a passphrase is supplied,
+                confirmed off the real command line it runs (it shows the flag TWICE: once
+                added by the plugin, once from an explicit gpgArguments block that used to
+                sit here). That explicit block only duplicated the flag; the comment that
+                used to sit on it, claiming the flag was "required because there is no tty",
+                credited the wrong actor. There is no tty either way, that part was true,
+                but the plugin is what already handles it.
               -->
             </configuration>
           </plugin>

@@ -109,8 +109,11 @@ probe_nothing_forbids_maven_debug_in_the_release_job() {
 
 # ---------------------------------------------------------------------------
 # M1 - licence gate: a dependency passes when ANY one of its declared licences is
-#      on the allowlist, so `Apache-2.0 OR GPL-3.0` slips through. Runs a real
-#      build against a synthetic dependency in a throwaway clone.
+#      on the allowlist, so `Apache-2.0 OR GPL-3.0` slips through. Runs a real build
+#      against a synthetic dependency in a throwaway clone, through `verify` so the
+#      tools/check-third-party-licences.sh denial pass (M1/M2 fix) actually runs -
+#      the plugin's own allowlist stops at `package` and would report FIXED for the
+#      wrong reason.
 # ---------------------------------------------------------------------------
 probe_licence_gate_accepts_a_dual_apache_or_gpl_dependency() {
   [ "${CIPHER_PROBE_MAVEN:-0}" = "1" ] || { echo "        (skipped: set CIPHER_PROBE_MAVEN=1)" >&2; return 0; }
@@ -131,7 +134,7 @@ EOF
       -Dfile="$work/syn.jar" -DpomFile="$work/syn.pom" >/dev/null 2>&1 || exit 1
     perl -0pi -e 's{<dependencies>}{<dependencies>\n    <dependency><groupId>cipher.synthetic</groupId><artifactId>syn-dual</artifactId><version>1.0</version></dependency>}' \
       agent-guard-core/pom.xml
-    ./mvnw -B -pl agent-guard-core -am package \
+    ./mvnw -B -pl agent-guard-core -am verify \
       -DskipTests -Dspotless.check.skip=true -Djacoco.skip=true -Denforcer.skip=true >/dev/null 2>&1
   )
   rc=$?

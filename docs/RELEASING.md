@@ -190,14 +190,24 @@ four secrets from Part 1 step 4 out of repository secrets and into this environm
 secrets, so they are unreachable from any workflow other than a run that has passed the
 reviewer gate.
 
-**The tag signing key id.** `git verify-tag` in `release.yml` only runs when
-`vars.RELEASE_SIGNING_KEY_ID` is set (a public value - it is a key id, not a secret,
-**Settings** -> **Secrets and variables** -> **Actions** -> **Variables**). Set it to the
-long key id of the GPG key you sign release tags with (`gpg --list-secret-keys
---keyid-format LONG`), then tag releases with `git tag -s` (not `-a`) so there is a
-signature to verify. Until this variable is set, the workflow logs a warning and does not
-verify the tag - it is intentionally not a hard failure, so it does not block the
-`workflow_dispatch` rehearsal path, which has no tag at all.
+**The tag signing key id.** `git verify-tag` in `release.yml` is **required**, not optional
+(N5): on the tag-push path the workflow now fails the job outright, before touching
+anything else, if `vars.RELEASE_SIGNING_KEY_ID` is unset - there is no warn-and-continue
+mode any more. Set it (a public value - it is a key id, not a secret, **Settings** ->
+**Secrets and variables** -> **Actions** -> **Variables**) to the **full 40-character
+fingerprint** of the GPG key you sign release tags with:
+
+```bash
+gpg --list-secret-keys --keyid-format LONG   # confirm the key, then get the full fingerprint:
+gpg --fingerprint <KEY_ID> | awk '/Key fingerprint/{gsub(/[ =]/,"",$0); sub(/^Keyfingerprint/,""); print}'
+```
+
+A short key id or an email address is rejected: the check is bound to that exact
+fingerprint via `git verify-tag --raw` and a `VALIDSIG` match, so a good signature from any
+*other* key in the runner's keyring - including one an attacker uploaded to the same public
+keyserver - no longer passes. Then tag releases with `git tag -s` (not `-a`) so there is a
+signature to verify. This is a release gate, not a merge gate, but it is unconditional once
+the tag-push path runs: there is no `workflow_dispatch` exemption to reason about.
 
 ---
 
@@ -225,8 +235,9 @@ branch must be closed. That is `specs/RELEASE-PROCESS.md` steps 1 to 3.
       housedevinci.com` exists and forwards (`SECURITY.md`).
 - [ ] The `release` environment exists with Souhaile as a required reviewer, and the four
       secrets live in it, not in repository secrets (Part 1 step 6, M5).
-- [ ] `vars.RELEASE_SIGNING_KEY_ID` is set and release tags are signed (`git tag -s`) (Part
-      1 step 6, M5).
+- [ ] `vars.RELEASE_SIGNING_KEY_ID` is set to the full 40-character fingerprint and release
+      tags are signed with that key (`git tag -s`) - required unconditionally, the workflow
+      no longer has an unsigned-tag path (Part 1 step 6, M5, N5).
 
 ### 2. Write the CHANGELOG entry
 
@@ -249,8 +260,9 @@ git push origin v0.1.0        # this starts the Release workflow
 
 The tag must be `v` + the version: `v0.1.0` releases `0.1.0`. A tag whose version ends in
 `-SNAPSHOT`, or that is not plain semver, is refused by the workflow's first step. The
-workflow also refuses a tag whose commit is not on `main`, and - once
-`vars.RELEASE_SIGNING_KEY_ID` is set - a tag that is not signed with that key.
+workflow also refuses a tag whose commit is not on `main`, and refuses to run at all unless
+`vars.RELEASE_SIGNING_KEY_ID` is set to the signing key's fingerprint and the tag verifies
+against exactly that key (N5) - there is no unsigned-tag path any more.
 
 ### 4. Watch the workflow
 

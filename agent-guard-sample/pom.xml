@@ -13,6 +13,22 @@
   <name>Agent Guard :: Sample MCP server</name>
   <description>60-line MCP server: one read tool, one write tool parked for approval, approval + audit endpoints, budget of 3 calls</description>
 
+  <properties>
+    <!--
+      The sample is a demo application, not a library. It is never published anywhere:
+      not to Maven Central, not to the local install repository of a release build.
+      Belt and braces with the release profile's <excludeArtifacts> in the parent pom,
+      because the two mechanisms fail differently: excludeArtifacts keeps it out of the
+      Central bundle, these keep it from being signed, sourced, javadoc'd or deployed at all.
+    -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <maven.install.skip>true</maven.install.skip>
+    <maven.source.skip>true</maven.source.skip>
+    <maven.javadoc.skip>true</maven.javadoc.skip>
+    <gpg.skip>true</gpg.skip>
+    <skipPublishing>true</skipPublishing>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>com.housedevinci</groupId>

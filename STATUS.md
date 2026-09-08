@@ -1,5 +1,7 @@
 # STATUS.md - Module B - Agent Guard, free core (run 14: Isis closes the re-verification findings)
 
+Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
+
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.

@@ -8,7 +8,7 @@ Spring AI 2.0 (GA June 2026) makes it easy to let an AI call tools in a Java app
 ## Scope
 Works with (a) Spring AI tool calling (`ToolCallback` / `@Tool`) and (b) Spring AI MCP server annotations (`@McpTool`). Same policy engine for both.
 
-### Free core (`agent-guard-core`, Apache-2.0)
+### Free core (`agent-guard-core`, FSL-1.1-ALv2)
 1. **Tool policy** — `@ToolPolicy(roles=…, scopes=…, tenants=…, sideEffect=READ|WRITE|DESTRUCTIVE)` on tool methods, plus a programmatic `ToolPolicyRegistry`. Evaluated through Spring Security's `AuthorizationManager` so it composes with `@PreAuthorize`. Deny → typed `ToolDeniedException` returned to the model as a structured tool error (never a stack trace).
 2. **Approval gate (basic)** — tools marked `WRITE`/`DESTRUCTIVE` require approval: the call is parked as `PendingDecision {id, principal, tool, argsHash, argsPreview (redacted), createdAt, expiresAt}`; a `Notifier` SPI (log + webhook implementations in core); `ApprovalService.approve/reject(id)`; the agent receives a structured "awaiting approval" tool result and can resume via a `DecisionResumer` (idempotent by decision id). State machine: `PENDING → APPROVED | REJECTED | EXPIRED` (custom enum SM, ~40 lines, as in Peekflo).
 3. **Audit interceptor (basic)** — every tool invocation recorded: principal, tenant, tool, args hash, result hash, latency, decision (ALLOWED/DENIED/PENDING/APPROVED), correlation id; sink SPI with JDBC (Postgres) implementation; append-only table, hash-chained rows (reuse 14/spec 04 approach).

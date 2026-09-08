@@ -4,6 +4,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Changed
+- **Licensing:** the free core switches from Apache-2.0 to the Functional Source License, Version
+  1.1, ALv2 Future License (FSL-1.1-ALv2) - free to use, not as a base for a competing product,
+  converts to Apache-2.0 two years after each version's release. Decision by Souhaile,
+  2026-09-08; see `LICENSING.md` (portfolio-level) for the reasoning. `LICENSE` and `NOTICE`
+  updated, `pom.xml` `<licenses>`, still embedded in the core and starter jars' `META-INF/`. The
+  reactor's own modules are now excluded from the third-party licence scan by `groupId`
+  (`excludedGroups`), not by licence name, since `com.housedevinci:agent-guard-core` no longer
+  matches the third-party allowlist.
+
 ### Fixed (Cipher re-verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Re-verification (30aec6f)")
 Every MEDIUM, LOW and INFO from the re-verification pass closed (Isis, 2026-09-08). All 23
 probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
@@ -420,7 +430,7 @@ ruled the design itself, then amended it once more after Cipher's design review.
   `AgentGuardAutoConfigurationTest` updated or extended alongside it.
 
 ### Added
-- `agent-guard-core` (Apache-2.0, no framework dependencies):
+- `agent-guard-core` (FSL-1.1-ALv2, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable
     decision (`ALLOW` / `DENY(code)` / `REQUIRE_APPROVAL`).
   - Approval gate: `PendingDecision`, `DecisionState` enum state machine (`PENDING -> APPROVED | REJECTED | EXPIRED`,

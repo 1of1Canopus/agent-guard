@@ -49,6 +49,7 @@ jobs:
 
       - name: Derive the release version
         id: v
+        shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
@@ -58,13 +59,19 @@ jobs:
           else
             version="${INPUT_VERSION}"
           fi
-          # Fail closed on anything that is not a plain semver release.
+          # M4: a single whole-string bash `=~` test, not a line-oriented `grep -E`. `=~`
+          # anchors ^ and $ to the whole string and `.` never matches a newline, so a
+          # version containing an embedded newline (e.g. from `gh workflow run -f
+          # version=$'0.1.0\nmalicious=1'`, which a single-line web form cannot express but
+          # the REST API and `gh` can) is rejected outright instead of matching on one line
+          # and injecting extra lines into $GITHUB_OUTPUT. Keep the -SNAPSHOT `case` as a
+          # second belt: `case` also matches the whole string.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$version' is not a semver release version"; exit 1
+          fi
           case "$version" in
             *-SNAPSHOT) echo "::error::refusing to release a SNAPSHOT version ($version)"; exit 1 ;;
           esac
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
-            echo "::error::'$version' is not a semver release version"; exit 1
-          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Reproducible builds: every archive entry is stamped with the committer date
           # of the commit being released, so the same commit always yields the same bytes.
@@ -76,7 +83,13 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
+          # No cache here (M3). actions/setup-java's maven cache also restores
+          # ~/.m2/wrapper/dists, and mvnw execs an already-unpacked distribution there
+          # with no checksum check at all (distributionSha256Sum is only verified against
+          # the downloaded zip). A release build must not restore state it did not verify:
+          # this is the job that holds the signing key and the Central token, and it must
+          # start from nothing it did not just fetch and check itself. Left in ci.yml and
+          # sample-smoke, which sign nothing.
           # Writes ~/.m2/settings.xml with <server><id>central</id> whose username and
           # password are read from the two environment variables named below. The values
           # never appear in the file, only the variable names.
@@ -87,28 +100,42 @@ jobs:
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
+      # M3: guarantee there is no unpacked Maven distribution left from any earlier state
+      # of this runner for mvnw to exec unverified, on top of the missing cache above.
+      - name: Remove any pre-existing Maven wrapper distribution
+        run: rm -rf ~/.m2/wrapper/dists
+
       - name: Set the release version in the checkout
+        # M3: an empty, local-to-the-job repository. The release job must not resolve
+        # a single artifact from state it did not just download and verify itself.
         run: |
           set -euo pipefail
           ./mvnw -B -q org.codehaus.mojo:versions-maven-plugin:2.21.0:set \
+            -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
             -DnewVersion="${{ steps.v.outputs.version }}" \
             -DprocessAllModules=true -DgenerateBackupPoms=false
           grep -n '<version>${{ steps.v.outputs.version }}</version>' pom.xml
 
       - name: Reproducibility check (two clean builds, identical jars)
+        env:
+          MAVEN_OPTS: -Dmaven.repo.local=${{ runner.temp }}/m2repo
         run: scripts/verify-reproducible.sh
 
       # One Maven invocation runs the whole release lifecycle in order:
       #   test -> spotless -> jacoco gate -> licence allowlist + THIRD-PARTY-NOTICES.txt
       #        -> sources + javadoc jars -> GPG signatures -> Central Portal upload.
       # It stops at "validated": the deployment waits for a human on the portal.
+      # -Dmaven.repo.local (M3): empty at the start of this step, same reasoning as above.
+      # -C / --strict-checksums (M3): fail rather than silently accept an artifact whose
+      # checksum does not match what the remote repository published.
       - name: Verify, licence check, sign, upload
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          ./mvnw -B clean deploy -Prelease \
+          ./mvnw -B -C clean deploy -Prelease \
+            -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
             -Dproject.build.outputTimestamp="${{ steps.v.outputs.timestamp }}"
 
       - name: Upload the release evidence

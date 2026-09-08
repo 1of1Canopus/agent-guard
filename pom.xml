@@ -92,6 +92,7 @@
     <jacoco.version>0.8.15</jacoco.version>
     <enforcer.version>3.6.3</enforcer.version>
     <license-plugin.version>2.7.1</license-plugin.version>
+    <exec-plugin.version>3.6.3</exec-plugin.version>
     <dependency-check.version>13.0.0</dependency-check.version>
     <central-publishing.version>0.11.0</central-publishing.version>
     <maven-gpg.version>3.2.8</maven-gpg.version>
@@ -255,6 +256,42 @@
               </licenseMerges>
               <failOnMissing>true</failOnMissing>
               <failOnBlacklist>true</failOnBlacklist>
+              <!--
+                Do NOT add <excludedLicenses> here as a second gate. It was tried (M1/M2,
+                docs/SECURITY-REVIEW-feat-release-pipeline.md): the build still passes a
+                dependency declaring "Apache-2.0 OR GPL-3.0", because <includedLicenses>
+                already let it through on its permissive half, and <excludedLicenses>
+                REMOVES the GPL-3.0 declaration from THIRD-PARTY-NOTICES.txt in the process
+                (it filters what gets written, not just what passes). That deletes the
+                evidence a licence review would need and makes the gate no stronger. The
+                all-of denial pass below runs outside this plugin, against the notices file
+                this execution already wrote, precisely so it cannot erase what it denies.
+              -->
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!--
+          M1/M2: an all-of *denial* pass over every generated THIRD-PARTY-NOTICES.txt,
+          outside the license-maven-plugin allowlist above. The allowlist is an any-of
+          *permission* check (correct for a genuinely dual-licensed dependency); this is
+          the second, independent check that fails the build if ANY declared licence of a
+          dependency is on the deny list, catching a dependency whose two licence blocks
+          are cumulative rather than alternative. See tools/check-third-party-licences.sh
+          for the deny list and the two coordinate exceptions.
+        -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>${exec-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>check-third-party-licences</id>
+            <phase>verify</phase>
+            <goals><goal>exec</goal></goals>
+            <configuration>
+              <executable>${maven.multiModuleProjectDirectory}/tools/check-third-party-licences.sh</executable>
+              <workingDirectory>${maven.multiModuleProjectDirectory}</workingDirectory>
             </configuration>
           </execution>
         </executions>

@@ -4,6 +4,51 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Added (release pipeline, `feat/release-pipeline`)
+- **Maven Central publishing**, in a `release` profile so `./mvnw verify` is byte-for-byte the
+  build it always was. `org.sonatype.central:central-publishing-maven-plugin` 0.11.0 with
+  `autoPublish=false` and `waitUntil=validated`: the pipeline uploads a bundle and the Central
+  Portal validates it, then it waits for a human to press Publish. Sources and javadoc jars via
+  `maven-source-plugin` and `maven-javadoc-plugin`; detached GPG signatures via
+  `maven-gpg-plugin` 3.2.8, key and passphrase from CI secrets only.
+- **Publish set is exactly three artifacts**: `agent-guard-parent` (the POM), `agent-guard-core`,
+  `agent-guard-spring-boot-starter`. `agent-guard-sample` is excluded twice over:
+  `<excludeArtifacts>` in the release profile keeps it out of the bundle, and
+  `maven.deploy.skip` / `maven.install.skip` / `maven.source.skip` / `maven.javadoc.skip` /
+  `gpg.skip` / `skipPublishing` in its own POM keep it from being built for release at all.
+- **POM metadata Central requires**: `inceptionYear`, `organization`, `developers` (role address
+  `oss@housedevinci.com`, see QUESTIONS #21), `scm`, `issueManagement`, `licenses` with
+  `<distribution>repo</distribution>`. `url` and `scm` carry
+  `child.*.inherit.append.path="false"` so the child POMs point at the repository rather than at
+  a made-up `.../agent-guard-core` path.
+- **Reproducible builds**: `project.build.outputTimestamp` set from the committer date of the
+  commit being released (`scripts/git-commit-timestamp.sh`), and `scripts/verify-reproducible.sh`
+  which builds the tree twice from clean and compares the SHA-256 of every published jar. All six
+  jars, javadoc included, are identical.
+- **`.github/workflows/release.yml`**: `workflow_dispatch` with a `version` input, or a `v*` tag.
+  Derives the version, refuses anything that is not plain semver or that ends in `-SNAPSHOT`,
+  rewrites the POMs in the runner's checkout only (`main` stays on `0.1.0-SNAPSHOT` and nothing is
+  committed back), runs the reproducibility check, then one `deploy -Prelease` that runs tests,
+  format, coverage gate, licence allowlist, signing and upload in that order. `permissions:
+  contents: read` and no `id-token`: the plugin authenticates with the Central user-token pair, not
+  OIDC. Every action pinned by full commit SHA with the tag in a comment. A second job re-runs the
+  sample from a clean clone with a fresh PostgreSQL and times it to its first HTTP response
+  (RELEASE-PROCESS step 6).
+- **`docs/RELEASING.md`**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
+  with the exact export commands) and the per-release steps.
+
+### Changed
+- **Licence gate is now an allowlist and now actually runs.** `license-maven-plugin` moves from
+  `excludedLicenses` (four hand-guessed copyleft spellings) to
+  `includedLicenses=Apache-2.0|MIT|BSD|EPL-2.0|Public Domain` with `licenseMerges` folding the
+  many spellings onto those five, plus `failOnMissing=true`. Runtime scope only
+  (`excludedScopes=test,provided,system`).
+  `<force>true</force>` is the important part: the goal silently skips when
+  `target/THIRD-PARTY-NOTICES.txt` is newer than the POM, so on every incremental local build the
+  old gate checked nothing. Verified by narrowing the allowlist to `MIT` and watching the build
+  fail with "There are 2 forbidden licenses used". See QUESTIONS #22.
+
+
 ### Security (Cipher final verdict on `05f209d`: K1 LOW closed)
 - **K1 (LOW):** the J1 fix scoped the schema-predates guard to search_path *visibility*
   (`to_regclass('agentguard_audit')`, which resolves like a reference — the first schema on the search_path that

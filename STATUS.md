@@ -1,7 +1,61 @@
-# STATUS.md — Module B · Agent Guard, free core (run 11: Isis closes Cipher's final-verdict K1)
+# STATUS.md - Module B - Agent Guard, free core (run 12: Thor builds the release pipeline)
 
-Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
-(https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
+Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
+(merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
+Pro edition out of scope.
+
+## Summary (run 12)
+**Done.** `agent-guard-core` and `agent-guard-spring-boot-starter` are one command away from
+Maven Central. `./mvnw -B clean deploy -Prelease` builds, tests, licence-checks, signs and
+uploads a bundle to the Sonatype Central Portal, where it stops: `autoPublish=false`, so the
+last action is Souhaile pressing Publish. The sample is never published.
+
+| Item | State | Proof |
+|---|---|---|
+| Central publishing plugin | `org.sonatype.central:central-publishing-maven-plugin` 0.11.0, `autoPublish=false`, `waitUntil=validated` | bundle built and rejected only at the Portal's 401 for a fake token |
+| Publish set | parent POM + core + starter, 54 files | `unzip -l target/central-publishing/central-bundle.zip`: no `agent-guard-sample` |
+| Signing | `maven-gpg-plugin` 3.2.8, key from `GPG_PRIVATE_KEY` | 9 `.asc` files, `gpg --verify` good, on a throwaway key |
+| POM metadata | name, description, url, licence, developers, scm, inceptionYear, issueManagement | in the bundle's `agent-guard-core-0.1.0.pom` |
+| Reproducible build | `project.build.outputTimestamp` from the commit date | `scripts/verify-reproducible.sh`: 6/6 jars byte-identical over two clean builds |
+| Licence gate | allowlist `Apache-2.0 MIT BSD EPL-2.0 Public Domain`, `force=true` | narrowing to `MIT` fails the build; the old blocklist was a no-op on incremental builds |
+| Workflow | `.github/workflows/release.yml`, tag `v*` or `workflow_dispatch` | actions pinned by full SHA, verified against the GitHub tag API |
+| Full suite | 220 tests, 1 skip, 0 failures, under `-Prelease` too | `./mvnw -B clean verify -Prelease -Dgpg.skip=true`, BUILD SUCCESS in 51s |
+
+`main` stays on `0.1.0-SNAPSHOT`. The release version comes from the tag (`v0.1.0` -> `0.1.0`)
+or the workflow input, and the workflow rewrites the POMs inside the runner's checkout only;
+nothing is committed back and a `-SNAPSHOT` can never be released.
+
+### Numbers
+| Run | Tests | Failures | Skips | Time |
+|---|---|---|---|---|
+| `./mvnw -B clean verify` (baseline, `f120608`) | 220 (core 161, starter 58, sample 1) | 0 | 1 | 1:06 |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | 220 | 0 | 1 | 0:51 |
+| `scripts/verify-reproducible.sh` | n/a | 0 | n/a | 6/6 jars identical |
+
+The one skip is pre-existing and unrelated: a starter context test that needs Spring AI's real
+`ToolCallingAutoConfiguration` on the test classpath.
+
+### What only Souhaile can do
+The `com.housedevinci` namespace is verified (2026-09-08). What is left:
+1. Add the four repository secrets: `CENTRAL_USERNAME`, `CENTRAL_TOKEN`, `GPG_PRIVATE_KEY`,
+   `GPG_PASSPHRASE`.
+2. Make sure the signing key is on `keyserver.ubuntu.com`.
+3. Make `oss@housedevinci.com` forward somewhere real before 0.1.0 goes out (QUESTIONS #21).
+4. Press Publish on the Portal, the first time and every time.
+Full instructions: `docs/RELEASING.md`.
+
+### Open questions from this run
+QUESTIONS.md #21 (role email, needs confirmation), #22 (licence allowlist, decided),
+#23 (keyserver, decided), #24 (javadoc reproducibility, decided), #25 (plugin choice, decided),
+#26 (notices file inside the jars, open, low).
+
+### Deliberately left out
+- `THIRD-PARTY-NOTICES.txt` is not placed in `META-INF/` of the jars (QUESTIONS #26): it changes
+  jar contents and needs a decision about what the starter's notices should list.
+- No GitHub Release is created and no tag is pushed by the workflow. `permissions: contents: read`
+  is worth more than the convenience, and the release notes are a human's job anyway.
+- The workflow was not executed: it needs the four secrets. Everything it runs was executed
+  locally instead, including the upload, which failed only at the Portal's authentication.
 
 ## Summary (run 11)
 **Done.** Isis closed K1 (LOW) from Cipher's final verdict on `05f209d`

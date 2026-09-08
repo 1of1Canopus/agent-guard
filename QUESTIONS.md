@@ -188,3 +188,63 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     both oids resolved via `to_regclass(quote_ident(current_schema()) || '.agentguard_audit')` /
     `... '.agentguard_audit_anchor'` in one `DECLARE` block — no pushback filed. Full write-up: CHANGELOG "Cipher
     final verdict on 05f209d (K1 LOW closed)"; STATUS.md run 11.
+
+## Release pipeline (2026-09-08, `feat/release-pipeline`)
+21. **[decided, needs Souhaile's confirmation]** POM `<developers>` email. Central requires
+    developer contact details on the published POM, and that POM is public forever. I put
+    `oss@housedevinci.com` rather than any personal address: a role mailbox can be forwarded,
+    filtered or retired, a personal one cannot be taken back once it is in
+    `agent-guard-core-0.1.0.pom` on repo1.maven.org. **This address does not exist yet.** It
+    must forward somewhere before 0.1.0 is published, otherwise the security-contact path in
+    a public library is a dead letter. Recommendation: a forwarding alias on the
+    housedevinci.com mailbox, and the same address in `SECURITY.md`.
+22. **[decided]** The licence gate is an allowlist, not a blocklist, and it runs on every
+    build rather than only in the release profile. Allowed, after `licenseMerges` folds the
+    forty-odd spellings onto five canonical names: `Apache-2.0`, `MIT` (incl. `MIT-0`),
+    `BSD` (2- and 3-clause), `EPL-2.0`, `Public Domain` (incl. CC0). Everything else fails
+    the build, GPL/LGPL/AGPL/MPL/CDDL/SSPL included.
+    - Why an allowlist: the previous configuration was
+      `excludedLicenses=GNU General Public License|GPL-2.0|GPL-3.0|AGPL-3.0`, which only
+      catches copyleft licences spelled exactly the way we guessed. An allowlist catches the
+      ones nobody thought of.
+    - Why not release-only, as the brief asked: a copyleft dependency is cheap to remove on
+      the PR that adds it and expensive to remove on release day. `./mvnw verify` semantics
+      are unchanged, because this execution already ran at `package` before this branch.
+    - `EPL-2.0` is there for the Jakarta APIs and Logback. Weak, file-level copyleft that
+      does not reach our code across a link.
+    - `Public Domain` is not in the list the brief named. `org.json:json` and the CC0 half of
+      `HdrHistogram` declare it, and it carries fewer obligations than MIT. Flagging it
+      because it is an addition, not because it is a risk.
+    - Observed behaviour worth knowing: `license-maven-plugin` accepts a dependency when **any**
+      one of its declared licences is allowed. `logback` (`EPL-2.0` OR `LGPL-2.1-only`) and
+      `jakarta.annotation-api` (`EPL-2.0` OR `GPL-2.0-with-classpath-exception`) pass on their
+      permissive half, which is legally the right answer for a dual-licensed artifact, but it
+      does mean the gate would also pass an `Apache-2.0 OR GPL-3.0` dependency.
+    - **Bug found and fixed:** the goal silently skips when `target/THIRD-PARTY-NOTICES.txt`
+      is newer than the pom, so on any incremental local build the old blocklist checked
+      nothing at all. `<force>true</force>` now makes it run every time. Verified both ways:
+      with the allowlist narrowed to `MIT` the build fails with "There are 2 forbidden
+      licenses used"; without `force` the same narrowing passes.
+23. **[decided]** Keyserver: `keyserver.ubuntu.com`. Sonatype names it first and it has been
+    reachable. `keys.openpgp.org` strips the user id from an uploaded key until the address is
+    confirmed by email, which makes a key that looks anonymous to anyone verifying it.
+24. **[decided]** The reproducibility check enforces the two `.jar` and two `-sources.jar`
+    files and only reports on the javadoc jars. Javadoc output has historically embedded JDK
+    build strings that `-notimestamp` does not remove. On this tree, on Temurin 21.0.10, all
+    six jars including javadoc are byte-identical across two clean builds, so the exemption is
+    currently unused; it is there so a JDK upgrade does not fail a release for something no
+    consumer checks.
+25. **[decided]** Publishing plugin: `org.sonatype.central:central-publishing-maven-plugin`
+    0.11.0. It is the plugin Sonatype documents for the Central Portal
+    (https://central.sonatype.org/publish/publish-portal-maven/ , read 2026-09-08; that page
+    still shows 0.9.0 in its snippet, and 0.11.0 is the latest release on Maven Central as of
+    the same date, published 2026-06-16). The old OSSRH path
+    (`nexus-staging-maven-plugin` + oss.sonatype.org) is retired and is not an option. The
+    plugin needs no `id-token` permission: it authenticates with the Central user-token pair,
+    not OIDC, so the release workflow requests `contents: read` and nothing else.
+26. **[open, low]** `THIRD-PARTY-NOTICES.txt` is generated into `target/` and uploaded as a
+    workflow artifact; it is **not** placed inside the published jars under `META-INF/`.
+    `specs/LICENSING.md` says the notices file is "shipped" without saying where.
+    Recommendation: put it in `META-INF/` of both jars in a follow-up, once someone decides
+    whether the starter's notices should list the whole Spring Boot tree (88 entries) or only
+    what the starter itself adds. Deliberately out of scope here: it changes jar contents.

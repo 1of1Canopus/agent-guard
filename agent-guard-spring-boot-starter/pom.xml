@@ -120,4 +120,26 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+
+  <build>
+    <!--
+      M7: the project's own LICENSE and NOTICE, copied into META-INF/ of the published jar.
+      Apache-2.0 SS4(a) requires a copy of the licence to accompany distributed copies;
+      SS4(d) requires NOTICE to be propagated. This is a separate concern from the deferred
+      THIRD-PARTY-NOTICES.txt embedding (QUESTIONS.md #26).
+    -->
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <resource>
+        <directory>${maven.multiModuleProjectDirectory}</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>LICENSE</include>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
+  </build>
 </project>

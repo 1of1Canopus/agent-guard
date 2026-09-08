@@ -520,3 +520,533 @@ Named here rather than left implied, because a skipped check is never a passing 
 
 Every fix must flip its probe in `tools/cipher-probe-release-pipeline.sh`. When the script prints
 `still weak: 0` and exits 0 — the inverted exit code is deliberate — the branch is ready for a re-verification pass.
+
+---
+
+## Re-verification (30aec6f)
+
+Reviewer: `cipher`. Date: 2026-09-08. Scope: PR #9 at HEAD `30aec6f`, five commits by Isis on top of `41c3755`
+(the first review). Read first: `STATUS.md` run 13, `QUESTIONS.md` #27, `docs/RELEASING.md`, `SECURITY.md`,
+`tools/check-third-party-licences.sh`, `.github/workflows/release.yml`, `CHANGELOG.md`.
+
+**Nothing in production code, in `pom.xml` or in the workflow was edited by this pass.** The only files this pass
+changes are this document and `tools/cipher-probe-release-pipeline.sh` (my own probes).
+
+### Verdict: **MERGE WITH FIXES**
+
+No HIGH. Twelve of the first pass's fifteen fix-list items are closed and hold under attack. The fixes themselves
+introduced eight new findings, four MEDIUM, four LOW, plus three INFO — one of which is that the first pass's I1
+was never closed at all. Under the no-allowance rule none of them merges as-is. One of them, **N1**, is on its own
+a merge blocker independent of severity: **this branch does not build from a clean checkout.**
+
+| Severity | Count | Ids |
+|---|---|---|
+| HIGH | 0 | — |
+| MEDIUM | 4 | N1 `verify` fails on a fresh clone · N2 the denial pass misses prose licence names · N3 the denial pass's coordinate is forgeable by the dependency's own name · N4 the bundle assertion points at a path the plugin never writes |
+| LOW | 4 | N5 tag-signature check is off by default and unbound to the key id · N6 the `-X` guard misses two equivalent debug switches · N7 `RELEASING.md`'s scratch-keyring trap does not fire on a failing step · N8 `workflow_dispatch` skips the ancestry check |
+| INFO | 3 | N9 the `classpath-exception` / `cpe` carve-out is a licence-name pattern · N10 the denial pass crashes on an empty `()` token · N11 I1 was never closed · N12 `RELEASING.md` still documents `skipPublishing` |
+
+### Numbers
+
+| Run | Result |
+|---|---|
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` (working tree) | **220 tests** (core 161, starter 58, sample 1), 0 failures, **1 skip**, BUILD SUCCESS in **58.3s** |
+| `./mvnw -B verify -DskipTests` **on a fresh `git clone`** | **BUILD FAILURE** — `exec:exec (check-third-party-licences) @ agent-guard-parent`: "no THIRD-PARTY-NOTICES.txt found under */target/" (**N1**) |
+| `scripts/verify-reproducible.sh` | **6/6 jars byte-identical** across two clean builds, javadoc jars included, timestamp `2026-09-08T18:55:27Z`; checksum file written |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | **13 FIXED / 10 WEAK**, exit 1. All 13 first-pass probes flipped; the 10 WEAK are the new N-findings |
+| `deploy -Prelease` on a `versions:set 0.1.0` clone, fake token | bundle built (**45 files**, no `agent-guard-sample`), upload stopped at the Portal's 401 |
+| Docker | up; no test skipped for want of it. The one skip is the pre-existing Spring AI context test |
+
+### The first pass, item by item
+
+Verified in code **and** by attack, not by reading the diff.
+
+| Id | State | How it was verified |
+|---|---|---|
+| M1 | closed, **incompletely** | `probe_licence_gate_accepts_dual_apache_or_gpl` flips: a real `verify` build against a synthetic `Apache-2.0` + `GPL-3.0` dependency now fails. But the denial pass only catches that spelling — see **N2**, **N3** |
+| M2 | closed | No `<excludedLicenses>` anywhere; the anti-pattern is commented on the `third-party-notices` execution and in the script header |
+| M3 | closed | `cache: maven` gone from `publish`, `rm -rf ~/.m2/wrapper/dists` before the first `mvnw`, `-Dmaven.repo.local="$RUNNER_TEMP/m2repo"` on both invocations, `-C` on deploy. New probe asserts the removal step precedes the first `mvnw` line |
+| M4 | closed, holds | The real step body was extracted from the workflow and run against 12 inputs: `0.1.0\nmalicious=1` **rejected**, leading `v` rejected, `vv0.1.0` rejected, `1.0.0-SNAPSHOT` rejected on both paths, trailing space rejected, Arabic-Indic digits `١.٢.٣` rejected (bash `=~` `[0-9]` does not match them in a UTF-8 locale — checked directly). `1.0.0-snapshot` and `01.02.03` are accepted; neither is a Maven snapshot and neither is a finding |
+| M5 (environment) | closed in code | `environment: release` present. Creating it with a reviewer is a release gate, below |
+| M5 (ancestry) | closed for the tag path | Simulated on a scratch repository: tag on main's merge commit **accepted**, tag on a `--no-ff` branch tip **accepted**, tag on the squashed commit on main **accepted**, tag on the pre-squash branch tip **refused**, `origin/main` missing **refused** (fails closed). Not applied to `workflow_dispatch` — **N8** |
+| M5 (signature) | **not closed** | Off unless a repository variable is set, and unbound to that key when it is — **N5** |
+| M6 | closed, one residual | `pbcopy` is gone; `gh secret set` from a pipe is the only path; the pasteboard reasoning is written out. The `trap` claim is wrong — **N7** |
+| M7 | closed | `LICENSE` at the root is the verbatim Apache-2.0 text (md5 `3b83ef96387f14655fc854ddc3c6bd57`); `NOTICE` is the two lines. `unzip -l` of the jars **inside the real bundle**: `META-INF/LICENSE` + `META-INF/NOTICE` in `agent-guard-core-0.1.0.jar`, `-sources.jar`, and both starter equivalents. Javadoc jars carry neither; not a finding |
+| L1 | closed | `verify-reproducible.sh` writes `<sha256>  <name>` per jar, outside `target/` when `REPRODUCIBLE_SHA_FILE` is set, and the post-deploy step compares and prints a step-summary table. Run for real: 6/6 identical. It is reachable only if N4 is fixed first — the step before it always fails today |
+| L2 | closed | `group: release-${{ inputs.version \|\| github.ref_name }}` |
+| L3 | closed | `persist-credentials: false` on both checkouts, `fetch-depth: 0` on the publish one (which is what makes `origin/main` resolvable for the ancestry check) |
+| L4 | closed | Evidence upload is `if: success()`; a separate `if: failure()` step uploads only notices and surefire reports as `release-<v>-FAILED` |
+| L5 | **not closed** | `skipPublishing` is gone from the sample and the comment is corrected. The assertion step that was supposed to replace it never runs — **N4** |
+| L6 | closed | `SECURITY.md` exists: address, supported-versions table, 90-day window, scope. It names `security@housedevinci.com` while the POM names `oss@housedevinci.com`: **two mailboxes**, both on the release gate |
+| L7 | correctly deferred | Documented as a release gate in `RELEASING.md` Part 2 step 1 and in `STATUS.md`. Souhaile's |
+| I1 | **not closed** | `pom.xml` still passes `--pinentry-mode loopback` and still says it is "required because there is no tty" — **N11** |
+| I4 | closed, incompletely | The guard step exists and refuses `-X`, `--debug`, `-e` in `MAVEN_ARGS`/`MAVEN_OPTS` and on the two Maven command lines. Two equivalent switches walk past it — **N6** |
+
+### Ruling on QUESTIONS.md #27 — Isis is right
+
+`probe_mvnw_skips_checksum_for_existing_distribution` is **reclassified as not-a-finding** and has been removed.
+
+The reasoning stands on its own terms. The probe was a text match on vendored Apache Software Foundation code
+asserting a property no Maven Wrapper has and none is going to grow: `distributionSha256Sum` is compared against
+the downloaded zip and nothing re-checks an already-unpacked distribution. The only change that would have turned
+the probe green — a sidecar checksum written at install time — is writable by precisely the attacker M3 describes,
+in the same write that plants the poisoned distribution. That is a marker against accidental corruption sold as a
+defence against a hostile cache, and flipping a probe with it is the same failure mode as weakening the probe,
+one level removed. Isis was right to refuse it and right to flag it rather than quietly leave the script at exit 1.
+
+Two corrections to how it was closed, neither a criticism of the decision:
+
+1. **A reclassified probe is deleted or replaced, never left WEAK.** A probe file whose exit code cannot reach 0 on
+   a clean branch stops being evidence and starts being noise, and `RELEASING.md` Part 2 step 1 tells Souhaile to
+   run this script and expect exit 0. That was my rule to enforce and I am enforcing it here rather than asking
+   Isis to.
+2. **The coverage should not go with it.** M3's real control is operational, so the probe should be too. It is
+   replaced by `probe_release_job_can_exec_an_unverified_maven_distribution`, which is WEAK if `cache: maven`
+   returns to the `publish` job, if the `rm -rf ~/.m2/wrapper/dists` step disappears, or if it drifts below the
+   first `./mvnw` line in that job. It is FIXED at `30aec6f`.
+
+The script now exits 0 on a branch with no open findings. It exits 1 today because of N1–N11, which is the correct
+signal.
+
+---
+
+## MEDIUM
+
+### N1 — `./mvnw verify` fails on a clean checkout: the licence denial pass runs on the parent before any notices exist
+
+**Where:** `pom.xml`, `exec-maven-plugin` execution `check-third-party-licences` (root `<build><plugins>`, phase
+`verify`), and `tools/check-third-party-licences.sh`'s fail-closed "no THIRD-PARTY-NOTICES.txt found" branch.
+
+**Repro (executed).**
+
+```
+$ git clone --no-hardlinks <repo> fresh && cd fresh
+$ ./mvnw -B verify -DskipTests -Dspotless.check.skip=true -Djacoco.skip=true
+[INFO] --- exec:3.6.3:exec (check-third-party-licences) @ agent-guard-parent ---
+check-third-party-licences: no THIRD-PARTY-NOTICES.txt found under */target/ (did third-party-notices run first?)
+[ERROR] Failed to execute goal ... (check-third-party-licences) on project agent-guard-parent:
+        Command execution failed. Process exited with an error: 1
+[INFO] BUILD FAILURE
+```
+
+Probe: `probe_verify_fails_on_a_clean_checkout` (WEAK, `CIPHER_PROBE_MAVEN=1`).
+
+**Impact.** The execution is declared in the root `<build>`, so it is inherited by every module, and Maven runs the
+parent's whole lifecycle first. At `agent-guard-parent:verify` no module has produced a `THIRD-PARTY-NOTICES.txt`
+yet — `add-third-party` writes nothing for a `pom`-packaging module — so the script's fail-closed branch fires and
+the build stops. `ci.yml` runs `./mvnw -B clean verify` on a fresh runner checkout: **CI is red on every build of
+this branch.** The release job survives only by accident, because `verify-reproducible.sh` runs two `clean package`
+builds before `clean deploy`, leaving notices files on disk for the parent's `verify` to find — which is the second
+half of the problem: **when it passes on the parent, it passes by validating the previous build's notices files.**
+Each module's `target/` is cleaned when its own turn in the reactor comes, so the parent's check systematically
+reads stale evidence, and it is the last module's run that does the real work.
+
+**Exact fix.** Make each module check its own module, and keep every jar module fail-closed:
+
+1. Add `<arguments><argument>${project.build.directory}</argument><argument>${project.packaging}</argument></arguments>`
+   to the `check-third-party-licences` execution in `pom.xml`.
+2. In `tools/check-third-party-licences.sh`, take those two arguments; scan
+   `<build directory>/THIRD-PARTY-NOTICES.txt` only. If the file is missing: exit 1 as today, **unless** the
+   packaging is `pom`, in which case print one line saying the module declares no shipped dependencies and exit 0.
+   Do not widen this to any other packaging and do not fall back to a tree-wide `find`.
+3. Test, both of which must hold: `probe_verify_fails_on_a_clean_checkout` flips to FIXED (a fresh clone builds
+   green), and deleting `agent-guard-core/target/THIRD-PARTY-NOTICES.txt` between `package` and `verify` still
+   fails the build.
+
+### N2 — The denial pass matches SPDX ids and the literal substring "gpl", so prose licence names pass on their permissive half
+
+**Where:** `tools/check-third-party-licences.sh`, `DENIED_TOKENS` and `is_denied_token`.
+
+**Repro (executed, one synthetic dependency line at a time, script exit code shown).**
+
+| licence tokens declared alongside `Apache-2.0` | script |
+|---|---|
+| `GPL-3.0` | exit 1 — denied |
+| `GPLv3` | exit 1 — denied |
+| **`GNU General Public License v3`** | **exit 0 — clean** |
+| **`Mozilla Public License, Version 2.0`** | **exit 0 — clean** |
+| **`MPL 2.0`** | **exit 0 — clean** |
+| **`Common Development and Distribution License (CDDL) v1.0`** | **exit 0 — clean** |
+| **`Server Side Public License, v 1`** | **exit 0 — clean** |
+| **`European Union Public Licence 1.2`** | **exit 0 — clean** |
+| **`Business Source License 1.1`** | **exit 0 — clean** |
+| **`Creative Commons Attribution-NonCommercial 4.0`** | **exit 0 — clean** |
+
+Probe: `probe_denial_pass_misses_prose_licence_names` (WEAK).
+
+**Impact.** This is M1, respelled. `is_denied_token` denies a token only if its lowercased form *contains* `gpl` or
+is *exactly equal* to one of eighteen hyphenated SPDX ids. The tokens that actually reach it are POM-declared
+`<name>` values after `licenseMerges`, and real POMs write prose: `h2database` declares "MPL 2.0" and "EPL 1.0";
+GNU-licensed artifacts routinely write "GNU General Public License, version 2", which contains no `gpl` at all. The
+script's own comment claims it "catches spellings such as … 'GNU General Public License v3'". It does not — that is
+the first case I tried and it passed. A dual-declared dependency using any of these spellings clears the plugin's
+allowlist on `Apache-2.0` and clears the denial pass because its copyleft half is unrecognised, which is exactly the
+combination M1 exists to stop, and the result is permanent on Maven Central.
+
+**Exact fix.** Match on a normalised form, not on the raw token, and cover the words as well as the ids.
+
+1. Normalise before matching: lowercase, strip everything that is not `[a-z0-9]` (so `GPL-3.0`, `GPL 3.0`, `gplv3`
+   and `GPL_3` all become `gpl3`).
+2. Deny on **word patterns** as well as ids, at minimum: `generalpubliclicense` (covers GPL, LGPL and AGPL prose in
+   one), `lessergeneralpublic`, `affero`, `mozillapubliclicense`, `commondevelopmentanddistribution`,
+   `serversidepublic`, `businesssourcelicense`, `europeanunionpublic`, `noncommercial`, `elastic2`, `cpol`, plus
+   the existing normalised ids.
+3. Keep the denial *positive*: anything the pass does not recognise is not thereby allowed — that is the plugin's
+   `<includedLicenses>` job, and it is the reason the two passes exist. Do not add "unknown = deny" here.
+4. Test: `probe_denial_pass_misses_prose_licence_names` flips to FIXED. Every row in the table above must exit 1.
+
+### N3 — The coordinate the denial pass matches is taken from text the dependency controls
+
+**Where:** `tools/check-third-party-licences.sh`, the `perl -ne` extractor and `is_allowed_coordinate`.
+
+**Repro (executed).**
+
+```
+# a dependency whose POM <name> is "evil (ch.qos.logback:logback-core:1.5.6 - http://x)"
+(GPL-3.0) evil (ch.qos.logback:logback-core:1.5.6 - http://x) (c.s:evil:1.0 - no url defined)
+  -> check-third-party-licences: clean          (exit 0)
+
+# a dependency whose version carries a character outside [\w.-]
+(GPL-3.0) x (c.s:syn:1.0+build - no url defined)
+  -> check-third-party-licences: clean          (exit 0)
+```
+
+Probe: `probe_denial_pass_coordinate_can_be_forged_by_the_dependency_name` (WEAK).
+
+**Impact.** Two fail-open paths in one parser.
+
+* The regex takes the **first** `(group:artifact:version - ` group on the line with a non-greedy `.*?`, and the
+  dependency's own `<name>` is printed on that line *before* its real coordinate. A dependency named so that it
+  contains an allowlisted coordinate in that shape is read as `ch.qos.logback:logback-core`, matches
+  `ALLOWED_COORDINATES`, and every licence it declares is skipped without being looked at. The name is written by
+  whoever published the dependency. The coordinate allowlist is the one part of this script the design leans on —
+  "an exception is a coordinate a human wrote down" — and it is being read out of attacker-supplied text.
+* A line the regex does not match at all is skipped in silence. `[\w.\-]` excludes `+`, `~` and `!`, all legal in a
+  Maven version, so a dependency can be invisible to the gate by versioning itself `1.0+build`.
+
+**Exact fix.**
+
+1. Anchor the coordinate to the **end** of the line, not the first match: the notices format is
+   `(<licences>) <name> (<groupId>:<artifactId>:<version> - <url>)`, so match the **last** parenthesised group on
+   the line and take the coordinate from it. Widen the version character class to `[^\s:()]+`.
+2. Count the lines. A line inside the dependency list that yields no coordinate must **fail** the build with
+   "unparseable dependency line", not be skipped. Compare the parsed count against the plugin's own
+   "Lists of N third-party dependencies." header and fail on a mismatch.
+3. Test: `probe_denial_pass_coordinate_can_be_forged_by_the_dependency_name` flips to FIXED — both lines above must
+   exit 1.
+
+### N4 — The bundle assertion looks for the bundle in a directory the plugin never writes, so it always fails and the two steps after it never run
+
+**Where:** `.github/workflows/release.yml`, step `Confirm the bundle contains exactly the three published
+coordinates`, `bundle="agent-guard-sample/target/central-publishing/central-bundle.zip"`.
+
+**Repro (executed, not inferred).** A clone with `versions:set -DnewVersion=0.1.0`, then
+`./mvnw -s <scratch settings> deploy -Prelease -Dgpg.skip=true`, run to the Portal's 401 on a fake token:
+
+```
+$ find . -name central-bundle.zip
+./target/central-publishing/central-bundle.zip
+$ [ -f agent-guard-sample/target/central-publishing/central-bundle.zip ] && echo MATCH || echo MISMATCH
+MISMATCH
+$ unzip -l target/central-publishing/central-bundle.zip | tail -2
+  1433398   45 files
+$ unzip -l target/central-publishing/central-bundle.zip | grep -c agent-guard-sample
+0
+```
+
+Probe: `probe_bundle_assertion_points_at_the_wrong_path` (WEAK).
+
+**Impact.** `central-publishing-maven-plugin` assembles the aggregate bundle in the **top-level** project's build
+directory, not in the last module's. L5's reasoning about the sample being the module that performs the upload is
+right; the path it produced is wrong, and my own I7 in the first pass records the correct one
+(`target/central-publishing/central-bundle.zip`). Consequences, in order:
+
+1. The step fails with `::error::agent-guard-sample/target/… was not created` on **every** release run, after the
+   upload has already happened. The run is red while a validated deployment sits on the Portal.
+2. The assertion never inspects anything, so the control L5 asked for — the sample is not in the bundle, the three
+   coordinates are — does not exist.
+3. `Confirm the deployed jars match the reproducibility check` (L1) and `Upload the release evidence` (L4) are both
+   `if: success()`. Neither ever runs. The human pressing Publish is shown no checksum table, which was L1's whole
+   point.
+
+**Exact fix.** Set `bundle="target/central-publishing/central-bundle.zip"`. Do not glob for it: a `find`-based
+lookup would silently pass on a stale bundle from an earlier module. Keep the step `if: success()` and keep the
+three-coordinate and no-sample assertions as written. Test:
+`probe_bundle_assertion_points_at_the_wrong_path` flips to FIXED.
+
+---
+
+## LOW
+
+### N5 — The tag-signature check is off unless a variable is set, and does not bind the signature to that key
+
+**Where:** `.github/workflows/release.yml`, step `Verify the tag signature`.
+
+**Repro.** The step reads:
+
+```bash
+if [ -z "${RELEASE_SIGNING_KEY_ID:-}" ]; then
+  echo "::warning::RELEASE_SIGNING_KEY_ID is not configured; tag signature not verified. …"
+  exit 0
+fi
+gpg --keyserver keyserver.ubuntu.com --recv-keys "$RELEASE_SIGNING_KEY_ID"
+git verify-tag "$GITHUB_REF_NAME"
+```
+
+and, on the binding, executed with two throwaway keys in one keyring — `RELEASE` and `ATTACKER` — on a tag signed
+by `ATTACKER`:
+
+```
+$ git verify-tag v0.1.0; echo $?
+gpg: Good signature from "Cipher ATTACKER <a@example.invalid>"
+0
+$ git verify-tag --raw v0.1.0 | grep VALIDSIG
+[GNUPG:] VALIDSIG 5F26203CCC9EF9199778D8A4E00D210DC53C5682 …
+```
+
+Probe: `probe_tag_signature_check_is_optional_and_unbound` (WEAK).
+
+**Impact.** Two things, both of which my own spec-review rule forbids: *the secure mode is the default; never
+prescribe a control as "optional, when set"*.
+
+* Unset variable → warning → `exit 0`. The control's default state is off, and the signal that it is off is a
+  `::warning::` in a log nobody reads on a run that goes green. `RELEASING.md` states this is deliberate so the
+  `workflow_dispatch` rehearsal is not blocked — but the step is already `if: github.event_name == 'push'`, so it
+  never runs on that path at all. The exemption buys nothing and costs the control.
+* `git verify-tag` asserts that *some* key in the keyring produced a good signature, never that it was the
+  configured one. On a fresh runner the keyring holds whatever `--recv-keys` returned, and nothing constrains
+  `RELEASE_SIGNING_KEY_ID` to a full fingerprint — a short key id on `keyserver.ubuntu.com`, where anyone may
+  upload, can return more than one key.
+
+**Exact fix.**
+1. Delete the skip branch. Unset `RELEASE_SIGNING_KEY_ID` on a tag push is `::error::` and `exit 1`. It is a
+   release gate already on Souhaile's list; make the workflow enforce it instead of narrating it.
+2. Require a fingerprint: `[[ "$RELEASE_SIGNING_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]` or fail.
+3. Bind the signature to it:
+   ```bash
+   git verify-tag --raw "$GITHUB_REF_NAME" 2>&1 \
+     | grep -q "^\[GNUPG:\] VALIDSIG ${RELEASE_SIGNING_KEY_ID^^} " \
+     || { echo "::error::$GITHUB_REF_NAME is not signed by $RELEASE_SIGNING_KEY_ID"; exit 1; }
+   ```
+4. Update `docs/RELEASING.md` Part 1 step 6 accordingly: full fingerprint, and the variable is required, not
+   optional. Test: `probe_tag_signature_check_is_optional_and_unbound` flips to FIXED.
+
+### N6 — The `-X` guard misses `--errors` and the slf4j log level, which dump the same secrets
+
+**Where:** `.github/workflows/release.yml`, step `Refuse Maven debug output in this job`.
+
+**Repro (executed against this repository, with marker values in the environment).**
+
+```
+$ MAVEN_OPTS='-Dorg.slf4j.simpleLogger.defaultLogLevel=debug' ./mvnw -B -o -pl agent-guard-core process-resources
+[DEBUG] env.CENTRAL_TOKEN: CIPHERTOKEN-REVERIFY-7731
+[DEBUG] env.MAVEN_GPG_PASSPHRASE: CIPHERPASS-REVERIFY-7731
+$ ./mvnw -B -o -X -pl agent-guard-core process-resources     # the flag the guard does block
+[DEBUG] env.CENTRAL_TOKEN: CIPHERTOKEN-REVERIFY-7731
+[DEBUG] env.MAVEN_GPG_PASSPHRASE: CIPHERPASS-REVERIFY-7731
+```
+
+and the guard step's own body, extracted from the workflow and run:
+
+| `MAVEN_OPTS` | guard |
+|---|---|
+| `-X`, `--debug`, `-e` | refused |
+| **`--errors`** | **passes** |
+| **`-Dorg.slf4j.simpleLogger.defaultLogLevel=debug`** | **passes** |
+| **`-Dorg.slf4j.simpleLogger.log.org.apache.maven=debug`** | **passes** |
+
+Probe: `probe_debug_guard_misses_the_slf4j_log_level` (WEAK).
+
+**Impact.** The guard matches three literal flags. Maven's debug output is not gated on those flags — it is gated
+on the log level, which `MAVEN_OPTS` can set directly, and `-e` has a long form the guard does not know. The
+identical clear-text dump of `CENTRAL_TOKEN` and `MAVEN_GPG_PASSPHRASE` comes out either way. GitHub's masking is
+still there and these values are registered secrets, so this is the same defence-in-depth loss I4 described, not a
+new class of exposure — but a guard that names three spellings of a thing it does not actually gate on invites the
+belief that the job is safe from it.
+
+**Exact fix.** In the same step, extend both the environment check and the two static command-line checks to
+also refuse `--errors` and any occurrence of `simpleLogger`, `defaultLogLevel` or `maven.debug` in `MAVEN_ARGS` /
+`MAVEN_OPTS`. Then close the hole rather than only naming it: set `MAVEN_ARGS: -B` at job level and assert that
+`MAVEN_OPTS` in this job is exactly the `-Dmaven.repo.local=…` the reproducibility step needs. Test:
+`probe_debug_guard_misses_the_slf4j_log_level` flips to FIXED.
+
+### N7 — `RELEASING.md`'s scratch-keyring `trap` does not fire on a failing step, and the document says it does
+
+**Where:** `docs/RELEASING.md`, Part 1 step 4, the sanity-check block, and the sentence under it.
+
+**Repro (executed, the block exactly as written, pasted into a shell).**
+
+```
+scratch keyring: /var/folders/…/tmp.r4k7piQVKS
+--- after the failing step, still inside the same shell ---
+  directory STILL EXISTS: /var/folders/…/tmp.r4k7piQVKS
+  GNUPGHOME is still exported: /var/folders/…/tmp.r4k7piQVKS
+--- after the shell exited ---
+  cleaned up on shell exit
+```
+
+Probe: `probe_releasing_scratch_keyring_trap_does_not_fire_on_failure` (WEAK).
+
+**Impact.** M6's real leaks — `pbcopy` and a scratch keyring with no cleanup at all — are closed, and this is the
+residue. `trap … EXIT` set at the top level of the shell Souhaile is told to paste into fires when **that shell**
+exits, i.e. when he closes the terminal tab, not when a step in the block fails. The document says "cleaned up
+automatically, key included, even if a step above it fails", which is the one case it does not cover. Until the tab
+closes, a directory under `$TMPDIR` holds `private-keys-v1.d` for the release key, and `GNUPGHOME` stays exported,
+so every later `gpg` command in that session — including `gpg --send-keys` in step 3 — silently operates on the
+throwaway keyring instead of his own.
+
+**Exact fix.** Put the block in a subshell so the trap has a scope that ends with the check, and drop the now
+inaccurate sentence:
+
+```bash
+(
+  GNUPGHOME=$(mktemp -d) && chmod 700 "$GNUPGHOME" && export GNUPGHOME
+  trap 'gpgconf --kill all 2>/dev/null; rm -rf "$GNUPGHOME"' EXIT
+  gpg --armor --export-secret-keys <KEY_ID> | gpg --batch --import
+  gpg --list-secret-keys                    # the key must appear
+)
+```
+
+Say what is true: the subshell exits at the closing parenthesis, on success or on failure, and the trap removes the
+keyring then; `GNUPGHOME` never leaks into the outer shell. Test:
+`probe_releasing_scratch_keyring_trap_does_not_fire_on_failure` flips to FIXED.
+
+### N8 — `workflow_dispatch` skips the ancestry check entirely
+
+**Where:** `.github/workflows/release.yml`, step `Verify the released commit is on main`,
+`if: github.event_name == 'push'`.
+
+**Repro.** Static, and the step's comment states it: "Only meaningful on the tag-push path; `workflow_dispatch`
+releases whatever is checked out on its own ref, which is already gated by who can trigger a `workflow_dispatch`
+run." Probe: `probe_ancestry_check_skips_the_dispatch_path` (WEAK).
+
+**Impact.** The people who can start a `workflow_dispatch` run are the people who can push a tag — the same set
+M5 was written about, so the trigger is not a narrower privilege. **Actions → Release → Run workflow** on a scratch
+branch builds, signs and uploads a bundle from a commit that is not on `main`, with the ancestry check skipped by
+construction. The `release` environment's reviewer gate does block it before the job starts, once that environment
+exists, and that is why this is LOW rather than MEDIUM — but the reviewer is shown a ref name, not a diff, and the
+check is free to run on this path.
+
+**Exact fix.** Drop the `if:` and run the check on both paths — on a dispatch, `$GITHUB_SHA` is the tip of the ref
+that was chosen, which is exactly what is about to be released. Keep the `git fetch` and the failure message as
+they are. If a rehearsal from a branch is genuinely wanted, make it an explicit `workflow_dispatch` input
+(`allow_off_main: false` by default) that is refused unless it is set, rather than a silent skip. Test:
+`probe_ancestry_check_skips_the_dispatch_path` flips to FIXED.
+
+---
+
+## INFO
+
+### N9 — The `classpath-exception` / `cpe` carve-out is a licence-name pattern, which the script's own design forbids
+`is_denied_token` allows any token containing `gpl` if it also contains `classpath-exception`, `classpath exception`
+or `cpe`. Executed: `GPL-3.0-with-classpath-exception` passes, and so does `GPL-3.0 see cpe notice` — `cpe` is a
+three-character substring. The script's stated principle is "an exception is a coordinate a human wrote down, never
+a licence-token pattern", and this is a licence-token pattern. It is also dead weight: the only artifact in the
+tree that needs it, `jakarta.annotation:jakarta.annotation-api`, is already in `ALLOWED_COORDINATES` and never
+reaches the token check. It can therefore only ever admit something new that no human has looked at. That
+prescription was mine in the first pass and it was wrong. **Fix:** delete the qualifier carve-out; every `gpl`
+token is denied, and a genuine classpath-exception dependency is admitted the same way logback is — by a coordinate
+a human wrote down.
+
+### N10 — The denial pass dies on an empty `()` licence token
+Executed: a dependency line carrying `()` produces `check-third-party-licences.sh: line 114: tok_list[@]: unbound
+variable` and exit 1. It fails closed, which is the right direction, but on a shell error rather than a verdict, and
+`set -u` ends the script there, so every file and line it had not yet reached goes unscanned. Reachable only from a
+notices file, whose content comes from third-party POMs. Probe:
+`probe_denial_pass_crashes_on_an_empty_licence_token` (WEAK). **Fix:** `IFS='|' read -ra tok_list <<<"$tokens" ||
+true` and iterate `"${tok_list[@]:-}"`; treat a dependency whose token list is empty as an unparseable line under
+N3's counting rule.
+
+### N11 — I1 was never closed
+`pom.xml`'s `maven-gpg-plugin` block still carries `<gpgArguments><arg>--pinentry-mode</arg><arg>loopback</arg>`
+and the comment above it still reads "loopback pinentry is required because there is no tty". The plugin passes
+that flag itself whenever a passphrase is supplied — the first pass read it off the real command line:
+`gpg --pinentry-mode loopback --batch --pinentry-mode loopback --passphrase-fd 0 …`. Harmless, and it is on the
+fix list as item 14 of 15, closed in neither the commits nor `CHANGELOG.md`. Probe:
+`probe_gpg_arguments_comment_still_credits_the_wrong_actor` (WEAK). **Fix:** as prescribed the first time — delete
+the block, or keep it and say it is belt-and-braces. Under the no-allowance rule an INFO is not a "later".
+
+### N12 — `RELEASING.md` still documents `skipPublishing`
+The "How the pieces fit" table's `agent-guard-sample/pom.xml` row still lists `skipPublishing` among the properties
+that keep the sample unpublished. L5 removed it, and the pom's own comment now explains at length why it was
+removed. Doc-only; no probe. **Fix:** drop it from the table row.
+
+---
+
+## Fix list for Isis, in order
+
+1. **N1** — module-scoped licence check (`${project.build.directory}` + `${project.packaging}` as arguments); a
+   fresh clone must build green and a jar module with no notices file must still fail.
+2. **N4** — `bundle="target/central-publishing/central-bundle.zip"`.
+3. **N2** — normalise-then-match, and deny on word patterns as well as SPDX ids.
+4. **N3** — anchor the coordinate to the last group on the line, widen the version class, fail on any unparseable
+   dependency line.
+5. **N5** — no skip branch, require a 40-hex fingerprint, bind with `git verify-tag --raw` + `VALIDSIG`; update
+   `RELEASING.md` Part 1 step 6.
+6. **N8** — run the ancestry check on both trigger paths.
+7. **N6** — guard `--errors`, `simpleLogger`, `defaultLogLevel`, `maven.debug`; pin `MAVEN_ARGS: -B`.
+8. **N7** — subshell around the `RELEASING.md` scratch-keyring block; correct the sentence.
+9. **N9** — delete the `classpath-exception` / `cpe` carve-out.
+10. **N10** — survive an empty licence token.
+11. **N11** — close I1 (`gpgArguments`).
+12. **N12** — drop `skipPublishing` from the `RELEASING.md` table.
+
+Every one has a probe in `tools/cipher-probe-release-pipeline.sh` except N12. When the script prints
+`still weak: 0` and exits 0, this branch is ready for the next re-verification pass.
+
+---
+
+## Release gates — Souhaile's checklist, in order
+
+None of these blocks the merge of PR #9. All of them must be true before `v0.1.0` is tagged, and the first two
+before the third is even possible.
+
+- [ ] **1. Make `1of1Canopus/agent-guard` public.** Everything below depends on it: GitHub Environments and tag
+      rulesets do not exist on a private repository on the free plan (`gh api …/environments` →
+      `total_count: 0`; rulesets → HTTP 403), and the POM's `url`, `scm` and `issueManagement` all point at a
+      repository that 404s for everyone else, permanently, once 0.1.0 is on Maven Central. (L7)
+- [ ] **2. Two mailboxes exist and forward.** `oss@housedevinci.com` — the address published in the POM's
+      `<developers>` block, permanent on repo1.maven.org (QUESTIONS #21). `security@housedevinci.com` — the address
+      in `SECURITY.md`, the only channel a vulnerability report has. Remove the placeholder warning at the top of
+      `SECURITY.md` once both are confirmed. (L6)
+- [ ] **3. The four secrets, set from a pipe, never from the clipboard.** `CENTRAL_USERNAME`, `CENTRAL_TOKEN`,
+      `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE`. Follow `docs/RELEASING.md` Part 1 step 4 literally:
+      `gpg --armor --export-secret-keys <KEY_ID> | gh secret set GPG_PRIVATE_KEY --repo 1of1Canopus/agent-guard`.
+      The armoured key must not touch a file, the pasteboard, or a shell argument. (M6; and see N7 — do not run the
+      sanity-check block until it has been wrapped in a subshell)
+- [ ] **4. Create the `release` environment with yourself as a required reviewer, and move all four secrets into
+      it.** Repository → Settings → Environments → New environment → exactly `release`. The workflow already
+      declares `environment: release`; until this exists GitHub creates it implicitly with **no protection rules**,
+      so the line is a placeholder, not a gate. Environment secrets keep the signing key unreachable from any other
+      workflow. (M5)
+- [ ] **5. Set the `RELEASE_SIGNING_KEY_ID` repository *variable*** (Settings → Secrets and variables → Actions →
+      **Variables**, not Secrets — it is a key id, not a secret) to the **full 40-character fingerprint** of the key
+      you sign release tags with, and confirm that key is on `keyserver.ubuntu.com`. Tag with `git tag -s`, never
+      `-a`. (M5, N5)
+- [ ] **6. Tag the commit as it exists on `main`.** The workflow refuses a tag whose commit is not an ancestor of
+      `origin/main` — verified on a scratch repository: a tag on a merge commit or on a squashed commit on `main`
+      passes, a tag on the pre-squash branch tip is refused. If PRs are squash-merged, tag after the merge, on
+      `main`, not on the PR branch head.
+- [ ] **7. Press Publish yourself, the first time and every time.** `autoPublish=false` /
+      `publishingType=USER_MANAGED` is the last control in the chain and the only one that is a human. Before
+      pressing it, read the component list: exactly `agent-guard-parent`, `agent-guard-core`,
+      `agent-guard-spring-boot-starter`, each with `.pom`, `.jar`, `-sources.jar`, `-javadoc.jar` and an `.asc`
+      for each — **and no `agent-guard-sample`**. Also read the checksum table in the job summary, which is what
+      L1 exists to put in front of you: it should appear once N4 is fixed. If anything is wrong: **Drop**. A
+      version that reaches Maven Central can never be changed or removed.
+
+## What could not be verified without real credentials or a public repository
+
+Named rather than implied. A skipped check is never a passing one.
+
+1. **The workflow has still never run.** Everything it does was executed locally instead, including the deploy,
+   which reached `POST /api/v1/publisher/upload` and stopped at the Portal's 401 on a fake token. N4 in particular
+   is a bug that only a real run would have surfaced, and there has been no real run.
+2. **Central Portal validation of this bundle** — signature check against the keyserver, POM completeness,
+   namespace ownership — unknown until a real token runs it.
+3. **`environment: release`** cannot be created while the repository is private on the free plan, so the M5
+   reviewer gate is declared but untested.
+4. **GitHub's secret masking on this repository** rests on documented behaviour; no run log exists to confirm it.
+5. **Cache poisoning end to end (M3)** was not attempted and will not be. The fix is verified by construction: no
+   cache is restored, and `~/.m2/wrapper/dists` is removed before the first `mvnw` invocation.
+6. **Whether either mailbox resolves.** No mail was sent.

@@ -6,6 +6,17 @@ Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.
 
+## Open finding — blocks merge (Cipher, final confirmation pass at `cae839e`, 2026-09-09)
+- **G3 (LOW)** — `ci.yml`'s `dco` job exempts **any** commit with two or more parents, so an
+  octopus merge, or a two-parent commit whose second parent is not the base branch, ships
+  content present in **no parent** with no sign-off while the gate reports green. G1 and G2
+  are confirmed closed; this is the new surface G2's fix introduced. Repro, severity and the
+  prescribed ten-line fix (exempt only a *trivial back-merge of the base*, via
+  `git merge-tree --write-tree`) are in
+  `docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final confirmation pass (`cae839e`)".
+  Probe: `probe_dco_exempts_an_octopus_merge_carrying_unsigned_content`. The suite now reads
+  **`still weak: 1    fixed: 34`**, exit 1; it must return to `still weak: 0` before merge.
+
 ## After merge
 - Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`
   block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` — QUESTIONS.md #29/#33.

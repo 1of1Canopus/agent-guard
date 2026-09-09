@@ -566,6 +566,58 @@ probe_dco_check_is_skipped_by_a_forged_merge_subject() {
   grep -q '"Merge branch"\*' "$w"
 }
 
+# ---------------------------------------------------------------------------
+# G3 - the parent-count exemption that closed G2 is broader than "a real merge". ANY
+#      commit with two or more parents is exempt, and a merge commit's tree is not
+#      constrained by its parents: an "evil merge" can carry content that exists in NO
+#      parent. So an octopus merge (three parents), or a two-parent commit whose second
+#      parent is an unrelated branch rather than the base, ships unsigned-off content
+#      while the gate reports "all commits are signed off".
+#
+#      Behavioural probe: extracts the real dco step body from ci.yml and runs it against
+#      a synthetic repository containing an octopus merge that adds a file present in none
+#      of its three parents. Returns 0 (WEAK) while the gate passes that repository.
+# ---------------------------------------------------------------------------
+probe_dco_exempts_an_octopus_merge_carrying_unsigned_content() {
+  local w=.github/workflows/ci.yml body repo rc
+  [ -f "$w" ] || return 0
+  body="$(awk '
+    /name: Verify every commit in this pull request is signed off/ { instep=1 }
+    instep && /run: \|/ { inrun=1; next }
+    inrun && /^  [a-z-]+:$/ { exit }
+    inrun { sub(/^          /, ""); print }
+  ' "$w")"
+  [ -n "$body" ] || return 0   # step vanished: cannot prove the fix, count as still weak
+
+  repo="$(mktemp -d)"
+  (
+    cd "$repo" || exit 1
+    git init -q -b main . && git config user.name t && git config user.email t@e.com
+    echo v1 > base.txt && git add -A
+    git commit -q -m "$(printf 'feat: base\n\nSigned-off-by: T <t@e.com>')"
+    git checkout -q -b a && echo a > a.txt && git add -A
+    git commit -q -m "$(printf 'feat: a\n\nSigned-off-by: T <t@e.com>')"
+    git checkout -q main && git checkout -q -b b && echo b > b.txt && git add -A
+    git commit -q -m "$(printf 'feat: b\n\nSigned-off-by: T <t@e.com>')"
+    git checkout -q main
+    git merge -q --no-commit --no-ff a b >/dev/null 2>&1 || true
+    # content present in NO parent, and no Signed-off-by trailer anywhere
+    echo BACKDOOR > evil.txt && git add -A
+    git commit -q -m "Merge branches 'a' and 'b'"
+  ) >/dev/null 2>&1 || { rm -rf "$repo"; return 0; }
+
+  local base head
+  base="$(git -C "$repo" rev-list --max-parents=0 HEAD)"
+  head="$(git -C "$repo" rev-parse HEAD)"
+  ( cd "$repo" && BASE_SHA="$base" HEAD_SHA="$head" \
+      GRANDFATHER_SHA=ddd250c3d0fbdf67fb6cea8d3acb583c3b07de43 \
+      bash -c "$body" ) >/dev/null 2>&1
+  rc=$?
+  rm -rf "$repo"
+  # exit 0 means the gate accepted an octopus merge carrying unsigned-off content: WEAK.
+  [ "$rc" -eq 0 ]
+}
+
 
 echo "cipher release-pipeline probes  (WEAK = finding still open)"
 echo
@@ -607,6 +659,7 @@ probe probe_sample_e2e_depends_on_the_wall_clock             "F9 the sample e2e 
 echo
 probe probe_denial_pass_coordinate_forged_by_a_trailing_group "G1 a URL can append an allowlisted coordinate"      probe_denial_pass_coordinate_can_be_forged_by_a_trailing_group
 probe probe_dco_check_skipped_by_a_forged_merge_subject      "G2 a forged 'Merge branch' subject skips the DCO"   probe_dco_check_is_skipped_by_a_forged_merge_subject
+probe probe_dco_exempts_an_octopus_merge                    "G3 an octopus/evil merge skips the DCO entirely"    probe_dco_exempts_an_octopus_merge_carrying_unsigned_content
 
 echo
 echo "still weak: $pass    fixed: $flipped"

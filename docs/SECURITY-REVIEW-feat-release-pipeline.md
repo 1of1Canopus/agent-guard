@@ -1758,3 +1758,168 @@ Remaining, in order:
 7. Tag on `main`.
 8. Publish click at the Central Portal — the bundle waits there; nothing in the workflow can
    publish on its own.
+
+---
+
+## Final confirmation pass (`cae839e`) — 2026-09-09
+
+Fresh clone of the branch into a scratch directory, full build, release profile,
+reproducibility across two independent clones, and the probe suite. Then G1 and G2
+re-attacked with two new inputs each, as instructed.
+
+### Numbers
+
+| What | Result |
+| --- | --- |
+| Fresh clone, `./mvnw -B verify` | **BUILD SUCCESS**, 46.1 s, 4 modules |
+| Tests | **220 run, 0 failures, 0 errors, 1 skipped** (core 161, starter 58 + 1 skipped, sample 1) |
+| Skipped test | `CipherProbeFinalSpringAiTest`, one `assumeTrue` case — a deliberate assumption, not a failure |
+| Testcontainers | real containers, digest-pinned: `postgres:16-alpine@sha256:57c72f…`, `redis:7-alpine@sha256:6ab0b6…` |
+| JaCoCo (core) | **90.93 %** line (7738 covered / 772 missed), gate `0.80` — met |
+| Third-party notices | clean on all three jar modules; parent `pom` module correctly declares none |
+| Release profile (`-Prelease`) | **BUILD SUCCESS**, 15.7 s; sources + javadoc + 9 `.asc` signatures, all **Good signature** |
+| Sample module | not signed, not installed, not deployed — `maven.deploy.skip`/`install.skip`/`source.skip`/`javadoc.skip`/`gpg.skip` all true |
+| Reproducibility | **6 / 6 artifacts byte-identical** across two independent clones at different absolute paths (core + starter jar/sources/javadoc) |
+| `CIPHER_PROBE_MAVEN=1` probe suite, at `cae839e` as received | `still weak: 0    fixed: 34`, exit 0 |
+| Same suite, with the new G3 probe added by this pass | `still weak: 1    fixed: 34`, exit 1 |
+| `check-third-party-licences.sh --self-test` | all cases correct, including the three G1 rows |
+
+### G1 (MEDIUM, forward coordinate forgery) — CONFIRMED FIXED
+
+`probe_denial_pass_coordinate_forged_by_a_trailing_group` reports **FIXED**. The
+"exactly one coordinate-shaped top-level group, else `UNPARSEABLE`" rule is the right
+shape: it stops trying to recover a coordinate by position once the line is
+attacker-shaped.
+
+Six further attacks, all against the real script, all **fail closed**, and the one
+legitimate case is accepted with no false positive:
+
+| # | Line shape | Result |
+| --- | --- | --- |
+| A1 | coordinate-shaped group nested inside the GPL dep's own URL: `(cipher.synth:evil-d:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))` | **DENIED** on `GPL-3.0` against the *real* coordinate `evil-d` — the nested allowlisted coordinate is never reached |
+| A2 | outer group not coordinate-shaped, allowlisted coordinate nested inside the URL | **DENIED**, `UNPARSEABLE` |
+| A3 | the literal shape asked for, `http://x/(a:b:1.0 - y)` | **DENIED** on `GPL-3.0` against `evil-e` |
+| B1 | legitimate permissive dep whose URL holds a balanced pair (`…/wiki/Foo_(bar)`) | **ACCEPTED** — no false positive |
+| B2 | same, but GPL | **DENIED** |
+| C1 | unbalanced `)` injected through the dependency `<name>` | **DENIED**, `UNPARSEABLE` (depth never returns to 0) |
+| D1 | allowlisted coordinate forged *backwards*, into the licence run ahead of the real one | **DENIED** — greedy licence-run match leaves the real coordinate as the only top-level one, and the forged group is read as a licence token |
+| E1 | coordinate-shaped group at depth 3 (double nesting) | **DENIED** |
+
+The depth-aware scan collects only depth-1 groups, so a nested coordinate is content of
+its parent group, never a candidate. And because the notices format always writes the
+real `g:a:v` at the *start* of the coordinate group, and the attacker controls only the
+`<url>` that follows it, the captured `g:a:v` cannot be forged from inside. G1 is closed.
+
+### G2 (LOW, forged merge subject) — CONFIRMED FIXED, and it opens G3
+
+`probe_dco_check_is_skipped_by_a_forged_merge_subject` reports **FIXED**. Control test:
+a single-parent commit with the subject `Merge branch 'x' into y` and no trailer is now
+**caught** (exit 1). The finding as written is closed — parent count is not forgeable the
+way a subject is.
+
+But both attacks I was asked to run against the *new* surface succeed.
+
+### G3 — NEW, LOW — a multi-parent commit is exempt regardless of what it carries
+
+**Repro** (real git, `git 2.53.0`; the dco step body extracted verbatim from `ci.yml`
+at `cae839e` and run over a synthetic range):
+
+1. **Octopus merge, three parents.** `git merge --no-commit --no-ff a b`, then add
+   `evil.txt` before committing, subject `Merge branches 'a' and 'b'`, **no sign-off**.
+2. **Two-parent commit that is not a merge of main.** `git commit-tree -p <octopus>
+   -p <unrelated orphan>` with `evil2.txt` added, subject
+   `chore: routine dependency refresh`, **no sign-off**.
+
+Gate output over the range containing both: `all commits … are signed off`, **exit 0**.
+
+Verified the payloads are genuine *evil merges*, not inherited content:
+
+```
+is evil.txt  in ANY parent of the octopus?    a8911e2 ABSENT  ebefd37 ABSENT  80c486a ABSENT
+is evil2.txt in ANY parent of the fake merge? ed2dba9 ABSENT  02abbbf ABSENT
+```
+
+A merge commit's tree is not constrained by its parents. `git rev-list BASE..HEAD` does
+still walk into both parents, so the *branch* commits are checked — what escapes is the
+merge commit's own delta, which is authored content that exists nowhere else. The gate
+reports a green it has not earned, which is the same class of false green G2 was.
+
+**Severity LOW.** The impact is provenance and inbound-licence hygiene, not code
+execution or secret disclosure: the delta still shows in the PR's own diff and a human
+still merges. But it is a bypass of a gate this PR introduces, and the no-allowance rule
+admits no LOW waivers.
+
+**Prescribed fix** (`.github/workflows/ci.yml`, the `dco` job, replacing the `%P`
+case block). Exempt a merge only when it is a *trivial back-merge of the base branch* —
+exactly two parents, second parent an ancestor of `BASE_SHA`, and the commit's tree
+identical to the tree git itself computes for that merge:
+
+```bash
+parents="$(git log -1 --format='%P' "$sha")"
+set -- $parents
+if [ "$#" -ge 2 ]; then
+  exempt=0
+  if [ "$#" -eq 2 ] && git merge-base --is-ancestor "$2" "$BASE_SHA" 2>/dev/null; then
+    auto="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null | head -1)"
+    own="$(git rev-parse "$sha^{tree}")"
+    [ -n "$auto" ] && [ "$auto" = "$own" ] && exempt=1
+  fi
+  [ "$exempt" -eq 1 ] && continue
+fi
+```
+
+An octopus, a two-parent commit whose second parent is not from the base, and a merge
+carrying a conflict-resolution or evil-merge delta all fall through to the sign-off
+requirement — correctly, because a resolution *is* authored content. `git merge-tree
+--write-tree` needs git ≥ 2.38; `ubuntu-latest` is well past it.
+
+I tested this candidate before prescribing it. Four cases, all correct:
+
+| Case | Required | Result |
+| --- | --- | --- |
+| Octopus + fake two-parent merge (above) | fail | **exit 1**, both named |
+| Genuine clean back-merge of `main`, no sign-off | pass | **exit 0** |
+| G2's forged-subject single-parent control | fail | **exit 1** |
+| The real PR #9 range, 34 commits, 0 merges | pass | **exit 0** — no regression |
+
+Probe added: `probe_dco_exempts_an_octopus_merge_carrying_unsigned_content` in
+`tools/cipher-probe-release-pipeline.sh`. It is behavioural, not a grep: it extracts the
+dco step body from `ci.yml` and runs it against a freshly built octopus repository, so it
+will flip to FIXED against whatever the fix actually is rather than against a spelling.
+
+### Verdict
+
+**MERGE WITH FIXES.** No HIGH, no MEDIUM. G1 and G2 are genuinely closed and I could not
+break either with eight further attacks. The pipeline builds, tests, signs and reproduces
+byte-for-byte. One LOW is open — **G3** — with a proven, regression-tested fix and a
+behavioural probe. Under the no-allowance rule the probe suite must read
+`still weak: 0` before this merges. Back to Isis; it is a ten-line change to one job.
+
+### Release gate — the order for Souhaile, once G3 is closed
+
+Nothing below can start until the probe suite reads `still weak: 0` again.
+
+1. **Merge PR #9** into `main`.
+2. **Add the four repository secrets**, each straight from a pipe — never a shell
+   argument, never a file left on disk, never the clipboard. From `docs/RELEASING.md`:
+   `gpg --armor --export-secret-keys <KEY_ID> | gh secret set GPG_PRIVATE_KEY --repo 1of1Canopus/agent-guard`,
+   then `gh secret set GPG_PASSPHRASE --repo 1of1Canopus/agent-guard` (prompts, reads the
+   tty, stays out of shell history), and the same prompted form for `CENTRAL_USERNAME`
+   and `CENTRAL_TOKEN` — the username and password halves of the Sonatype Central user
+   token, which is shown once.
+3. **Set the repository variable `RELEASE_SIGNING_KEY_ID`** to the **full 40-character
+   primary fingerprint**. Not a short key id, not an email — the workflow matches the
+   last field of `git verify-tag --raw`'s `VALIDSIG` line, which is always the primary's
+   fingerprint even when a subkey made the signature.
+4. **Flip the repository to public.**
+5. **Create the `release` environment** with yourself as the required reviewer. This is
+   the M5 gate; it cannot exist while the repo is private on the free plan, which is why
+   it comes after step 4.
+6. **Run the follow-up PR that removes the grandfather exemption** — delete
+   `GRANDFATHER_SHA` and its `git cat-file` / `merge-base --is-ancestor` block from the
+   `dco` job. Once #9 is on `main` that block is dead code (QUESTIONS.md #29 / #33).
+7. **Tag `v0.1.0` on `main`, signed**: `git tag -s v0.1.0` (signed, not `-a`) — the
+   workflow requires a signature bound to the fingerprint from step 3.
+8. **Run the release workflow.**
+9. **Press Publish on the Sonatype Central Portal.** The bundle waits there; nothing in
+   the workflow can publish on its own.

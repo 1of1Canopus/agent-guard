@@ -1,5 +1,12 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**N13 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: `probe_probe_suite_is_not_run_by_ci`
+missed a job-level `if: false`, a job-level `continue-on-error: true`, a step-level `if: false`,
+and the `run:` line commented out. Fixed to strip full-line comments first and check the
+enclosing job block, not just the step, for any `if:`/`continue-on-error:`; new
+`probe_suite_probe_accepts_a_disabled_probes_job` proves all four mutations are caught (WEAK
+before, FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0.
+
 **N12 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: nothing in `.github/` ran
 `tools/cipher-probe-release-pipeline.sh` — the mechanical reason N6 reached a tagged
 release. Added a `Cipher probes` job to `ci.yml` that runs

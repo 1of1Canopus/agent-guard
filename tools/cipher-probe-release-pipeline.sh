@@ -408,18 +408,82 @@ probe_probe_suite_is_not_run_by_ci() {
   local wf
   for wf in .github/workflows/*.yml; do
     [ -f "$wf" ] || continue
-    # Split the file into per-step blocks on lines that start a new step ("      - "),
-    # then check each block as a whole: a step that names the script in a `run:` line and
-    # carries no `continue-on-error: true` anywhere in that same step is the fix.
-    if awk -v RS='\n      - ' '
-        $0 ~ /run: .*cipher-probe-release-pipeline\.sh/ && $0 !~ /continue-on-error: *true/ { found = 1 }
-        END { exit(found ? 0 : 1) }
-      ' "$wf"
-    then
+    if _probe_suite_wired_unconditionally_in "$wf"; then
       return 1   # a workflow runs the suite unconditionally: FIXED
     fi
   done
-  return 0   # no such step anywhere: WEAK
+  return 0   # no such job anywhere: WEAK
+}
+
+# N13: strip full-line comments first, same standard as the release guard's own static
+# check (.github/workflows/release.yml, `grep -vE '^\s*#'`) - a single `#` used to be enough
+# to disable the suite while the probe still reported it FIXED. Then split the file into
+# per-JOB blocks (not per-step), because GitHub counts a job skipped by a job-level `if:` as
+# satisfying a required status check: a step-scoped check alone cannot see that. A job block
+# is the fix only when it invokes the script in a `run:` line AND carries no `if:` and no
+# `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
+# value, since a skipped/soft-failed job is exactly as blind as a deleted one.
+_probe_suite_wired_unconditionally_in() {
+  local wf="$1"
+  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' '
+      $0 ~ /run:[[:space:]]*.*cipher-probe-release-pipeline\.sh/ {
+        n = split($0, lines, "\n")
+        guarded = 0
+        for (i = 1; i <= n; i++) {
+          if (lines[i] ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
+        }
+        if (!guarded) { found = 1 }
+      }
+      END { exit(found ? 0 : 1) }
+    '
+}
+
+# ---------------------------------------------------------------------------
+# N13 - the N12 probe above split ci.yml into per-STEP blocks and only refused
+#       `continue-on-error: true` in the same step as the `run:` line. It reported FIXED for
+#       a job-level `if: false`, a job-level `continue-on-error: true`, a step-level `if:
+#       false`, and the `run:` line commented out with a single `#` - four ways to disable
+#       the job while the probe that is supposed to guard it still passes. Applies each
+#       mutation to a scratch copy of ci.yml and asserts probe_probe_suite_is_not_run_by_ci
+#       reports WEAK (returns 0) for every one. WEAK before the fix above, FIXED after.
+# ---------------------------------------------------------------------------
+probe_suite_probe_accepts_a_disabled_probes_job() {
+  local base d rc overall
+  base="$(mktemp -d)"
+  mkdir -p "$base/.github/workflows"
+  cp .github/workflows/ci.yml "$base/.github/workflows/ci.yml"
+  overall=0
+
+  # a: job-level `if: false` on cipher-probes
+  d="$base/a"; mkdir -p "$d/.github/workflows"
+  sed 's/^  cipher-probes:$/  cipher-probes:\n    if: false/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # b: job-level `continue-on-error: true` on cipher-probes
+  d="$base/b"; mkdir -p "$d/.github/workflows"
+  sed 's/^  cipher-probes:$/  cipher-probes:\n    continue-on-error: true/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # c: step-level `if: false` on the step running the probe suite
+  d="$base/c"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1if: false\n&/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # d: the `run:` line commented out
+  d="$base/d"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1# run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  for d in a b c d; do
+    ( cd "$base/$d" && probe_probe_suite_is_not_run_by_ci )
+    rc=$?
+    # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
+    # fooled into believing the suite still runs unconditionally: the N13 weakness is present.
+    [ "$rc" -eq 0 ] || overall=1
+  done
+
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
 }
 
 
@@ -751,6 +815,7 @@ probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispat
 probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
 probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
+probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url

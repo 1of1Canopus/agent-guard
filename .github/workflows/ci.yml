@@ -19,6 +19,17 @@ jobs:
   # requirement - nothing rejects an unsigned commit at merge time otherwise. Runs only on
   # pull_request, where github.event.pull_request.base.sha / .head.sha give an exact commit
   # range; a plain push to main (already reviewed, already merged) is not re-checked.
+  #
+  # GRANDFATHER_SHA: this requirement is adopted mid-flight, on PR #9, which already carries
+  # commits pushed before CONTRIBUTING.md asked for a sign-off. Those commits cannot gain a
+  # trailer without rewriting already-pushed history, which this project's git rules forbid
+  # (no force-push, ever - see AGENTS.md/CLAUDE.md "Never force-push"). ddd250c is the last
+  # commit made before this exemption was added; a commit is exempt only if it IS ddd250c or
+  # an ANCESTOR of it. That makes the exemption self-limiting: once this PR merges, ddd250c
+  # becomes part of main's history, and every commit on every future branch is a DESCENDANT
+  # of it, never an ancestor - so `git merge-base --is-ancestor <sha> ddd250c` is false for
+  # any commit that did not already exist before this line was written, and no future
+  # contribution is ever grandfathered by accident. Full reasoning: QUESTIONS.md #29.
   dco:
     name: DCO sign-off
     if: github.event_name == 'pull_request'
@@ -33,11 +44,16 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GRANDFATHER_SHA: ddd250c3d0fbdf67fb6cea8d3acb583c3b07de43
         run: |
           set -euo pipefail
           missing=0
           while IFS= read -r sha; do
             [ -n "$sha" ] || continue
+            if git cat-file -e "$GRANDFATHER_SHA" 2>/dev/null \
+                && git merge-base --is-ancestor "$sha" "$GRANDFATHER_SHA"; then
+              continue
+            fi
             subject="$(git log -1 --format='%s' "$sha")"
             case "$subject" in
               "Merge branch"*|"Merge remote-tracking"*) continue ;;

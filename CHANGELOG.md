@@ -5,6 +5,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Fixed
+- **N14 (LOW)**: `_probe_suite_wired_unconditionally_in` still matched the `run:` line by
+  substring, so a trailing comment after the command (`run: true # CIPHER_PROBE_MAVEN=1
+  tools/cipher-probe-release-pipeline.sh`) ran `true` and the probe still reported the suite
+  FIXED. It now requires the trimmed value of the `run:` line to be string-equal to the exact
+  command - the same exact-pin belt already used for the `MAVEN_OPTS` guard - which refuses
+  any decoration without a YAML parser. New
+  `probe_suite_probe_accepts_a_trailing_comment_disable` covers the trailing-comment mutation
+  and a `run: |` multi-line block hiding the command after another command; both WEAK before,
+  FIXED after. Suite: `still weak: 0    fixed: 40`, exit 0 (engineering, 2026-09-10).
 - **N13 (LOW)**: `probe_probe_suite_is_not_run_by_ci` reported FIXED for four ways of
   disabling the `Cipher probes` job while nothing ran: a job-level `if: false`, a job-level
   `continue-on-error: true`, a step-level `if: false`, and the `run:` line commented out. The

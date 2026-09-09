@@ -1923,3 +1923,192 @@ Nothing below can start until the probe suite reads `still weak: 0` again.
 8. **Run the release workflow.**
 9. **Press Publish on the Sonatype Central Portal.** The bundle waits there; nothing in
    the workflow can publish on its own.
+
+## Final verdict pass (`5cac151`) — 2026-09-09 — MERGE WITH FIXES
+
+Isis applied the G3 fix I prescribed, exactly as prescribed. G3 is closed. Testing the fix
+against a case I did not put in my own four — a back-merge whose automatic merge
+**conflicts** — showed that the prescription I wrote has a defect of its own: the step
+does not fall through to the sign-off requirement as the fix's comment claims, it aborts.
+That is my error, carried faithfully into the implementation. It is recorded below as
+**G4 (LOW)** and it blocks the merge under the no-allowance rule.
+
+### Numbers — fresh clone of `feat/release-pipeline` at `5cac151`, nothing reused
+
+| What | Result |
+| --- | --- |
+| Fresh clone, `./mvnw -B clean verify` | **BUILD SUCCESS**, 56.9 s |
+| Tests | **220 run, 0 failures, 0 errors, 1 skipped** (161 core / 58 starter / 1 sample) |
+| The one skip | `CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on` — `Assumptions.assumeTrue` on the optional `spring-ai-autoconfigure-model-tool` jar. Known, pre-existing, not a Docker skip. |
+| `CipherProbe*` suites re-run unchanged | **28 classes, 117 test methods**, all green |
+| JaCoCo (core) | **line 1552/1713 = 90.60 %**, branch 461/590 = 78.14 % — gate 80 % met, "All coverage checks have been met" |
+| Docker | up; Testcontainers PostgreSQL and Redis started, **no test skipped for a missing daemon** |
+| Release profile, `./mvnw -B -Prelease -Dgpg.skip=true clean verify` | **BUILD SUCCESS**, 220 tests, 6 artifacts produced (2 main, 2 sources, 2 javadoc) |
+| `scripts/verify-reproducible.sh` (two clean builds, same clone) | **6 of 6 byte-identical, exit 0** — including both javadoc jars this run, which are reported but not enforced |
+| Reproducibility timestamp | `2026-09-09T13:23:56Z`, the committer date of `5cac151` |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | **`still weak: 0    fixed: 35`, exit 0** — reproduced independently, matches Isis's report |
+
+The six SHA-256 values from this run do not match the committed `reproducible-sha256.txt`,
+and that is correct, not a finding: the file was written at `cae839e`, and every jar is
+stamped with `-Dproject.build.outputTimestamp` = the committer date of `HEAD`, which moved
+when `5cac151` was made. Nothing in the build or the workflows reads the committed file;
+the release job regenerates it into `$RUNNER_TEMP` and compares *that* against the jars it
+actually deploys (L1). The committed copy is a sample, and it will be stale again the
+moment G4 is fixed.
+
+### G3 — closed. Verified by the probe and by five cases against the committed step body
+
+The probe flips: `probe_dco_exempts_an_octopus_merge` reads **FIXED**, suite
+`still weak: 0    fixed: 35`.
+
+I did not trust the probe alone. I extracted the `dco` step body from the committed
+`.github/workflows/ci.yml` with the same awk the probe uses (44 lines) and ran it against
+six synthetic repositories. `EXEMPT` means the merge was waved through; `CHECKED` means it
+fell through to the sign-off requirement and was named in a `::error::` annotation.
+
+| # | Case | Required | Observed |
+| --- | --- | --- | --- |
+| 1 | Octopus merge, three parents, adds `evil.txt` present in no parent, no sign-off | CHECKED | **exit 1**, merge named in `::error::` |
+| 2 | Two parents, second an unrelated branch and **not** an ancestor of `BASE_SHA`, no sign-off | CHECKED | **exit 1**, both the merge and the rogue commit named |
+| 3 | Genuine trivial back-merge of the base, no sign-off on the merge commit | EXEMPT | **exit 0**, "all commits … are signed off" |
+| 4a | Real PR range, ordinary single-parent commits, all signed off | pass | **exit 0** |
+| 4b | Same range plus one ordinary unsigned commit | CHECKED | **exit 1**, that commit named |
+| 5 | Back-merge, second parent **is** an ancestor of `BASE_SHA`, but the tree adds `smuggled.txt` (conflict-resolution smuggling) | CHECKED | **exit 1**, merge named in `::error::` |
+
+Case 5 is the one Dollar asked for and it is the load-bearing one. The merge's own tree is
+`6df8506…`; `git merge-tree --write-tree` of its two parents is `6c3943a…`. They differ, so
+`exempt` stays 0 and the commit is required to carry a sign-off. The smuggling attempt is
+caught.
+
+The exemption is sound in the general case, not only in these six. A merge is waved through
+only when its tree is exactly the tree git itself computes from its two parents, so it can
+contribute no byte that is not already derivable from them. Its first parent is inside
+`BASE_SHA..HEAD_SHA` and is therefore checked on its own turn in the same loop; its second
+parent is an ancestor of `BASE_SHA` and is therefore already on the base branch, already
+reviewed, already merged. There is no third place for content to come from.
+
+I also confirmed that `set -e` does not abort the loop on the non-exempt path: cases 1, 2
+and 5 all printed their `::error::` annotations, which only happens if execution reached
+the `grep` after the `if` block. The failing `[ "$exempt" -eq 1 ] && continue` is the
+command *preceding* the final `&&`, so errexit ignores it. That was worth proving rather
+than assuming.
+
+### G4 (LOW) — the dco step aborts silently when the automatic merge conflicts
+
+**Where.** `.github/workflows/ci.yml`, `dco` job, step "Verify every commit in this pull
+request is signed off", the line added by `5cac151`:
+
+```sh
+auto="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null | head -1)"
+```
+
+**What goes wrong.** `git merge-tree --write-tree` exits **1** when the merge it computes
+has a conflict. It still writes a tree, so `head -1` succeeds — but the step runs under
+`set -euo pipefail`, and with `pipefail` the pipeline's status is git's `1`, not `head`'s
+`0`. The status of a command that is only an assignment is the status of its command
+substitution, so `auto=…` returns 1, and `set -e` kills the whole step **there** —
+mid-loop, before the sign-off check, before any `::error::` annotation, and without
+examining a single remaining commit in the range. `2>/dev/null` hides git's message; the
+step produces **no output at all**.
+
+**Repro.** A back-merge of the base where both sides edited the same line and the
+committer resolved it — the most ordinary merge conflict there is:
+
+```
+main:     c.txt = "line" → "main-side"
+feature:  c.txt = "line" → "feature-side"
+feature:  git merge --no-ff main; resolve c.txt = "resolved"; git commit -s
+```
+
+Run the committed step body over `BASE_SHA..HEAD_SHA`:
+
+```
++ auto=c8df1656aa01e89fba185d98139cde0fe162f318
+final rc: 1
+```
+
+`bash -x` stops on that assignment. Observed with the merge commit **signed off** and with
+it unsigned; both give `rc=1` and empty output. Reproduced against the committed
+`ci.yml`, not against a copy.
+
+**Impact.** No bypass — this fails closed, and the job stays red. Two things are wrong
+anyway. A legitimate, fully signed-off back-merge that resolved a conflict is rejected
+with **zero diagnostics**, which on this branch is not a hypothetical: `main` moves,
+branches back-merge, conflicts get resolved. And a security gate that can go red with no
+message is the precursor to someone deciding the gate is broken and taking it out. The
+fix's own comment claims a conflict-resolution merge "falls through to the sign-off
+requirement"; it does not, it crashes. That claim is mine, from the previous pass, and it
+is wrong. Severity **LOW**: correctness and operability of a control, not a bypass. Under
+the no-allowance rule it is fixed before merge.
+
+**Fix (for Isis).** File `.github/workflows/ci.yml`, `dco` job, same step. Replace the one
+line above with the explicit form, so the failure is non-fatal *and* a conflicted tree is
+never even considered a candidate:
+
+```sh
+              auto=""
+              if merged="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null)"; then
+                auto="$(printf '%s\n' "$merged" | head -1)"
+              fi
+              own="$(git rev-parse "$sha^{tree}")"
+              [ -n "$auto" ] && [ "$auto" = "$own" ] && exempt=1
+```
+
+A command substitution used as an `if` condition is exempt from errexit, so a conflicting
+merge now leaves `auto` empty, `[ -n "$auto" ]` fails, `exempt` stays 0, and the commit
+falls through to the sign-off requirement — which is the behaviour the comment already
+describes and the correct one, because a conflict resolution *is* authored content and
+must be signed for. The one-line `… | head -1 || true)"` variant is equally correct but
+leaves a conflicted tree oid in `auto`; prefer the explicit form.
+
+Amend the block comment above it: strike the claim that a conflict-resolution merge falls
+through today and state that `git merge-tree` exits non-zero on conflict, which is why the
+`if` is there. `Cipher-Finding: G4`.
+
+**Probe to add**, in `tools/cipher-probe-release-pipeline.sh`, alongside the G3 probe and
+in the same behavioural style — extract the step body from `ci.yml`, run it, do not grep
+for a spelling:
+
+```
+probe_dco_step_aborts_silently_on_a_conflicted_back_merge
+```
+
+Build the repo above with the merge commit **signed off**, run the extracted step body
+over `BASE_SHA..HEAD_SHA`, and return 0 (WEAK) while the step exits non-zero. It must exit
+0 after the fix — a signed-off conflict-resolved back-merge is a legitimate PR. Register it
+as `probe_dco_aborts_on_a_conflicted_merge  "G4 the dco step crashes with no output"`.
+The suite must then read `still weak: 0    fixed: 36`.
+
+### Attacks on the new surface that did not land
+
+- Forging the exemption by choosing parents. Impossible: the tree must equal
+  `git merge-tree`'s deterministic output for those two parents, so the merge adds nothing.
+- A first parent outside the checked range. Either it is inside `BASE_SHA..HEAD_SHA` and
+  gets its own turn in the loop, or it is reachable from `BASE_SHA` and is already on the
+  base branch. No third case.
+- `git merge-base --is-ancestor` returning 128 on a bad or missing object — treated as
+  "not an ancestor", so not exempt. Fails closed.
+- `set -- $parents` word-splitting on attacker input — parents are hex object names; no
+  glob or IFS character can appear. The step uses no other positional parameters.
+- A four-or-more-parent octopus, and a two-parent merge whose second parent is a
+  *descendant* of `BASE_SHA` rather than an ancestor: both non-exempt, both checked.
+- `git merge-tree --write-tree` needs git ≥ 2.38 and `ubuntu-latest` is well past it; on an
+  older git the invocation would fail, which is the same silent abort as G4 and is closed
+  by the same fix.
+
+### Verdict
+
+**MERGE WITH FIXES.** No HIGH, no MEDIUM. G1, G2 and G3 are all confirmed closed, and G3
+is closed properly — the exemption is now narrow enough that an exempted merge cannot carry
+a byte its parents do not already have, which I verified with six cases including the
+conflict-resolution smuggling one. The pipeline builds from a fresh clone, tests green with
+one documented assumption skip, holds 90.60 % line coverage, builds under the release
+profile, and reproduces six of six artifacts byte-for-byte.
+
+One LOW is open: **G4**, a silent `set -e` abort in the very line that closed G3, found by
+testing my own prescription against a case my own four did not cover. It is a five-line
+change to one step plus one probe. The suite must read `still weak: 0    fixed: 36` before
+this merges. Back to Isis.
+
+The nine-step release-gate checklist for Souhaile is unchanged from the previous pass and
+is not repeated here; it starts the moment G4 is closed and the suite is clean.

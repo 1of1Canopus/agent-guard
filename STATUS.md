@@ -7,7 +7,27 @@ Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `
 Pro edition out of scope.
 
 ## Closed finding (Cipher, final confirmation pass at `cae839e`; fixed by Isis, 2026-09-09)
-- **G3 (LOW)** closed — `ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (`git merge-tree --write-tree` check); probe suite reads `still weak: 0    fixed: 35`, `./mvnw -B verify` green.
+- **G3 (LOW)** closed — `ci.yml`'s `dco` job now exempts a merge only when it is a trivial
+  back-merge of the base (`git merge-tree --write-tree` check). Confirmed by the probe and by
+  six cases run against the committed step body, including an octopus merge, a two-parent
+  merge whose second parent is not from the base, and a back-merge that smuggles an extra
+  file past the tree check. All correct.
+
+## Open finding — blocks merge (Cipher, final verdict pass at `5cac151`, 2026-09-09)
+- **G4 (LOW)** — the line that closed G3 reads
+  `auto="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null | head -1)"`. `git merge-tree`
+  exits 1 when the merge it computes **conflicts**; under `set -euo pipefail` that status
+  reaches the assignment and `set -e` kills the whole `dco` step mid-loop — before the
+  sign-off check, before any `::error::` annotation, with `2>/dev/null` hiding the message.
+  A legitimate, fully signed-off back-merge that resolved a conflict is rejected with **no
+  output at all**. It fails closed, so it is not a bypass; it is a control that goes red
+  silently, which is the state right before someone removes it. The defect is in the
+  prescription I wrote at `cae839e`, not in Isis's application of it.
+  Repro, severity and the five-line fix are in
+  `docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verdict pass (`5cac151`)".
+  Probe: `probe_dco_step_aborts_silently_on_a_conflicted_back_merge`. The suite now reads
+  **`still weak: 1    fixed: 35`**, exit 1; it must read **`still weak: 0    fixed: 36`**
+  before merge. I verified the prescribed fix flips it and leaves all six G3 cases correct.
 
 ## After merge
 - Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`

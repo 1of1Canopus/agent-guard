@@ -619,6 +619,63 @@ probe_dco_exempts_an_octopus_merge_carrying_unsigned_content() {
 }
 
 
+# ---------------------------------------------------------------------------
+# G4 - the G3 fix reads `auto="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null | head -1)"`.
+#      git merge-tree exits 1 when the merge it computes CONFLICTS. It still writes a tree,
+#      so head -1 succeeds - but the step runs under `set -euo pipefail`, so pipefail hands
+#      the pipeline git's 1, the assignment takes that status, and set -e kills the whole
+#      step there: mid-loop, before the sign-off check, before any ::error:: annotation,
+#      with 2>/dev/null hiding git's message. A legitimate, fully SIGNED-OFF back-merge
+#      that resolved a conflict is rejected with no output at all.
+#
+#      Behavioural probe: extracts the real dco step body from ci.yml and runs it against a
+#      synthetic repository whose back-merge resolved a real conflict and IS signed off.
+#      That range is compliant and must pass. Returns 0 (WEAK) while the step exits
+#      non-zero.
+# ---------------------------------------------------------------------------
+probe_dco_step_aborts_silently_on_a_conflicted_back_merge() {
+  local w=.github/workflows/ci.yml body repo rc
+  [ -f "$w" ] || return 0
+  body="$(awk '
+    /name: Verify every commit in this pull request is signed off/ { instep=1 }
+    instep && /run: \|/ { inrun=1; next }
+    inrun && /^  [a-z-]+:$/ { exit }
+    inrun { sub(/^          /, ""); print }
+  ' "$w")"
+  [ -n "$body" ] || return 0   # step vanished: cannot prove the fix, count as still weak
+
+  repo="$(mktemp -d)"
+  (
+    cd "$repo" || exit 1
+    git init -q -b main . && git config user.name t && git config user.email t@e.com
+    printf 'line\n' > c.txt && git add -A
+    git commit -q -m "$(printf 'feat: base\n\nSigned-off-by: T <t@e.com>')"
+    git checkout -q -b feature && printf 'feature-side\n' > c.txt && git add -A
+    git commit -q -m "$(printf 'feat: f\n\nSigned-off-by: T <t@e.com>')"
+    git checkout -q main && printf 'main-side\n' > c.txt && git add -A
+    git commit -q -m "$(printf 'feat: base moves on\n\nSigned-off-by: T <t@e.com>')"
+    git rev-parse HEAD > .base
+    git checkout -q feature
+    # both sides edited the same line: the automatic merge conflicts, git merge-tree exits 1
+    git merge --no-commit --no-ff main >/dev/null 2>&1 || true
+    printf 'resolved\n' > c.txt && git add c.txt
+    git commit -q -m "$(printf "Merge branch 'main' into feature\n\nSigned-off-by: T <t@e.com>")"
+  ) >/dev/null 2>&1 || { rm -rf "$repo"; return 0; }
+
+  local base head
+  base="$(cat "$repo/.base")"
+  head="$(git -C "$repo" rev-parse HEAD)"
+  ( cd "$repo" && BASE_SHA="$base" HEAD_SHA="$head" \
+      GRANDFATHER_SHA=ddd250c3d0fbdf67fb6cea8d3acb583c3b07de43 \
+      bash -c "$body" ) >/dev/null 2>&1
+  rc=$?
+  rm -rf "$repo"
+  # every commit in this range carries a Signed-off-by. Non-zero means the step aborted
+  # on the conflicted merge-tree instead of checking them: WEAK.
+  [ "$rc" -ne 0 ]
+}
+
+
 echo "cipher release-pipeline probes  (WEAK = finding still open)"
 echo
 probe probe_multiline_version_accepted                       "M4 newline in the version input passes validation"   probe_multiline_version_accepted
@@ -660,6 +717,7 @@ echo
 probe probe_denial_pass_coordinate_forged_by_a_trailing_group "G1 a URL can append an allowlisted coordinate"      probe_denial_pass_coordinate_can_be_forged_by_a_trailing_group
 probe probe_dco_check_skipped_by_a_forged_merge_subject      "G2 a forged 'Merge branch' subject skips the DCO"   probe_dco_check_is_skipped_by_a_forged_merge_subject
 probe probe_dco_exempts_an_octopus_merge                    "G3 an octopus/evil merge skips the DCO entirely"    probe_dco_exempts_an_octopus_merge_carrying_unsigned_content
+probe probe_dco_aborts_on_a_conflicted_merge                "G4 the dco step crashes with no output"             probe_dco_step_aborts_silently_on_a_conflicted_back_merge
 
 echo
 echo "still weak: $pass    fixed: $flipped"

@@ -238,8 +238,28 @@
                 THIRD-PARTY-NOTICES.txt as if a third party dependency were FSL-licensed. Exclude
                 by groupId, not by licence name, so a real third-party dependency that happened to
                 declare the same licence string is still caught.
+
+                F1: license-maven-plugin (ArtifactFilters.toGaPattern, verified in its bytecode)
+                wraps this configured pattern as "[^:]*(<pattern>)[^:]*:[^:]+" and matches the
+                whole thing against "groupId:artifactId" with Matcher.matches(). The two "[^:]*"
+                make an unanchored pattern a SUBSTRING test on the groupId, so a bare
+                "com\.housedevinci" also excluded "com.housedevinci-evil" and
+                "xcom.housedevinci" - and an excluded dependency reaches neither licence gate at
+                all (not includedLicenses above, not THIRD-PARTY-NOTICES.txt for
+                check-third-party-licences.sh to read). The pattern below is anchored so that,
+                once wrapped, the plugin's own leading "[^:]*" can only match empty (the "^"
+                inside forces the group to start at position 0 of the whole "groupId:artifactId"
+                string) and its trailing "[^:]*" can only match empty too (the lookahead demands
+                the very next character be the ":" that separates groupId from artifactId). That
+                leaves only "com.housedevinci" itself and its dotted subgroups
+                ("com.housedevinci.foo") matching - never a groupId that merely starts or ends
+                with those characters. Proved with three synthetic builds (a GPL-3.0 dependency
+                under each candidate groupId, real ./mvnw verify against a scratch file
+                repository): com.housedevinci-evil and xcom.housedevinci both now fail the
+                build (scanned, GPL-3.0 denied); com.housedevinci:agent-guard-core stays
+                excluded, as it must.
               -->
-              <excludedGroups>com\.housedevinci</excludedGroups>
+              <excludedGroups>^com\.housedevinci(\.[^:]*)?(?=:)</excludedGroups>
               <!--
                 Allowlist, not blocklist: a dependency whose declared licence is not one of the
                 five canonical names below fails the build. That is the only form that catches a
@@ -247,7 +267,9 @@
                 folded onto the canonical name by licenseMerges below.
 
                 Allowed, and why:
-                  Apache-2.0    the licence of this project; permissive, patent grant.
+                  Apache-2.0    the most common permissive licence among our dependencies;
+                                patent grant. (This project itself is FSL-1.1-ALv2, not
+                                Apache-2.0; see LICENSE.)
                   MIT / MIT-0   permissive.
                   BSD           2-clause and 3-clause; permissive.
                   EPL-2.0       Jakarta APIs and Logback. Weak copyleft, file-level, and it does

@@ -274,3 +274,22 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     one level removed). Flagging this rather than silently leaving the probe WEAK: the probe
     script and this entry both say so; `M3` is closed in the workflow, this one static probe
     is not and, on the reasoning above, should not be chased.
+28. **[answered]** F1's fix direction asked whether a group excluded from the licence gate by
+    `<excludedGroups>` can still appear in `THIRD-PARTY-NOTICES.txt` — exclusion from the gate
+    only, never from the listing. Checked `license-maven-plugin` 2.7.1's own bytecode
+    (`org.codehaus.mojo.license.AbstractAddThirdPartyMojo`): `excludedGroups` is one filter
+    over one dependency set, used by the `add-third-party` goal to both build the artifact
+    list it writes to the notices file *and* the set `includedLicenses` is checked against.
+    There is no second parameter that filters the licence check without also filtering what
+    gets written, and no way to run the goal twice against disjoint filters into the same
+    output file (a second execution would either overwrite or need a different
+    `thirdPartyFilename`, which is not what "still appear in the notices file" asks for). So:
+    **not possible with this plugin, in this execution shape.** It does not matter for the
+    fix actually applied here, though: the only groupId this project excludes is its own
+    (`com.housedevinci` and dotted subgroups) — genuinely not a third party, so its absence
+    from a *third*-party notices file is correct, not a gap. The gap F1 described would only
+    be live for a real third-party dependency deliberately excluded by groupId, which nothing
+    in this repository does or should do; if that ever changes, the honest fix is a
+    human-reviewed coordinate exception in `tools/check-third-party-licences.sh`'s
+    `ALLOWED_COORDINATES` (which does keep the dependency in the notices file, licences and
+    all — see the N9 comment in that script), not a plugin-level group exclusion.

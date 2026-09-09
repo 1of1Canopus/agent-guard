@@ -10,13 +10,18 @@
 # The first block (M-, L-, I-ids) is the first pass, on 645397d: all FIXED at 30aec6f
 # except the one reclassified as not-a-finding, see QUESTIONS.md #27 and the note on
 # probe_release_job_can_exec_an_unverified_maven_distribution below, which replaces it.
-# The second block (N-ids) is the re-verification of 30aec6f: all WEAK there.
+# The second block (N-ids) is the re-verification of 30aec6f: all WEAK there, all FIXED at
+# 1da507e.
+# The third block (F-ids) is the final verification of 1da507e, after the FSL-1.1-ALv2
+# licence switch: all WEAK there.
 #
 #   tools/cipher-probe-release-pipeline.sh            static probes only (seconds)
 #   CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh   + the two build probes
 #
-# Exit code is 0 while the weaknesses are still there, 1 once every probe has flipped.
-# That inversion is deliberate: this file is evidence, not a CI gate.
+# Exit code is 0 once every probe has flipped to FIXED, 1 while any weakness is still
+# there (`[ "$pass" -eq 0 ]` on the last line). The header of this file used to claim the
+# opposite; the code was always right and the sentence was wrong. This file is evidence,
+# not a CI gate: nothing in .github/ runs it.
 #
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -370,6 +375,157 @@ probe_gpg_arguments_comment_still_credits_the_wrong_actor() {
   grep -q 'required because there is no tty' pom.xml
 }
 
+
+# ===========================================================================
+# Final verification of 1da507e (F-ids). Everything below asserts a weakness
+# introduced or left open by the licence switch and the N-fix pass.
+# ===========================================================================
+
+# Sources the helper functions of tools/check-third-party-licences.sh without running its
+# argument dispatch (which would `exit 1` on no args and kill the probe run).
+_source_licence_lib() {
+  local lib
+  lib="$(mktemp)"
+  sed '/^if \[ "\${1:-}" = "--self-test" \]/,$d' tools/check-third-party-licences.sh >"$lib"
+  # shellcheck disable=SC1090
+  source "$lib"
+  rm -f "$lib"
+}
+
+# ---------------------------------------------------------------------------
+# F1 - <excludedGroups>com\.housedevinci</excludedGroups> is not anchored. license-maven-plugin
+#      wraps a group pattern as "[^:]*(" + pattern + ")[^:]*:[^:]+" and matches it against
+#      "groupId:artifactId" with Matcher.matches(), so the pattern is a SUBSTRING test on the
+#      groupId: com.housedevinci-evil and xcom.housedevinci are excluded too, and an excluded
+#      dependency is checked by neither gate (it never reaches includedLicenses and never
+#      appears in THIRD-PARTY-NOTICES.txt for the denial pass to read).
+#      Weak while the pattern in pom.xml matches a lookalike groupId under that wrapping.
+# ---------------------------------------------------------------------------
+probe_excluded_groups_pattern_also_excludes_lookalike_groups() {
+  local pat
+  pat=$(grep -o '<excludedGroups>[^<]*</excludedGroups>' pom.xml | sed 's/<[^>]*>//g')
+  [ -n "$pat" ] || return 1
+  perl -e '
+    my ($pat, @ga) = @ARGV;
+    my $re = qr/^[^:]*($pat)[^:]*:[^:]+$/;
+    for my $ga (@ga) { exit 0 if $ga =~ $re; }   # a lookalike matched: still weak
+    exit 1;
+  ' "$pat" "com.housedevinci-evil:evil-dep" "xcom.housedevinci:evil-dep"
+}
+
+# ---------------------------------------------------------------------------
+# F2 - N3 respelled through the dependency's URL. parse_notices collects "(...)"" groups with
+#      [^()]*, which cannot span a nested pair, so a dependency whose own <url> contains
+#      "(ch.qos.logback:logback-core:1.5.6 - x)" makes THAT the last paren group on the line.
+#      The real coordinate is dropped, the forged one is on ALLOWED_COORDINATES, and the
+#      dependency's GPL-3.0 half is never checked. The plugin's count header still matches,
+#      so nothing else catches it.
+#      Weak while the script reports a clean notices file for such a line.
+# ---------------------------------------------------------------------------
+probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url() {
+  local d rc
+  d="$(mktemp -d)"
+  cat >"$d/THIRD-PARTY-NOTICES.txt" <<'EOF'
+Lists of 1 third-party dependencies.
+     (Apache-2.0) (GPL-3.0) evil-url (cipher.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))
+EOF
+  tools/check-third-party-licences.sh "$d" jar >/dev/null 2>&1
+  rc=$?
+  rm -rf "$d"
+  [ "$rc" -eq 0 ]   # exit 0 on a GPL-3.0 line: still weak
+}
+
+# ---------------------------------------------------------------------------
+# F3 - `VALIDSIG <fpr> ...` names the key that MADE the signature. On a key with a signing
+#      subkey (git tag -s uses it even when -u names the primary) that is the SUBKEY
+#      fingerprint; the PRIMARY fingerprint - the one docs/RELEASING.md tells Souhaile to put
+#      in RELEASE_SIGNING_KEY_ID, via `gpg --fingerprint` - is the LAST field of the same
+#      line. Reproduced: with a primary+signing-subkey key the step's grep does not match and
+#      the release is refused with "is not signed by <fpr>".
+#      Weak while the grep anchors the fingerprint to field 1 instead of the primary-key field.
+# ---------------------------------------------------------------------------
+probe_tag_signature_binds_the_signing_subkey_not_the_primary_key() {
+  sed -n '/- name: Verify the tag signature/,/^      - name:/p' "$WF" \
+    | grep -q 'VALIDSIG \${fingerprint} '
+}
+
+# ---------------------------------------------------------------------------
+# F4 - the deny list carries the bare pattern "mpl" for Mozilla. Normalisation strips
+#      punctuation, so "mpl" is a substring of "example", "simplified", "template",
+#      "compliance": "Simplified BSD License" and any licence URL on example.com are DENIED.
+#      Fail-closed, but it breaks the build on a permissive dependency the allowlist accepts.
+#      Weak while a permissive name containing the letters m-p-l is denied.
+# ---------------------------------------------------------------------------
+probe_denial_list_denies_permissive_names_containing_mpl() {
+  ( _source_licence_lib
+    is_denied_token "Simplified BSD License" || is_denied_token "https://example.com/LICENSE" )
+}
+
+# ---------------------------------------------------------------------------
+# F5 - the copyleft patterns are version-pinned where the id is not: "eupl12" misses
+#      "EUPL v1.1" and "EUPL-1.1" (copyleft), "sspl10" misses a bare "SSPL" and "SSPL-2.0",
+#      and OSL-3.0 / CPAL are absent entirely. Each only matters in the cumulative-dual case
+#      the denial pass exists for (permissive half passes includedLicenses, copyleft half
+#      must be caught here) - which is exactly N2's scenario.
+#      Weak while any of them is allowed.
+# ---------------------------------------------------------------------------
+probe_denial_list_misses_eupl_1_1_bare_sspl_and_osl() {
+  ( _source_licence_lib
+    ! is_denied_token "EUPL v1.1" || ! is_denied_token "SSPL" || ! is_denied_token "OSL-3.0" )
+}
+
+# ---------------------------------------------------------------------------
+# F6 - pom.xml's licence-allowlist comment still reads "Apache-2.0    the licence of this
+#      project". Since 1da507e the project is FSL-1.1-ALv2. A stale Apache-2.0 claim about
+#      our own code, in the file that is published to Maven Central, is the one place a
+#      licensee would look to contradict LICENSE.
+#      Weak while the comment survives.
+# ---------------------------------------------------------------------------
+probe_pom_comment_still_calls_apache_the_licence_of_this_project() {
+  grep -q 'the licence of this project' pom.xml
+}
+
+# ---------------------------------------------------------------------------
+# F7 - CONTRIBUTING.md states no inbound licence terms. Under Apache-2.0 the inbound grant
+#      was conventional (ASF SS5); FSL-1.1-ALv2 has no contribution clause at all, and this
+#      repository is about to be made public with a paid Pro edition beside it. Without a DCO
+#      or an explicit grant, a merged outside PR arrives with no licence to relicense it.
+#      It also points contributors at 15/specs and 14/AGENTS.md, paths that will not exist
+#      for anyone outside this machine.
+#      Weak while the file says nothing about the licence of a contribution.
+# ---------------------------------------------------------------------------
+probe_contributing_states_no_inbound_licence_terms() {
+  ! grep -qiE 'licen[cs]e|developer certificate of origin|\bDCO\b|copyright' CONTRIBUTING.md
+}
+
+# ---------------------------------------------------------------------------
+# F8 - 78c808e spells the licensor "HouseDevinci" in LICENSE, NOTICE and the POM, and its
+#      subject says "everywhere". Two places still disagree: docs/RELEASING.md line 71 tells
+#      Souhaile to create the release signing key with real name "House Devinci", so the UID
+#      on the key that signs every release tag and every .asc will not match the licensor
+#      named in LICENSE; and line 31 records the Central Portal namespace organisation as
+#      "Housedevinci". Weak while either survives.
+# ---------------------------------------------------------------------------
+probe_licensor_spelling_still_disagrees_in_releasing_md() {
+  grep -qE 'House Devinci|Housedevinci' docs/RELEASING.md
+}
+
+# ---------------------------------------------------------------------------
+# F9 - SampleEndToEndTest asserts that the 4th tool call in the minute is BUDGET_EXCEEDED,
+#      but BudgetLimit windows are epoch-aligned and TUMBLING (windowStart =
+#      floorDiv(now, size) * size), so the four calls reset the counter whenever a window
+#      boundary falls between them. Observed for real: one ./mvnw -B verify on a clean tree
+#      failed at SampleEndToEndTest:155, three re-runs were green. The auto-configuration
+#      already offers the seam - agentGuardClock is @ConditionalOnMissingBean(name = ...) -
+#      so the test can supply a clock it controls.
+#      Weak while the test defines no clock of its own.
+# ---------------------------------------------------------------------------
+probe_sample_e2e_depends_on_the_wall_clock() {
+  local t=agent-guard-sample/src/test/java/com/housedevinci/agentguard/sample/SampleEndToEndTest.java
+  [ -f "$t" ] || return 0
+  ! grep -q 'agentGuardClock' "$t"
+}
+
 echo "cipher release-pipeline probes  (WEAK = finding still open)"
 echo
 probe probe_multiline_version_accepted                       "M4 newline in the version input passes validation"   probe_multiline_version_accepted
@@ -396,6 +552,16 @@ probe probe_debug_guard_misses_the_slf4j_log_level           "N6 --errors and sl
 probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispatch skips the ancestry check"       probe_ancestry_check_skips_the_dispatch_path
 probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
+echo
+probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
+probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url
+probe probe_tag_signature_binds_the_subkey_not_the_primary   "F3 VALIDSIG field 1 is the signing subkey"           probe_tag_signature_binds_the_signing_subkey_not_the_primary_key
+probe probe_denial_list_denies_simplified_bsd                "F4 bare mpl denies example/simplified"               probe_denial_list_denies_permissive_names_containing_mpl
+probe probe_denial_list_misses_eupl_1_1_and_bare_sspl        "F5 EUPL 1.1 / SSPL / OSL-3.0 are allowed"            probe_denial_list_misses_eupl_1_1_bare_sspl_and_osl
+probe probe_pom_comment_calls_apache_the_project_licence     "F6 pom.xml still claims Apache-2.0 for us"           probe_pom_comment_still_calls_apache_the_licence_of_this_project
+probe probe_contributing_has_no_inbound_licence_terms        "F7 no inbound licence terms for contributions"       probe_contributing_states_no_inbound_licence_terms
+probe probe_licensor_spelling_disagrees_in_releasing_md      "F8 RELEASING.md still says House Devinci"            probe_licensor_spelling_still_disagrees_in_releasing_md
+probe probe_sample_e2e_depends_on_the_wall_clock             "F9 the sample e2e test has no clock of its own"      probe_sample_e2e_depends_on_the_wall_clock
 
 echo
 echo "still weak: $pass    fixed: $flipped"

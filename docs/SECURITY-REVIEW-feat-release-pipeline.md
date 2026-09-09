@@ -2112,3 +2112,146 @@ this merges. Back to Isis.
 
 The nine-step release-gate checklist for Souhaile is unchanged from the previous pass and
 is not repeated here; it starts the moment G4 is closed and the suite is clean.
+
+## Final verdict (3a0cb46): MERGE
+
+2026-09-09. Confirmation pass on `feat/release-pipeline` at `3a0cb46`, PR #9,
+`1of1Canopus/agent-guard`. Isis applied the five-line G4 fix I prescribed at `9b82d5e`
+verbatim and corrected the block comment that was wrong. G4 is closed. Every finding
+opened on this branch — M1–M7, L1–L7, I1–I4, N1–N11, F1–F9, G1–G4 — is closed. No HIGH,
+no MEDIUM, no LOW, no INFO is open. Under the no-allowance rule this merges.
+
+### Numbers — fresh clone of `feat/release-pipeline` at `3a0cb46`, nothing reused
+
+| What | Result |
+| --- | --- |
+| Fresh clone, `git config core.hooksPath .githooks`, `./mvnw -B clean verify` | **BUILD SUCCESS**, 49.6 s |
+| Tests | **220 run, 0 failures, 0 errors, 1 skipped** (161 core / 58 starter / 1 sample) |
+| The one skip | `CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on` — `Assumptions.assumeTrue` on the optional `spring-ai-autoconfigure-model-tool` jar. Known, pre-existing, not a Docker skip. |
+| `CipherProbe*` suites re-run unchanged | **26 classes, 102 methods** in `clean verify`, all green |
+| The 27th `CipherProbe*` class | `CipherProbeJedisPinningTest` is excluded from the default run by `agent-guard-core/pom.xml` (`agentguard.surefire.exclude`) because it deliberately hangs twice for 10 s. Run on demand as documented: `./mvnw -Ppinning-probe -pl agent-guard-core test -Dtest=CipherProbeJedisPinningTest` → **2 run, 0 failures, BUILD SUCCESS**. Nothing skipped anywhere: **27 classes / 104 methods green in total.** (The previous pass's "28 classes, 117 methods" counted the 28 `CipherProbe*.java` files, one of which — `CipherProbeJedisPinningMain.java` — is a child-JVM main, not a test class. A counting error in my own note, not a code change.) |
+| JaCoCo (core) | **line 1551/1712 = 90.60 %**, branch 461/590 = 78.14 % — gate 80 % met, "All coverage checks have been met" |
+| Docker | up; Testcontainers PostgreSQL and Redis started, **no test skipped for a missing daemon** |
+| Release profile, `./mvnw -B -Prelease -Dgpg.skip=true clean verify` | **BUILD SUCCESS**, 53.7 s, 220 tests, 6 artifacts (2 main, 2 sources, 2 javadoc) |
+| `scripts/verify-reproducible.sh` (two clean builds, same clone) | **6 of 6 byte-identical, exit 0**; e.g. `agent-guard-core-0.1.0-SNAPSHOT.jar` = `37ab9ebd0e3f863d39398d5a7f2eca354148dac29feffd1199d6d080e996f8e7`, starter jar = `1c2bd0d5ac845524b5e3024fddbe9d5b64f05dd3de4cfe9ec7d3a52cf239338b`. Both javadoc jars matched too this run; they are reported, not enforced. |
+| Reproducibility timestamp | `2026-09-09T17:00:46Z`, the committer date of `3a0cb46` |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | **`still weak: 0    fixed: 36`, exit 0** — reproduced independently, matches Isis's report |
+| CI on `3a0cb46` | **both jobs pass**: `Build & test` 2m15s, `DCO sign-off` 6s. PR #9 still draft, `MERGEABLE`. |
+
+The stale-`reproducible-sha256.txt` note from the previous pass is resolved and was never a
+real exposure: the file is listed in `.gitignore` (line 6) and `git log --all` for that path
+is empty — it has never been tracked. What I saw before was an untracked build leftover in a
+dirty working copy. The fresh clone contains no such file, and the release job writes its own
+into `$RUNNER_TEMP` (`release.yml:251`) and compares *that* against the jars it deploys (L1).
+
+### G4 — closed. Verified by the probe, by a control experiment, and by eight cases
+
+The probe flips: `probe_dco_aborts_on_a_conflicted_merge` reads **FIXED**, suite
+`still weak: 0    fixed: 36`, exit 0.
+
+I did not trust the probe alone. I extracted the `dco` step body from the committed
+`.github/workflows/ci.yml` in the fresh clone with the same awk the probe uses (54 lines)
+and ran it against eight synthetic repositories. `EXEMPT` means the merge was waved through;
+`CHECKED` means it fell through to the sign-off requirement.
+
+| # | Case | Required | Observed |
+| --- | --- | --- | --- |
+| 1 | Octopus merge, three parents, adds `evil.txt` present in no parent, no sign-off | CHECKED | **exit 1**, merge named in `::error::` |
+| 2 | Two parents, second an unrelated branch, **not** an ancestor of `BASE_SHA`, no sign-off | CHECKED | **exit 1**, both the merge and the rogue commit named |
+| 3 | Genuine trivial back-merge of the base, no sign-off on the merge commit | EXEMPT | **exit 0**, "all commits … are signed off" |
+| 4a | Real PR range, ordinary single-parent commits, all signed off | pass | **exit 0** |
+| 4b | Same range plus one ordinary unsigned commit | CHECKED | **exit 1**, that commit named |
+| 5 | Back-merge, second parent **is** an ancestor of `BASE_SHA`, tree smuggles `smuggled.txt` | CHECKED | **exit 1**, merge named in `::error::` |
+| **G4a** | **Conflicted back-merge, conflict resolved, merge commit signed off** | **CHECKED and PASS** | **exit 0**, `all commits in … are signed off` — the whole range was examined |
+| **G4b** | **The same conflicted back-merge, merge commit unsigned** | **CHECKED and FAIL** | **exit 1**, `::error::commit a100101d… ("Merge branch 'main' into feature") has no 'Signed-off-by:' trailer`, then `::error::1 commit(s) missing a DCO sign-off` |
+
+The six G3 cases are byte-for-byte the verdicts of the previous pass. Unchanged.
+
+G4a is the load-bearing one, and it is on the conflicted path for real, not by construction:
+`git merge-tree --write-tree HEAD^1 HEAD^2` on that repository **exits 1** and emits 7 lines /
+272 bytes of conflict detail, against 1 line / 40 bytes and exit 0 on the clean merge in case 3.
+So the guard is exercised.
+
+**Control experiment.** The same signed-off conflicted repository, run against the *pre-fix*
+step body taken from `git show 5cac151:.github/workflows/ci.yml`:
+
+```
+exit=1  output bytes=0
+```
+
+Post-fix, the identical input gives `exit=0` and the summary line. The harness discriminates
+between the broken and the fixed step; G4 is closed by the change, not by the test's phrasing.
+
+`set -e` no longer aborts the loop on any path: cases 1, 2, 4b, 5 and G4b all printed their
+`::error::` annotations, and cases 3, 4a and G4a all reached the closing summary line, which
+only prints after the whole range is walked.
+
+### Attacks on the new surface that did not land
+
+- **`merged` unbound under `set -u`.** `if merged="$(…)"` performs the assignment whatever the
+  substitution's status, so `merged` is always set; it is read only inside the `if`-true branch.
+  Executed directly: `set -euo pipefail; auto=""; if merged="$(false)"; then …; fi` survives with
+  `auto` empty. Fails closed.
+- **`printf | head -1` re-introducing the same `set -e`/`pipefail` abort by SIGPIPE.** Real
+  hazard in the abstract — I reproduced `rc=141` by piping 100 000 lines into `head -1` under
+  `set -euo pipefail` — but unreachable here. The pipeline runs only when `git merge-tree`
+  exited **0**, and on exit 0 `--write-tree` prints exactly one 40-byte line (measured above).
+  40 bytes fit in the pipe buffer, `printf` completes before `head` exits, no EPIPE. The
+  `head -1` is now defensive only. Not a finding; recorded so the next person does not have to
+  re-derive it.
+- **`git merge-tree` unavailable (git < 2.38), which the previous pass flagged as the same
+  silent abort.** Closed by the same fix, and verified rather than assumed: with a `PATH` shim
+  that makes `git merge-tree` exit 129, case 3's trivial back-merge is no longer exempted — it
+  is CHECKED, exits 1, and names the commit in an `::error::`. Old git degrades to strict, with
+  output. Fails closed.
+- **`git merge-tree` exiting 0 with empty output.** `auto` stays empty, `[ -n "$auto" ]` fails,
+  not exempt, checked. Fails closed.
+- **Forging the exemption by choosing parents**, **a first parent outside the checked range**,
+  **`--is-ancestor` returning 128**, **word-splitting on `$parents`**, **a four-parent octopus**,
+  **a second parent that is a descendant rather than an ancestor of `BASE_SHA`** — all re-checked
+  against the current body, all still closed exactly as recorded in the previous pass.
+- **The block comment.** Isis corrected it. It now states that `git merge-tree` exits non-zero on
+  conflict and that this is why the `if` is there, and no longer claims a conflict-resolution
+  merge already fell through. The comment matches the code.
+
+### Verdict
+
+**MERGE.** No HIGH, no MEDIUM, no LOW, no INFO open. G4 — the last one, and my own error from
+the previous pass — is closed by a five-line change I prescribed and Isis applied verbatim, and
+it is closed for the right reason: a conflict resolution is authored content, so it now falls
+through to the sign-off requirement with a visible annotation instead of aborting the step in
+silence. The DCO gate is correct on all eight cases I can construct. The pipeline builds from a
+fresh clone, tests green with one documented assumption skip and nothing skipped for Docker,
+holds 90.60 % line coverage, builds under the release profile, and reproduces six of six
+artifacts byte-for-byte. The probe suite reads `still weak: 0    fixed: 36`, exit 0. CI is green
+on both jobs.
+
+I do not merge and I do not undraft. PR #9 is ready for Souhaile.
+
+### The nine steps for Souhaile, in this exact order
+
+1. **Merge PR #9 into `main`.** Nothing below works until this is on `main`.
+2. **Add the four repository secrets, each straight from a pipe** — never a shell argument,
+   never a file left on disk, never the clipboard:
+   `gpg --armor --export-secret-keys <KEY_ID> | gh secret set GPG_PRIVATE_KEY --repo 1of1Canopus/agent-guard`,
+   then `gh secret set GPG_PASSPHRASE --repo 1of1Canopus/agent-guard` (it prompts, reads the
+   terminal, and stays out of shell history), and the same prompted form for `CENTRAL_USERNAME`
+   and `CENTRAL_TOKEN` — the two halves of the Sonatype Central user token, which is shown once
+   and never again.
+3. **Set the repository variable `RELEASE_SIGNING_KEY_ID` to the full 40-character primary
+   fingerprint.** Not a short key id, not an email address. The workflow matches the last field
+   of `git verify-tag --raw`'s `VALIDSIG` line, and that field is always the primary key's
+   fingerprint even when a subkey made the signature.
+4. **Flip the repository to public.**
+5. **Create the `release` environment with yourself as the required reviewer.** This is the
+   human gate on the job that holds the signing key. It cannot exist while the repository is
+   private on the free plan, which is why it comes after step 4.
+6. **Run the follow-up PR that removes the grandfather exemption** — delete `GRANDFATHER_SHA`
+   and its `git cat-file` / `merge-base --is-ancestor` block from the `dco` job. Once #9 is on
+   `main` that block is dead code (QUESTIONS.md #29 / #33).
+7. **Tag `v0.1.0` on `main`, signed:** `git tag -s v0.1.0`. Signed, not `-a` — the workflow
+   requires a signature bound to the fingerprint from step 3 and will refuse an unsigned tag.
+8. **Run the release workflow.** It builds, verifies reproducibility, signs, and uploads the
+   bundle to the Sonatype Central Portal.
+9. **Press Publish on the Sonatype Central Portal.** The bundle waits there. Nothing in the
+   workflow can publish on its own, by design — this last step is a person, on purpose.

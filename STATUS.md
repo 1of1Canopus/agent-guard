@@ -16,6 +16,17 @@ Pro edition out of scope.
 ## Closed finding (Cipher, final verdict pass at `5cac151`; fixed by Isis, 2026-09-09)
 - **G4 (LOW)** closed — `dco` step's `auto=` substitution is now guarded by an `if` so `git merge-tree`'s non-zero exit on a conflicted merge no longer trips `set -e`; `auto` stays empty and the merge falls through to the sign-off check with a visible `::error::` instead of the step aborting silently; probe `probe_dco_step_aborts_silently_on_a_conflicted_back_merge` now FIXED, suite reads `still weak: 0    fixed: 36`.
 
+## Verdict (Cipher, final verdict pass at `3a0cb46`, 2026-09-09) — **MERGE**
+
+Every finding opened on this branch is closed: M1–M7, L1–L7, I1–I4, N1–N11, F1–F9, G1–G4.
+No HIGH, no MEDIUM, no LOW, no INFO open. Fresh clone at `3a0cb46`: `./mvnw -B clean verify`
+**BUILD SUCCESS** 49.6 s, **220 tests, 0 failures, 1 documented assumption skip**, JaCoCo line
+**90.60 %**, release profile green, **6 of 6 artifacts byte-identical** across two clean builds,
+probe suite **`still weak: 0    fixed: 36`** exit 0, CI green on both jobs. G4 re-verified by the
+probe, by a control run against the pre-fix step body, and by eight cases against the committed
+`dco` step body. Detail and Souhaile's nine-step release checklist:
+`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verdict (3a0cb46): MERGE".
+
 ## After merge
 - Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`
   block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` — QUESTIONS.md #29/#33.

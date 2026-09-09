@@ -28,7 +28,7 @@ You already publish from this account: `io.github.1of1canopus:tenantify-spring-b
 
 ### 2. Verify the `com.housedevinci` namespace - DONE 2026-09-08
 
-Verified on 2026-09-08, organisation "Housedevinci", status **Verified**.
+Verified on 2026-09-08, organisation "HouseDevinci", status **Verified**.
 Kept here for the next domain-based namespace:
 
 1. https://central.sonatype.com -> **Namespaces** -> **Add Namespace** -> type `com.housedevinci`.
@@ -68,7 +68,7 @@ gpg --full-generate-key
 #   kind:       (9) ECC (sign and encrypt)      [or (1) RSA and RSA, 4096 bits]
 #   curve:      (1) Curve 25519
 #   expires:    2y
-#   real name:  House Devinci
+#   real name:  HouseDevinci
 #   email:      oss@housedevinci.com
 #   passphrase: a long one, store it in your password manager
 

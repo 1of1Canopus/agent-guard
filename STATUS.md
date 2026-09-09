@@ -1,10 +1,43 @@
-# STATUS.md - Module B - Agent Guard, free core (run 14: Isis closes the re-verification findings)
+# STATUS.md - Module B - Agent Guard, free core (run 15: Isis closes the final-verification findings)
 
 Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.
+
+## Summary (run 15)
+**Done.** Closed all nine items from Cipher's final verification at `78c808e`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verification (78c808e)"): F2
+(MEDIUM), F1/F3/F4/F5/F7/F9 (LOW), F6/F8 (INFO). Full detail in `CHANGELOG.md`'s "Fixed
+(Cipher final verification)" entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **32/32 probes
+FIXED**, script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` (3 consecutive runs) | green x3, no flake |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `./mvnw -B verify` on a fresh `git clone` | green |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 32/32 FIXED, exits 0 |
+| `--self-test` | all cases correct, incl. F2/F4/F5's new rows |
+| GitHub CI on the pushed branch | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+F3 additionally verified against two throwaway GPG keys (a primary-only key and a
+primary-with-signing-subkey key), signing a real tag with `git tag -s -u <primary>` in both
+cases: the fixed `VALIDSIG` match binds the primary fingerprint for both key shapes; the old
+regex only matched the primary-only shape. F1 additionally verified with three real builds
+against a scratch dependency under `com.housedevinci-evil`, `xcom.housedevinci`, and (control)
+the real `com.housedevinci` groupId - see `CHANGELOG.md` for the outcomes.
+
+`QUESTIONS.md` #28 (new): whether `license-maven-plugin`'s `excludedGroups` can exclude a
+dependency from the licence *gate* without also excluding it from the *notices file* -
+checked in the plugin's own bytecode; it cannot, one filter drives both. Not a live gap here:
+the only excluded groupId is this project's own, which is correctly absent from a
+*third*-party notices file.
 
 ## Summary (run 14)
 **Done.** Closed all twelve items from Cipher's re-verification at `30aec6f`

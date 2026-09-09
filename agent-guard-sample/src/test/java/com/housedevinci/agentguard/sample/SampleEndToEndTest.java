@@ -12,16 +12,22 @@ import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
 import org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -29,7 +35,23 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-/** The SPEC acceptance check, end to end, through a real MCP client over streamable HTTP. */
+/**
+ * The SPEC acceptance check, end to end, through a real MCP client over streamable HTTP.
+ *
+ * <p>F9: {@code BudgetLimit} windows are epoch-aligned and tumbling ({@code windowStart =
+ * floorDiv(now, size) * size}), so a test that reads the wall clock can have its four tool calls
+ * straddle a window boundary and reset the budget counter mid-scenario - observed for real, once,
+ * on a clean tree. The auto-configuration already exposes the seam: {@code
+ * AgentGuardAutoConfiguration.agentGuardClock()} is {@code @ConditionalOnMissingBean(name =
+ * "agentGuardClock")}, so a bean of that name defined here replaces it everywhere - the budget
+ * store, the audit recorder, decision timestamps - with a clock this test controls instead of the
+ * machine's. {@link #CLOCK} is pinned to an instant comfortably inside a one-minute window (30
+ * seconds past the minute boundary) and never advanced during this test, so all four tool calls
+ * land in the exact same budget window by construction, not by timing. No sleeps, no retries: the
+ * assertion tests the budget rule, not the machine's speed. {@link MutableClock#advance} exists so
+ * a future test of the window-rollover case itself (on purpose, rather than by accident) has
+ * somewhere to start.
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @Testcontainers
@@ -41,6 +63,52 @@ class SampleEndToEndTest {
           DockerImageName.parse(
                   "postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777")
               .asCompatibleSubstituteFor("postgres"));
+
+  /** A {@link Clock} whose instant is fixed until explicitly advanced. Not thread-hostile. */
+  static final class MutableClock extends Clock {
+    private final AtomicReference<Instant> now;
+    private final ZoneId zone;
+
+    MutableClock(Instant now, ZoneId zone) {
+      this.now = new AtomicReference<>(now);
+      this.zone = zone;
+    }
+
+    void advance(Duration by) {
+      now.updateAndGet(i -> i.plus(by));
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return zone;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return new MutableClock(now.get(), zone);
+    }
+
+    @Override
+    public Instant instant() {
+      return now.get();
+    }
+  }
+
+  @TestConfiguration
+  static class FixedClockConfig {
+    @Bean
+    Clock agentGuardClock() {
+      return CLOCK;
+    }
+  }
+
+  // Any instant works, as long as it is not within a few seconds of a minute boundary: the
+  // budget window under test is 1 minute (agent-guard-sample/src/main/resources/
+  // application.yml, agentguard.budgets.limits[0].window). Pinned 30s past the minute so the
+  // whole test body - which never advances the clock - runs inside one window regardless of
+  // how long it actually takes on the machine.
+  static final MutableClock CLOCK =
+      new MutableClock(Instant.parse("2026-01-01T00:00:30Z"), ZoneId.of("UTC"));
 
   @LocalServerPort int port;
   @Autowired MockMvc mvc;

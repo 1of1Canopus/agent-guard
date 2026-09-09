@@ -1,0 +1,444 @@
+name: Release
+
+# Publishes agent-guard-core and agent-guard-spring-boot-starter to the Sonatype
+# Central Portal, in "validate, do not release" mode. The last step is always a human:
+# the bundle sits at https://central.sonatype.com/publishing/deployments until Souhaile
+# presses Publish. Nothing here can put an artifact on Maven Central on its own
+# (pom.xml, release profile: <autoPublish>false</autoPublish>).
+#
+# Two ways in:
+#   * workflow_dispatch with a version input, e.g. 0.1.0  (no tag needed, for a rehearsal)
+#   * pushing a tag v0.1.0                                (the normal path)
+#
+# The version is derived, never read from the pom: main always carries 0.1.0-SNAPSHOT and
+# the workflow rewrites the poms in the runner's checkout only. Nothing is committed back.
+#
+# Full instructions, including the one-off setup: docs/RELEASING.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, no leading v and no -SNAPSHOT (e.g. 0.1.0)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "v*"
+
+# Read-only token. This workflow writes nothing to the repository: no commit, no tag,
+# no GitHub release. id-token is deliberately NOT requested: central-publishing-maven-plugin
+# authenticates to the Central Portal with the user-token pair (CENTRAL_USERNAME /
+# CENTRAL_TOKEN), not with OIDC, so a workload identity token would be an unused privilege.
+permissions:
+  contents: read
+
+concurrency:
+  # L2: keyed on the version, not the ref. A workflow_dispatch of 0.1.0 on main and a
+  # push of tag v0.1.0 are different refs and would otherwise run, sign and upload the
+  # same deployment name twice at once.
+  group: release-${{ inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "21"
+  # N6: pinned at workflow level so it reaches every job and step unless a step explicitly
+  # overrides MAVEN_OPTS ("Reproducibility check" is the only one that does, and it keeps
+  # this same log level appended to its own override - see the comment there). This is the
+  # actual close of I4/N6, not just the guard step below that only detects a debug flag
+  # after the fact: an externally-supplied MAVEN_OPTS/MAVEN_ARGS (an Actions variable, a
+  # runner default, anything set outside this file) cannot win over the value this workflow
+  # declares for itself.
+  MAVEN_ARGS: "-B"
+  MAVEN_OPTS: "-Dorg.slf4j.simpleLogger.defaultLogLevel=info"
+
+jobs:
+  publish:
+    name: Verify, sign, upload to the Central Portal
+    runs-on: ubuntu-latest
+    # M5: gate the job that holds the signing key behind a required reviewer. This can
+    # only be enforced once the repository is public (GitHub Environments need a paid plan
+    # on a private repo: `environments` -> total_count 0 today, see L7). The line stays:
+    # it becomes the actual gate the day the `release` environment is created with
+    # Souhaile as a required reviewer, which is itself a precondition of the first
+    # release (docs/RELEASING.md Part 2 step 1). Do not remove it to make the workflow
+    # "work" before then.
+    environment: release
+    steps:
+      # M5/L3: full history for the ancestry check below, and the checkout token is
+      # never written to .git/config - the release job never talks to git again after
+      # the ancestry/signature checks, so there is nothing here that should be able to.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # M5/N8: any tag on any commit could otherwise start a release, including one that
+      # lives only on a scratch branch and was never reviewed. This used to be conditioned
+      # on the tag-push trigger only, on the (wrong) theory that a workflow_dispatch run is
+      # gated by who can trigger it and that set is no broader than who can push a tag -
+      # true, but it is exactly the same set, not a narrower one, so the ancestry check
+      # bought nothing by skipping the dispatch path. It now runs unconditionally on both
+      # triggers: on a workflow_dispatch, $GITHUB_SHA is the tip of whatever ref was chosen
+      # in the UI, which is precisely the commit about to be released, so the same
+      # ancestor-of-main check applies unchanged.
+      - name: Verify the released commit is on main
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::$GITHUB_SHA is not an ancestor of origin/main"; exit 1; }
+
+      # N5/M5: require the tag itself to be signed and verifiable, not just its commit to be
+      # reviewed - and require it unconditionally on the tag-push path. The previous version
+      # skipped this check entirely (a warning, then exit 0) whenever
+      # vars.RELEASE_SIGNING_KEY_ID was unset, which made the control's default state OFF and
+      # the signal that it was off a warning line in a log nobody reads on a run that goes
+      # green; the "do not block workflow_dispatch" reasoning bought nothing, because this
+      # step is already scoped to the tag-push trigger only (below). It also only asserted
+      # that SOME key in the runner's keyring produced a good signature, never that it was
+      # the configured one (reproduced: a tag signed by an attacker's key verified cleanly
+      # once the attacker's key was also in the keyring) - `git verify-tag --raw` and a
+      # VALIDSIG match on the full fingerprint binds the check to that exact key.
+      - name: Verify the tag signature
+        if: github.event_name == 'push'
+        env:
+          RELEASE_SIGNING_KEY_ID: ${{ vars.RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_SIGNING_KEY_ID:-}" ]; then
+            echo "::error::RELEASE_SIGNING_KEY_ID is not set (Settings -> Secrets and variables -> Actions -> Variables). A release tag must be verifiable against a known key; see docs/RELEASING.md Part 1 step 6."
+            exit 1
+          fi
+          if ! [[ "$RELEASE_SIGNING_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+            echo "::error::RELEASE_SIGNING_KEY_ID must be the full 40-character key fingerprint, not a short key id or email"
+            exit 1
+          fi
+          fingerprint="${RELEASE_SIGNING_KEY_ID^^}"
+          gpg --keyserver keyserver.ubuntu.com --recv-keys "$fingerprint"
+          git verify-tag --raw "$GITHUB_REF_NAME" 2>&1 | tee /tmp/verify-tag.out
+          # F3: "VALIDSIG <fpr> ..." names the key that MADE the signature in its first field,
+          # which is the SIGNING SUBKEY whenever the release key has one (git tag -s uses the
+          # subkey even when -u names the primary). The PRIMARY key fingerprint - the value
+          # docs/RELEASING.md has Souhaile put in RELEASE_SIGNING_KEY_ID via `gpg --fingerprint`
+          # - is always the LAST field of the same status line, for both key shapes: a primary
+          # with no signing subkey signs with itself, so its own fingerprint is both the first
+          # and the last field. Matching the last field therefore binds the control to the
+          # identity (the primary), which is what RELEASE_SIGNING_KEY_ID is supposed to name and
+          # what stays correct across subkey rotation, while still refusing a tag signed by any
+          # other key.
+          grep -qE "^\[GNUPG:\] VALIDSIG [0-9A-F]{40} .* ${fingerprint}\$" /tmp/verify-tag.out \
+            || { echo "::error::$GITHUB_REF_NAME is not signed by $fingerprint"; exit 1; }
+
+      # I4/N6: Maven's debug output (`-X`/`--debug`, `-e`/`--errors` for stack traces, or the
+      # slf4j simple-logger level set directly to debug/trace) prints the whole process
+      # environment, including CENTRAL_TOKEN, CENTRAL_USERNAME and MAVEN_GPG_PASSPHRASE, in
+      # clear. GitHub's secret masking only replaces exact registered strings, so a value
+      # that reaches the log through any transformation (e.g. a stack trace fragment) is not
+      # masked. The original guard matched only three literal flags; `--errors` (the long
+      # form of `-e`) and `-Dorg.slf4j.simpleLogger.defaultLogLevel=debug`/`trace` (which
+      # print the identical [DEBUG] env dump without ever touching `-X`) walked straight
+      # past it - reproduced against this repository. This guard, plus the job-level
+      # MAVEN_ARGS/MAVEN_OPTS pin above, is the actual close; nothing today adds a debug
+      # flag, and this step refuses to let a future "just add -X to see what's wrong" change
+      # reach the Maven invocations in this job.
+      - name: Refuse Maven debug output in this job
+        run: |
+          set -euo pipefail
+          debug_pattern='(^|[[:space:]])(-X|--debug|-e|--errors)([[:space:]]|$)|simpleLogger|defaultLogLevel|maven\.debug'
+          if printf '%s\n%s\n' "${MAVEN_ARGS:-}" "${MAVEN_OPTS:-}" | grep -Eiq "$debug_pattern"; then
+            echo "::error::refusing to run Maven with a debug flag or debug log level: MAVEN_ARGS/MAVEN_OPTS carries one that prints secrets in clear (I4/N6)"
+            exit 1
+          fi
+          # Belt: MAVEN_OPTS must be EXACTLY the info-level pin this workflow declares for
+          # itself at job level - not merely free of a debug marker, so an env override
+          # cannot win by substituting some other, still-undesirable, value either.
+          if [ "${MAVEN_OPTS:-}" != "-Dorg.slf4j.simpleLogger.defaultLogLevel=info" ]; then
+            echo "::error::MAVEN_OPTS in this job must be exactly '-Dorg.slf4j.simpleLogger.defaultLogLevel=info' (N6); got '${MAVEN_OPTS:-}'"
+            exit 1
+          fi
+          # Static check that the Maven invocations further down this same job never pass
+          # one of the debug flags on their own command line either. Scoped to the two
+          # "run:" blocks that actually invoke mvnw in the publish job (by line range, sed
+          # between their "- name:" and the next), so this does not match its own source
+          # (this step also mentions these flags, in a string, not as a flag).
+          for step in 'Set the release version in the checkout' 'Verify, licence check, sign, upload'; do
+            if printf '%s' "$(sed -n "/- name: ${step}\$/,/^      - name:/p" .github/workflows/release.yml)" \
+                | grep -vE '^\s*#' \
+                | grep -Eiq "$debug_pattern"; then
+              echo "::error::forbidding a Maven debug flag or debug log level on the '$step' command line (I4/N6)"
+              exit 1
+            fi
+          done
+
+      - name: Derive the release version
+        id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"      # refs/tags/v0.1.0 -> 0.1.0
+          else
+            version="${INPUT_VERSION}"
+          fi
+          # M4: a single whole-string bash `=~` test, not a line-oriented `grep -E`. `=~`
+          # anchors ^ and $ to the whole string and `.` never matches a newline, so a
+          # version containing an embedded newline (e.g. from `gh workflow run -f
+          # version=$'0.1.0\nmalicious=1'`, which a single-line web form cannot express but
+          # the REST API and `gh` can) is rejected outright instead of matching on one line
+          # and injecting extra lines into $GITHUB_OUTPUT. Keep the -SNAPSHOT `case` as a
+          # second belt: `case` also matches the whole string.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$version' is not a semver release version"; exit 1
+          fi
+          case "$version" in
+            *-SNAPSHOT) echo "::error::refusing to release a SNAPSHOT version ($version)"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Reproducible builds: every archive entry is stamped with the committer date
+          # of the commit being released, so the same commit always yields the same bytes.
+          echo "timestamp=$(scripts/git-commit-timestamp.sh)" >> "$GITHUB_OUTPUT"
+          echo "releasing $version at $(scripts/git-commit-timestamp.sh)"
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          # No cache here (M3). actions/setup-java's maven cache also restores
+          # ~/.m2/wrapper/dists, and mvnw execs an already-unpacked distribution there
+          # with no checksum check at all (distributionSha256Sum is only verified against
+          # the downloaded zip). A release build must not restore state it did not verify:
+          # this is the job that holds the signing key and the Central token, and it must
+          # start from nothing it did not just fetch and check itself. Left in ci.yml and
+          # sample-smoke, which sign nothing.
+          # Writes ~/.m2/settings.xml with <server><id>central</id> whose username and
+          # password are read from the two environment variables named below. The values
+          # never appear in the file, only the variable names.
+          server-id: central
+          server-username: CENTRAL_USERNAME
+          server-password: CENTRAL_TOKEN
+          # Imports the signing key into a throwaway keyring and removes it in the post step.
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      # M3: guarantee there is no unpacked Maven distribution left from any earlier state
+      # of this runner for mvnw to exec unverified, on top of the missing cache above.
+      - name: Remove any pre-existing Maven wrapper distribution
+        run: rm -rf ~/.m2/wrapper/dists
+
+      - name: Set the release version in the checkout
+        # M3: an empty, local-to-the-job repository. The release job must not resolve
+        # a single artifact from state it did not just download and verify itself.
+        run: |
+          set -euo pipefail
+          ./mvnw -B -q org.codehaus.mojo:versions-maven-plugin:2.21.0:set \
+            -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
+            -DnewVersion="${{ steps.v.outputs.version }}" \
+            -DprocessAllModules=true -DgenerateBackupPoms=false
+          grep -n '<version>${{ steps.v.outputs.version }}</version>' pom.xml
+
+      - name: Reproducibility check (two clean builds, identical jars)
+        env:
+          # N6: this step overrides MAVEN_OPTS (to add the empty local repo path), which
+          # would otherwise silently drop the job-level info-log-level pin above - keep it
+          # appended so the pin holds for every step in this job, not just the ones that
+          # never redeclare MAVEN_OPTS.
+          MAVEN_OPTS: -Dmaven.repo.local=${{ runner.temp }}/m2repo -Dorg.slf4j.simpleLogger.defaultLogLevel=info
+          # L1: written outside target/, which `clean deploy` below is about to wipe and
+          # rebuild a third time. This is what the post-deploy step compares against.
+          REPRODUCIBLE_SHA_FILE: ${{ runner.temp }}/reproducible-sha256.txt
+        run: scripts/verify-reproducible.sh
+
+      # One Maven invocation runs the whole release lifecycle in order:
+      #   test -> spotless -> jacoco gate -> licence allowlist + THIRD-PARTY-NOTICES.txt
+      #        -> sources + javadoc jars -> GPG signatures -> Central Portal upload.
+      # It stops at "validated": the deployment waits for a human on the portal.
+      # -Dmaven.repo.local (M3): empty at the start of this step, same reasoning as above.
+      # -C / --strict-checksums (M3): fail rather than silently accept an artifact whose
+      # checksum does not match what the remote repository published.
+      - name: Verify, licence check, sign, upload
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_TOKEN: ${{ secrets.CENTRAL_TOKEN }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          ./mvnw -B -C clean deploy -Prelease \
+            -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
+            -Dproject.build.outputTimestamp="${{ steps.v.outputs.timestamp }}"
+
+      # L5: agent-guard-sample is the last module in the reactor, so it is the module that
+      # assembles and uploads the aggregate bundle. <excludeArtifacts> in the release
+      # profile is the only mechanism keeping the sample's own coordinates out of it; a
+      # silent regression there (or in a future plugin version) would upload the wrong
+      # bundle, or nothing, while still reporting success. Fail loudly instead: the bundle
+      # must contain exactly the three published coordinates and never the sample.
+      - name: Confirm the bundle contains exactly the three published coordinates
+        if: success()
+        run: |
+          set -euo pipefail
+          # N4: central-publishing-maven-plugin assembles the aggregate bundle in the
+          # TOP-LEVEL project's build directory, not the last reactor module's. The previous
+          # path here (agent-guard-sample/target/...) was never written by the plugin, so
+          # this step failed with "was not created" on every release run - after the upload
+          # had already happened - and the two steps after it (L1's checksum comparison,
+          # L4's evidence upload, both `if: success()`) never ran. Reproduced with a real
+          # `deploy -Prelease`: the bundle lands at ./target/central-publishing/central-bundle.zip.
+          # Not a glob/find: a `find`-based lookup would silently pass on a stale bundle from
+          # an earlier module.
+          bundle="target/central-publishing/central-bundle.zip"
+          [ -f "$bundle" ] || { echo "::error::$bundle was not created"; exit 1; }
+          listing="$(unzip -l "$bundle")"
+          echo "$listing"
+          if printf '%s' "$listing" | grep -q 'agent-guard-sample'; then
+            echo "::error::the bundle contains agent-guard-sample, which must never be published"
+            exit 1
+          fi
+          for coord in agent-guard-parent agent-guard-core agent-guard-spring-boot-starter; do
+            if ! printf '%s' "$listing" | grep -q "com/housedevinci/${coord}/"; then
+              echo "::error::the bundle is missing $coord"
+              exit 1
+            fi
+          done
+
+      # L1: the jars that were just signed and uploaded come from this third build, which
+      # was never itself compared against the two builds verify-reproducible.sh proved
+      # identical. Recompute SHA-256 of every published jar and fail if it does not match
+      # the checksum recorded from build 1, so the human about to press Publish is looking
+      # at a build that was actually proved reproducible, not just a sibling of one.
+      - name: Confirm the deployed jars match the reproducibility check
+        if: success()
+        run: |
+          set -euo pipefail
+          sha_file="${{ runner.temp }}/reproducible-sha256.txt"
+          status=0
+          {
+            echo "### Published jars vs. the reproducibility check"
+            echo
+            printf '| %s | %s | %s |\n' "artifact" "verdict" "sha256"
+            printf '|---|---|---|\n'
+          } >>"$GITHUB_STEP_SUMMARY"
+          for jar in agent-guard-core/target/*.jar agent-guard-spring-boot-starter/target/*.jar; do
+            [ -e "$jar" ] || continue
+            name="$(basename "$jar")"
+            expected="$(grep -F " $name" "$sha_file" | awk '{print $1}' | head -1)"
+            actual="$(shasum -a 256 "$jar" | cut -d' ' -f1)"
+            if [ -z "$expected" ]; then
+              echo "::error::$name has no recorded checksum from the reproducibility check"
+              printf '| %s | %s | %s |\n' "$name" "NO RECORD" "$actual" >>"$GITHUB_STEP_SUMMARY"
+              status=1
+            elif [ "$expected" = "$actual" ]; then
+              printf '| %s | %s | %s |\n' "$name" "matches" "$actual" >>"$GITHUB_STEP_SUMMARY"
+            else
+              case "$name" in
+                *-javadoc.jar)
+                  echo "::warning::$name differs from the reproducibility check (not enforced, see QUESTIONS #24)"
+                  printf '| %s | %s | %s |\n' "$name" "differs (not enforced)" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  ;;
+                *)
+                  echo "::error::$name does not match its reproducibility-check checksum: $expected vs $actual"
+                  printf '| %s | %s | %s |\n' "$name" "MISMATCH" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  status=1
+                  ;;
+              esac
+            fi
+          done
+          exit "$status"
+
+      # L4: signing happens at `verify`, the Portal upload after; a run that fails at
+      # upload must not still hand out a downloadable artifact with a valid signature for
+      # a version that was never actually published and may never be. Jars and .asc only
+      # when the run actually succeeded; on failure, only the evidence that helps diagnose
+      # why, named so it cannot be mistaken for a real release artifact.
+      - name: Upload the release evidence
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.v.outputs.version }}
+          path: |
+            **/target/THIRD-PARTY-NOTICES.txt
+            agent-guard-core/target/*.jar
+            agent-guard-core/target/*.asc
+            agent-guard-spring-boot-starter/target/*.jar
+            agent-guard-spring-boot-starter/target/*.asc
+          if-no-files-found: error
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.v.outputs.version }}-FAILED
+          path: |
+            **/target/THIRD-PARTY-NOTICES.txt
+            **/target/surefire-reports/**
+          if-no-files-found: ignore
+
+  sample-smoke:
+    # RELEASE-PROCESS.md step 6: the sample app is re-run from a clean clone and timed.
+    # This job shares nothing with the publish job: fresh checkout, fresh container,
+    # the artifacts it uses are the ones it just built from source.
+    name: Sample app from a clean clone
+    runs-on: ubuntu-latest
+    steps:
+      # L3: this job never talks to git after checkout either.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Start PostgreSQL, build, run, time to first response
+        working-directory: agent-guard-sample
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+
+          docker compose up -d
+          # Build the sample and the two libraries it needs. Tests already ran in CI;
+          # this job measures how long a newcomer waits, not whether the tests pass.
+          (cd .. && ./mvnw -B -q -DskipTests -Dspotless.check.skip=true -Djacoco.skip=true \
+              -pl agent-guard-sample -am package)
+
+          java -jar target/agent-guard-sample-*.jar > /tmp/sample.log 2>&1 &
+          app=$!
+
+          # "Running" = the approval endpoint answers. 401 is a correct answer: the app is
+          # up and Spring Security is refusing an unauthenticated caller.
+          ready=""
+          for _ in $(seq 1 120); do
+            if ! kill -0 "$app" 2>/dev/null; then
+              echo "::error::the sample exited before it answered"; tail -50 /tmp/sample.log; exit 1
+            fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/agentguard/audit || true)
+            if [ "$code" = "401" ] || [ "$code" = "200" ]; then ready=1; break; fi
+            sleep 1
+          done
+          end=$(date +%s)
+          elapsed=$(( end - start ))
+
+          if [ -z "$ready" ]; then
+            echo "::error::the sample never answered"; tail -80 /tmp/sample.log; kill "$app" || true; exit 1
+          fi
+
+          echo "sample reached a first response in ${elapsed}s (clone -> running)"
+          echo "### Sample: running in ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+
+          kill "$app" || true
+
+          # AGENTS.md asks for under two minutes on a developer machine. A GitHub runner is
+          # slower and starts a PostgreSQL container from scratch, so the gate here is three
+          # minutes; the number above is the one that goes in the release notes.
+          if [ "$elapsed" -gt 180 ]; then
+            echo "::error::sample took ${elapsed}s, over the 180s CI budget"; exit 1
+          fi
+
+      - name: PostgreSQL down
+        if: always()
+        working-directory: agent-guard-sample
+        run: docker compose down -v

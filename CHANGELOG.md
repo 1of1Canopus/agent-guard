@@ -4,6 +4,239 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (Cipher final verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verdict pass (`5cac151`)")
+- **G4 (LOW)**: `.github/workflows/ci.yml`'s `dco` job guarded the `auto=` substitution in an `if` so `git merge-tree`'s non-zero exit on a conflicted merge is non-fatal under `set -euo pipefail`, letting a conflict-resolved back-merge fall through to the sign-off check with a visible error instead of the step aborting with no output; also corrected the step's comment, which wrongly claimed that path already fell through (Isis, 2026-09-09; probe suite `still weak: 0    fixed: 36`).
+
+### Fixed (Cipher final confirmation pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final confirmation pass (`cae839e`)")
+- **G3 (LOW)**: `.github/workflows/ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (exactly two parents, second an ancestor of `BASE_SHA`, tree matching `git merge-tree --write-tree` of its parents), closing the octopus/evil-merge bypass an unconstrained parent-count exemption left open (Isis, 2026-09-09; probe suite `still weak: 0    fixed: 35`).
+
+### Fixed (Cipher clean-verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Clean-verdict pass (`fad6659`)")
+1 MEDIUM and 1 LOW closed (Isis, 2026-09-09). All 34 probes in
+`tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
+- **G1 (MEDIUM)**: `tools/check-third-party-licences.sh`'s `parse_notices` trusted "the last
+  top-level `(...)` group" as the dependency coordinate by position. F2 closed the case
+  where a URL's *nested* parens split the real coordinate group; this was the same forgery
+  pointed the other way — a dependency's own `<url>` can simply close its group early and
+  open a fresh, allowlisted one after it (`http://x) (ch.qos.logback:logback-core:1.5.6 -
+  http://y`), so the denied coordinate before it is never checked and the plugin's own
+  dependency-count header still matches. The scan now counts how many top-level groups are
+  coordinate-shaped and requires **exactly one**; zero or two-or-more both fall to
+  `UNPARSEABLE` (fail closed) instead of picking one by position. `--self-test` gained the
+  forward-forgery case, a legitimate nested-paren URL, and a legitimate parenthesised
+  project name (`Apache Commons (Core)`) — all three correct, zero regressions on the real
+  corpus (dependency lines still parse `OK`, no new `UNPARSEABLE`).
+- **G2 (LOW)**: `.github/workflows/ci.yml`'s `dco` job decided a commit was an exempt merge
+  commit by matching its **subject** (`"Merge branch"*`), which is free text the committer
+  chooses — an ordinary single-parent commit titled `Merge branch 'x' into y` skipped the
+  DCO check with no `Signed-off-by` trailer at all. Now branches on the commit's parent
+  count (`git log -1 --format='%P'`): two-or-more parents is a real merge and is exempt,
+  one parent is checked regardless of subject. Parent count cannot be forged by a commit
+  message.
+
+### Fixed (Cipher final verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verification (78c808e)")
+1 MEDIUM, 6 LOW and 2 INFO closed (Isis, 2026-09-09). All 32 probes in
+`tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
+- **F2 (MEDIUM)**: `parse_notices` collected `(...)` groups with `[^()]*`, which cannot span
+  a nested pair, so a dependency's own `<url>` containing a balanced `(...)` made that inner
+  group win over the real, outer coordinate - forging which dependency the denial pass
+  checked. The scan is now depth-aware: it tracks paren depth and keeps only top-level
+  groups, and requires the line to end with the closing paren of the last one. A URL with a
+  genuinely balanced pair (Wikipedia-style) now parses cleanly instead of tripping
+  `UNPARSEABLE`. `--self-test` gained both the forged-URL case and the legitimate-URL case.
+- **F1**: `pom.xml`'s `<excludedGroups>com\.housedevinci</excludedGroups>` was, once wrapped
+  by `license-maven-plugin`'s own pattern, a substring test on the groupId:
+  `com.housedevinci-evil` and `xcom.housedevinci` were excluded from both licence gates too,
+  and an excluded dependency reaches neither. Anchored to
+  `^com\.housedevinci(\.[^:]*)?(?=:)`, which only matches `com.housedevinci` and its dotted
+  subgroups once wrapped. Verified with three real builds against a scratch dependency:
+  `com.housedevinci-evil` and `xcom.housedevinci` now fail the build (scanned, GPL-3.0
+  denied); `com.housedevinci:agent-guard-core` stays excluded.
+- **F3**: the tag-signature check's `VALIDSIG` match was bound to the *first* field of the
+  status line - the key that made the signature - which is the signing **subkey** whenever
+  the release key has one (`git tag -s` uses it even with `-u <primary>`). The primary
+  fingerprint `RELEASE_SIGNING_KEY_ID` is configured with is always the *last* field, for
+  both key shapes. Verified with two throwaway keys (primary-only, primary+signing-subkey):
+  the new regex matches the primary fingerprint in both cases; the old one only matched the
+  primary-only case. `docs/RELEASING.md` gains one clarifying paragraph.
+- **F4**: the deny pattern `mpl` was a bare substring, matching "si**mpl**ified",
+  "exa**mpl**e", "te**mpl**ate": `Simplified BSD License` and any `example.com` licence URL
+  were denied even though the plugin's own allowlist accepts them. Dropped; `mpl11`/`mpl20`
+  already cover real MPL spellings, `mpl10` added.
+- **F5**: `eupl12`/`sspl10` were version-pinned and missed `EUPL v1.1`/`EUPL-1.1` and a bare
+  `SSPL`/`SSPL-2.0`; `OSL-3.0` and `CPAL` were absent entirely. Unpinned to `eupl`/`sspl`
+  (neither occurs in a permissive licence name) and added `osl30`/`opensoftwarelicense`,
+  `cpal`/`commonpublicattribution`. All eight spellings added to `--self-test`.
+- **F6 (INFO)**: `pom.xml`'s licence-allowlist comment still called Apache-2.0 "the licence
+  of this project", stale since the FSL-1.1-ALv2 switch. Reworded.
+- **F7**: `CONTRIBUTING.md` said nothing about the licence of a contribution, and FSL has no
+  contribution clause of its own. Added a DCO (`Signed-off-by`, `git commit -s`) requirement
+  plus the one-paragraph inbound grant `specs/LICENSING.md`'s "simple CLA" already promises;
+  `ci.yml` gained a `dco` job that fails a pull request carrying an unsigned commit. The
+  `commit-msg` hook already accepted `Signed-off-by:` (it only forbids attribution trailers
+  naming Claude) - verified, not changed.
+- **F8 (INFO)**: `78c808e` ("spell the licensor HouseDevinci everywhere") missed two lines
+  in `docs/RELEASING.md`: the release signing key's real name and the Central Portal
+  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; `git grep -n
+  -i -E 'house ?devinci' -- ':!docs/SECURITY-REVIEW*'` now shows only `HouseDevinci`, URLs,
+  packages and emails.
+- **F9**: `SampleEndToEndTest` read the wall clock, so its four tool calls could straddle
+  the budget's tumbling one-minute window boundary and reset the counter mid-scenario -
+  observed for real on a clean tree. It now supplies its own `agentGuardClock` bean (a
+  `MutableClock` pinned well inside a window, never advanced during the test), using the
+  seam `AgentGuardAutoConfiguration.agentGuardClock()` already exposed
+  (`@ConditionalOnMissingBean(name = "agentGuardClock")`). No sleeps, no retries.
+
+### Changed
+- **Licensing:** the free core switches from Apache-2.0 to the Functional Source License, Version
+  1.1, ALv2 Future License (FSL-1.1-ALv2) - free to use, not as a base for a competing product,
+  converts to Apache-2.0 two years after each version's release. Decision by Souhaile,
+  2026-09-08; see `LICENSING.md` (portfolio-level) for the reasoning. `LICENSE` and `NOTICE`
+  updated, `pom.xml` `<licenses>`, still embedded in the core and starter jars' `META-INF/`. The
+  reactor's own modules are now excluded from the third-party licence scan by `groupId`
+  (`excludedGroups`), not by licence name, since `com.housedevinci:agent-guard-core` no longer
+  matches the third-party allowlist.
+
+### Fixed (Cipher re-verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Re-verification (30aec6f)")
+Every MEDIUM, LOW and INFO from the re-verification pass closed (Isis, 2026-09-08). All 23
+probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
+- **N1 (merge blocker)**: `./mvnw verify` failed on a fresh clone - the licence denial
+  `exec:exec` execution ran once, tree-wide, on `agent-guard-parent`, before any module had
+  written a `THIRD-PARTY-NOTICES.txt`. It now runs per module, with
+  `${project.build.directory}`/`${project.packaging}` passed as arguments; a `pom`-packaged
+  module with no notices file passes, everything else must have one. Proved on a fresh
+  `git clone` + `./mvnw -B verify`.
+- **N2**: the denial pass matched hyphenated SPDX ids and the literal substring `gpl`, so
+  prose licence names ("GNU General Public License v3", "Mozilla Public License, Version
+  2.0", …) passed on their permissive half. Matching is now on a normalised
+  (lowercased, non-alphanumeric-stripped) form against SPDX-id fragments and prose
+  word-patterns; `tools/check-third-party-licences.sh --self-test` table-tests every
+  phrasing from Cipher's repro.
+- **N3**: the dependency coordinate used for the allowlist was read from the *first*
+  `(g:a:v - url)`-shaped group on the notices line, which a dependency's own `<name>` could
+  forge; and a version containing `+` matched no coordinate and was silently skipped. Now
+  reads the *last* parenthesised group, widens the version character class, and fails the
+  build on any line whose coordinate does not parse.
+- **N4**: the "bundle contains exactly the three coordinates" assertion pointed at
+  `agent-guard-sample/target/...`, a path the plugin never writes (it assembles the bundle
+  in the top-level `target/`), so the step failed on every release run after the upload had
+  already happened, and the checksum-comparison and evidence-upload steps after it never
+  ran. Fixed to `target/central-publishing/central-bundle.zip`; confirmed with a real
+  `deploy -Prelease` against a fake token.
+- **N5**: the tag-signature check skipped itself (warning, `exit 0`) whenever
+  `RELEASE_SIGNING_KEY_ID` was unset, and even when set only asserted that *some* key in the
+  keyring produced a good signature, never that it was the configured one. Now a hard
+  failure when unset or not a full 40-hex fingerprint, bound to that fingerprint via
+  `git verify-tag --raw` + a `VALIDSIG` match.
+- **N6**: the debug-output guard matched three literal flags; `--errors` and setting the
+  slf4j simple-logger level directly via `MAVEN_OPTS` printed the identical clear-text
+  secret dump without tripping it. Guard extended, and `MAVEN_ARGS`/`MAVEN_OPTS` pinned at
+  workflow level so an externally supplied override cannot win.
+- **N7**: `docs/RELEASING.md`'s scratch-keyring sanity check set `trap ... EXIT` at the top
+  level of the pasted shell, which only fires when the terminal tab closes, not when a step
+  in the block fails. Wrapped in a subshell so the trap fires at the closing parenthesis
+  either way.
+- **N8**: the ancestry check ran only on the tag-push trigger; `workflow_dispatch` skipped
+  it entirely even though the same people can use either path. Now runs on both.
+- **N9**: the `classpath-exception`/`cpe` carve-out in the denial pass was a licence-token
+  pattern, which the script's own design forbids. Removed; a genuine classpath-exception
+  dependency is admitted the same way logback is, by coordinate.
+- **N10**: an empty `()` licence token crashed the scan under `set -u`. Now handled without
+  aborting the rest of the file.
+- **N11 (I1, never closed in the first pass)**: `pom.xml` still passed a duplicate
+  `--pinentry-mode loopback` to `maven-gpg-plugin`, which supplies it itself, and credited
+  the wrong reason in its comment. Removed.
+- **N12**: `docs/RELEASING.md`'s "How the pieces fit" table still listed the removed
+  `skipPublishing` property. Corrected.
+
+### Added (release pipeline, `feat/release-pipeline`)
+- **Maven Central publishing**, in a `release` profile so `./mvnw verify` is byte-for-byte the
+  build it always was. `org.sonatype.central:central-publishing-maven-plugin` 0.11.0 with
+  `autoPublish=false` and `waitUntil=validated`: the pipeline uploads a bundle and the Central
+  Portal validates it, then it waits for a human to press Publish. Sources and javadoc jars via
+  `maven-source-plugin` and `maven-javadoc-plugin`; detached GPG signatures via
+  `maven-gpg-plugin` 3.2.8, key and passphrase from CI secrets only.
+- **Publish set is exactly three artifacts**: `agent-guard-parent` (the POM), `agent-guard-core`,
+  `agent-guard-spring-boot-starter`. `agent-guard-sample` is excluded twice over:
+  `<excludeArtifacts>` in the release profile keeps it out of the bundle, and
+  `maven.deploy.skip` / `maven.install.skip` / `maven.source.skip` / `maven.javadoc.skip` /
+  `gpg.skip` / `skipPublishing` in its own POM keep it from being built for release at all.
+- **POM metadata Central requires**: `inceptionYear`, `organization`, `developers` (role address
+  `oss@housedevinci.com`, see QUESTIONS #21), `scm`, `issueManagement`, `licenses` with
+  `<distribution>repo</distribution>`. `url` and `scm` carry
+  `child.*.inherit.append.path="false"` so the child POMs point at the repository rather than at
+  a made-up `.../agent-guard-core` path.
+- **Reproducible builds**: `project.build.outputTimestamp` set from the committer date of the
+  commit being released (`scripts/git-commit-timestamp.sh`), and `scripts/verify-reproducible.sh`
+  which builds the tree twice from clean and compares the SHA-256 of every published jar. All six
+  jars, javadoc included, are identical.
+- **`.github/workflows/release.yml`**: `workflow_dispatch` with a `version` input, or a `v*` tag.
+  Derives the version, refuses anything that is not plain semver or that ends in `-SNAPSHOT`,
+  rewrites the POMs in the runner's checkout only (`main` stays on `0.1.0-SNAPSHOT` and nothing is
+  committed back), runs the reproducibility check, then one `deploy -Prelease` that runs tests,
+  format, coverage gate, licence allowlist, signing and upload in that order. `permissions:
+  contents: read` and no `id-token`: the plugin authenticates with the Central user-token pair, not
+  OIDC. Every action pinned by full commit SHA with the tag in a comment. A second job re-runs the
+  sample from a clean clone with a fresh PostgreSQL and times it to its first HTTP response
+  (RELEASE-PROCESS step 6).
+- **`docs/RELEASING.md`**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
+  with the exact export commands) and the per-release steps.
+
+### Fixed (Cipher security review, `docs/SECURITY-REVIEW-feat-release-pipeline.md`)
+Every MEDIUM, LOW and the one INFO that needed a code change, closed under the no-allowance
+rule (Souhaile, 2026-09-07). `tools/cipher-probe-release-pipeline.sh`: 12 of 13 probes FIXED;
+see QUESTIONS.md #27 for why the thirteenth, a static check of the vendored `mvnw` script's
+general behaviour, is not chased.
+- **M1/M2 licence gate**: the plugin's `includedLicenses` is an any-of permission check, so
+  `Apache-2.0 OR GPL-3.0` slipped through on its permissive half. Added
+  `tools/check-third-party-licences.sh`, an all-of denial pass over every
+  `THIRD-PARTY-NOTICES.txt`, wired via `exec-maven-plugin` at `verify` in the default build,
+  with an explicit coordinate allowlist (not a licence pattern) for the two genuinely
+  dual-licensed dependencies. `<excludedLicenses>` is commented as the anti-pattern it is: it
+  makes the build pass by deleting the denied licence from the evidence file.
+- **M3 signing-job cache**: `cache: maven` on the `publish` job also restored
+  `~/.m2/wrapper/dists`, which `mvnw` execs with no checksum check at all. Dropped from that
+  job (kept where nothing is signed), any pre-existing wrapper distribution is removed before
+  `mvnw` runs, every Maven invocation in the job uses a fresh `maven.repo.local`, and `deploy`
+  runs with `-C`/`--strict-checksums`.
+- **M4 version validation**: the `workflow_dispatch` `version` input was checked with a
+  line-oriented `grep -E`, so a value containing a newline injected extra lines into
+  `$GITHUB_OUTPUT`. Replaced with a whole-string bash `=~` test.
+- **M5 release gate**: any tag on any commit could start a release. Added
+  `environment: release` (a release gate, enforceable once the repository is public),
+  `git merge-base --is-ancestor` against `origin/main`, and a conditional `git verify-tag`.
+- **M6 key handling**: `docs/RELEASING.md` put the armoured private key on the macOS
+  clipboard and left a `mktemp` keyring on disk. Rewritten to export straight into
+  `gh secret set` and to remove the sanity-check keyring with a `trap` on exit.
+- **M7 licence text**: `LICENSE` and `NOTICE` added at the repository root and copied into
+  `META-INF/` of both published jars.
+- **L1** the deployed jars, from a third build, were never compared against the two
+  `verify-reproducible.sh` proves identical; it now also writes a checksum file, and a
+  post-deploy step recomputes and compares.
+- **L2** concurrency group is now keyed on the version, not the ref.
+- **L3** `persist-credentials: false` on both checkouts in `release.yml`.
+- **L4** the evidence upload ran with `if: always()` and included signed jars and `.asc`
+  files; split so those upload only on success, with a diagnostics-only artifact on failure.
+- **L5** `agent-guard-sample`'s `skipPublishing` did nothing (the sample is the last module
+  in the reactor and assembles the bundle regardless); removed, and a post-deploy step now
+  asserts the bundle contains exactly the three published coordinates and never the sample.
+- **L6** added `SECURITY.md`.
+- **L7** documented as a release gate in `docs/RELEASING.md` (cannot be fixed by this branch:
+  the repository must go public first).
+- **I4** added a guard step that fails the job if a Maven debug flag (`-X`/`--debug`/`-e`)
+  reaches `MAVEN_ARGS`/`MAVEN_OPTS` or either `mvnw` invocation in the job.
+
+### Changed
+- **Licence gate is now an allowlist and now actually runs.** `license-maven-plugin` moves from
+  `excludedLicenses` (four hand-guessed copyleft spellings) to
+  `includedLicenses=Apache-2.0|MIT|BSD|EPL-2.0|Public Domain` with `licenseMerges` folding the
+  many spellings onto those five, plus `failOnMissing=true`. Runtime scope only
+  (`excludedScopes=test,provided,system`).
+  `<force>true</force>` is the important part: the goal silently skips when
+  `target/THIRD-PARTY-NOTICES.txt` is newer than the POM, so on every incremental local build the
+  old gate checked nothing. Verified by narrowing the allowlist to `MIT` and watching the build
+  fail with "There are 2 forbidden licenses used". See QUESTIONS #22.
+
+
 ### Security (Cipher final verdict on `05f209d`: K1 LOW closed)
 - **K1 (LOW):** the J1 fix scoped the schema-predates guard to search_path *visibility*
   (`to_regclass('agentguard_audit')`, which resolves like a reference — the first schema on the search_path that
@@ -279,7 +512,7 @@ ruled the design itself, then amended it once more after Cipher's design review.
   `AgentGuardAutoConfigurationTest` updated or extended alongside it.
 
 ### Added
-- `agent-guard-core` (Apache-2.0, no framework dependencies):
+- `agent-guard-core` (FSL-1.1-ALv2, no framework dependencies):
   - `@ToolPolicy(roles, scopes, tenants, sideEffect)` and `ToolPolicyRegistry`; `ToolPolicyEvaluator` with a stable
     decision (`ALLOW` / `DENY(code)` / `REQUIRE_APPROVAL`).
   - Approval gate: `PendingDecision`, `DecisionState` enum state machine (`PENDING -> APPROVED | REJECTED | EXPIRED`,

@@ -13,6 +13,32 @@
   <name>Agent Guard :: Sample MCP server</name>
   <description>60-line MCP server: one read tool, one write tool parked for approval, approval + audit endpoints, budget of 3 calls</description>
 
+  <properties>
+    <!--
+      The sample is a demo application, not a library. It is never published anywhere:
+      not to Maven Central, not to the local install repository of a release build.
+      These keep it from being signed, sourced, javadoc'd or deployed at all.
+
+      L5: <skipPublishing> is NOT a second, independent mechanism keeping it out of the
+      Central bundle - it does nothing at all here. Verified with -X: on the sample module
+      the plugin logs "(f) skipPublishing = true", then "Skipping Central Staging
+      Publishing as no staged artifacts were found", then still goes on to build and
+      upload the aggregate bundle, because the sample is the LAST module in the reactor
+      and is therefore the module central-publishing-maven-plugin uses to assemble and
+      upload the whole deployment. The only thing that keeps agent-guard-sample's own
+      coordinates out of that bundle is <excludeArtifacts> in the parent pom's release
+      profile. A future plugin version that honoured skipPublishing at the aggregate step
+      would make the release silently upload nothing while reporting success, which is why
+      it is removed rather than left as a harmless-looking belt. See
+      docs/SECURITY-REVIEW-feat-release-pipeline.md L5.
+    -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <maven.install.skip>true</maven.install.skip>
+    <maven.source.skip>true</maven.source.skip>
+    <maven.javadoc.skip>true</maven.javadoc.skip>
+    <gpg.skip>true</gpg.skip>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>com.housedevinci</groupId>

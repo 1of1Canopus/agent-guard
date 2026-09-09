@@ -1,7 +1,219 @@
-# STATUS.md — Module B · Agent Guard, free core (run 11: Isis closes Cipher's final-verdict K1)
+# STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
-Branch `feat/agent-guard-core` in `modules/B-agent-guard/`, pushed to `origin`
-(https://github.com/1of1Canopus/agent-guard.git). Pro edition out of scope.
+Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
+
+Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
+(merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
+Pro edition out of scope.
+
+## Closed finding (Cipher, final confirmation pass at `cae839e`; fixed by Isis, 2026-09-09)
+- **G3 (LOW)** closed — `ci.yml`'s `dco` job now exempts a merge only when it is a trivial
+  back-merge of the base (`git merge-tree --write-tree` check). Confirmed by the probe and by
+  six cases run against the committed step body, including an octopus merge, a two-parent
+  merge whose second parent is not from the base, and a back-merge that smuggles an extra
+  file past the tree check. All correct.
+
+## Closed finding (Cipher, final verdict pass at `5cac151`; fixed by Isis, 2026-09-09)
+- **G4 (LOW)** closed — `dco` step's `auto=` substitution is now guarded by an `if` so `git merge-tree`'s non-zero exit on a conflicted merge no longer trips `set -e`; `auto` stays empty and the merge falls through to the sign-off check with a visible `::error::` instead of the step aborting silently; probe `probe_dco_step_aborts_silently_on_a_conflicted_back_merge` now FIXED, suite reads `still weak: 0    fixed: 36`.
+
+## Verdict (Cipher, final verdict pass at `3a0cb46`, 2026-09-09) — **MERGE**
+
+Every finding opened on this branch is closed: M1–M7, L1–L7, I1–I4, N1–N11, F1–F9, G1–G4.
+No HIGH, no MEDIUM, no LOW, no INFO open. Fresh clone at `3a0cb46`: `./mvnw -B clean verify`
+**BUILD SUCCESS** 49.6 s, **220 tests, 0 failures, 1 documented assumption skip**, JaCoCo line
+**90.60 %**, release profile green, **6 of 6 artifacts byte-identical** across two clean builds,
+probe suite **`still weak: 0    fixed: 36`** exit 0, CI green on both jobs. G4 re-verified by the
+probe, by a control run against the pre-fix step body, and by eight cases against the committed
+`dco` step body. Detail and Souhaile's nine-step release checklist:
+`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verdict (3a0cb46): MERGE".
+
+## After merge
+- Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`
+  block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` — QUESTIONS.md #29/#33.
+
+## Summary (run 16)
+**Done.** Closed both findings from Cipher's clean-verdict pass at `fad6659`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Clean-verdict pass (`fad6659`)"): G1
+(MEDIUM), G2 (LOW). Full detail in `CHANGELOG.md`'s "Fixed (Cipher clean-verdict pass)"
+entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **34/34 probes
+FIXED**, script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B verify` (fresh state) | green, 220 run, 0 failures, 0 errors, 1 skipped (pre-existing, unrelated) |
+| `./mvnw -B -Prelease -DskipTests -Dgpg.skip=true install` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `tools/check-third-party-licences.sh --self-test` | all cases correct, incl. G1's forward-forgery, legitimate nested-paren URL and parenthesised-name rows |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 34/34 FIXED, exits 0 |
+| Real corpus (`check-third-party-licences` Maven execution) | clean, 0 regressions |
+| GitHub CI on the pushed branch, incl. `dco` job | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+QUESTIONS.md #29 ruling confirmed and recorded as #33: the `GRANDFATHER_SHA` exemption stays
+for this PR; deletion is a follow-up PR after #9 merges (see "After merge" above).
+
+## Summary (run 15)
+**Done.** Closed all nine items from Cipher's final verification at `78c808e`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verification (78c808e)"): F2
+(MEDIUM), F1/F3/F4/F5/F7/F9 (LOW), F6/F8 (INFO). Full detail in `CHANGELOG.md`'s "Fixed
+(Cipher final verification)" entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **32/32 probes
+FIXED**, script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` (3 consecutive runs) | green x3, no flake |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `./mvnw -B verify` on a fresh `git clone` | green |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 32/32 FIXED, exits 0 |
+| `--self-test` | all cases correct, incl. F2/F4/F5's new rows |
+| GitHub CI on the pushed branch | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+F3 additionally verified against two throwaway GPG keys (a primary-only key and a
+primary-with-signing-subkey key), signing a real tag with `git tag -s -u <primary>` in both
+cases: the fixed `VALIDSIG` match binds the primary fingerprint for both key shapes; the old
+regex only matched the primary-only shape. F1 additionally verified with three real builds
+against a scratch dependency under `com.housedevinci-evil`, `xcom.housedevinci`, and (control)
+the real `com.housedevinci` groupId - see `CHANGELOG.md` for the outcomes.
+
+`QUESTIONS.md` #28 (new): whether `license-maven-plugin`'s `excludedGroups` can exclude a
+dependency from the licence *gate* without also excluding it from the *notices file* -
+checked in the plugin's own bytecode; it cannot, one filter drives both. Not a live gap here:
+the only excluded groupId is this project's own, which is correctly absent from a
+*third*-party notices file.
+
+## Summary (run 14)
+**Done.** Closed all twelve items from Cipher's re-verification at `30aec6f`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Re-verification (30aec6f)"): N1-N4
+(MEDIUM), N5-N8 (LOW), N9-N12 (INFO, including I1 from the first pass, never actually closed
+there). Full detail in `CHANGELOG.md`'s "Fixed (Cipher re-verification)" entry; commits
+carry `Cipher-Finding:` footers per id.
+
+N1 was flagged a merge blocker independent of severity - `./mvnw verify` failed on any
+fresh clone, which meant `ci.yml` was red on every push of this branch. Proved fixed on an
+actual fresh `git clone` + `./mvnw -B verify` (BUILD SUCCESS), not just by reading the diff.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **23/23 probes FIXED**,
+script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` | green |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `./mvnw -B verify` on a fresh `git clone` | green (N1) |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 23/23 FIXED, exits 0 |
+| `deploy -Prelease` on a `versions:set 0.1.0` clone, fake token | bundle built at `target/central-publishing/central-bundle.zip` (45 files, no `agent-guard-sample`, all three coordinates present), upload stopped at the Portal's 401 - proves N4's assertion step now points at the real path |
+| GitHub CI on the pushed branch | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+One correction made along the way, not a finding: the N11 fix's first pass introduced an
+invalid `--` sequence inside an XML comment in `pom.xml` (illegal in XML comments), caught
+by the fresh-clone `verify` run and fixed in a follow-up commit before the branch was
+considered done - see the two `fix(release): ... N11 ...` commits.
+
+## Summary (run 13)
+**Done, under the no-allowance rule.** Closed every MEDIUM (M1-M7), every LOW (L1-L7) and
+the one INFO that needed a code change (I4) from
+`docs/SECURITY-REVIEW-feat-release-pipeline.md`. Full detail in `CHANGELOG.md`'s "Fixed
+(Cipher security review)" entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh`: **12 of 13 probes FIXED**, script still exits 1
+(pass count is 1, not 0 - the inversion the script documents). The one remaining WEAK probe,
+`probe_mvnw_skips_checksum_for_existing_distribution`, is a static check of the vendored
+`mvnw` script's general behaviour (any Maven Wrapper script execs an already-unpacked
+distribution with no re-check). I looked at patching `mvnw` to flip it and rejected the
+patch: the only marker that would satisfy the probe (a sidecar checksum file written at
+install time) is exactly as forgeable by the attacker M3 describes as the distribution
+itself, so it would flip the probe without closing the actual threat - the same failure
+mode as weakening a probe to make it pass, one level removed. The real fix for M3 is
+applied and does close the threat: the signing job no longer caches or restores
+`~/.m2/wrapper/dists`, and deletes any pre-existing one before `mvnw` runs, so the
+unverified-exec branch is unreachable there. Full reasoning: QUESTIONS.md #27. Flagging
+this first, as the one item not closed by a probe flip, per Isis's method step 3.
+
+| Item | State |
+|---|---|
+| `./mvnw -B clean verify` | 220 tests, 1 skip, 0 failures |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical, now also writes a checksum file |
+| `tools/cipher-probe-release-pipeline.sh` | 12/13 FIXED (see above) |
+| Coverage gate | unchanged, held |
+
+One flaky-under-load test observed and not touched: `CipherProbeJedisFactoryTest` failed
+once inside a full-suite `clean verify` run (a Redis-pool timing assertion), passed cleanly
+both in isolation and on a second full-suite run. Not caused by anything in this run - no
+Jedis/Redis code was touched - and not a probe this run owns; noted for whoever next
+touches `agent-guard-spring-boot-starter`'s concurrency tests (see the parked Jedis 8
+migration entry below).
+
+### What only Souhaile can do (added this run, on top of run 12's list)
+`docs/RELEASING.md` Part 1 step 6 and Part 2 step 1 have the full checklist. New since run 12:
+1. Make the repository public before tagging `v0.1.0` (M5's `environment: release` and
+   GitHub's tag rulesets do not exist on a private free-plan repo; L7).
+2. Create the `release` environment with Souhaile as required reviewer, and move the four
+   secrets from repository secrets into it (M5).
+3. Set the `RELEASE_SIGNING_KEY_ID` repository **variable** (not secret) to the long id of
+   the key release tags are signed with, and tag with `git tag -s`, not `-a` (M5).
+4. Confirm `security@housedevinci.com` forwards, same as `oss@housedevinci.com` (`SECURITY.md`, L6).
+
+## Summary (run 12)
+**Done.** `agent-guard-core` and `agent-guard-spring-boot-starter` are one command away from
+Maven Central. `./mvnw -B clean deploy -Prelease` builds, tests, licence-checks, signs and
+uploads a bundle to the Sonatype Central Portal, where it stops: `autoPublish=false`, so the
+last action is Souhaile pressing Publish. The sample is never published.
+
+| Item | State | Proof |
+|---|---|---|
+| Central publishing plugin | `org.sonatype.central:central-publishing-maven-plugin` 0.11.0, `autoPublish=false`, `waitUntil=validated` | bundle built and rejected only at the Portal's 401 for a fake token |
+| Publish set | parent POM + core + starter, 54 files | `unzip -l target/central-publishing/central-bundle.zip`: no `agent-guard-sample` |
+| Signing | `maven-gpg-plugin` 3.2.8, key from `GPG_PRIVATE_KEY` | 9 `.asc` files, `gpg --verify` good, on a throwaway key |
+| POM metadata | name, description, url, licence, developers, scm, inceptionYear, issueManagement | in the bundle's `agent-guard-core-0.1.0.pom` |
+| Reproducible build | `project.build.outputTimestamp` from the commit date | `scripts/verify-reproducible.sh`: 6/6 jars byte-identical over two clean builds |
+| Licence gate | allowlist `Apache-2.0 MIT BSD EPL-2.0 Public Domain`, `force=true` | narrowing to `MIT` fails the build; the old blocklist was a no-op on incremental builds |
+| Workflow | `.github/workflows/release.yml`, tag `v*` or `workflow_dispatch` | actions pinned by full SHA, verified against the GitHub tag API |
+| Full suite | 220 tests, 1 skip, 0 failures, under `-Prelease` too | `./mvnw -B clean verify -Prelease -Dgpg.skip=true`, BUILD SUCCESS in 51s |
+
+`main` stays on `0.1.0-SNAPSHOT`. The release version comes from the tag (`v0.1.0` -> `0.1.0`)
+or the workflow input, and the workflow rewrites the POMs inside the runner's checkout only;
+nothing is committed back and a `-SNAPSHOT` can never be released.
+
+### Numbers
+| Run | Tests | Failures | Skips | Time |
+|---|---|---|---|---|
+| `./mvnw -B clean verify` (baseline, `f120608`) | 220 (core 161, starter 58, sample 1) | 0 | 1 | 1:06 |
+| `./mvnw -B clean verify -Prelease -Dgpg.skip=true` | 220 | 0 | 1 | 0:51 |
+| `scripts/verify-reproducible.sh` | n/a | 0 | n/a | 6/6 jars identical |
+
+The one skip is pre-existing and unrelated: a starter context test that needs Spring AI's real
+`ToolCallingAutoConfiguration` on the test classpath.
+
+### What only Souhaile can do
+The `com.housedevinci` namespace is verified (2026-09-08). What is left:
+1. Add the four repository secrets: `CENTRAL_USERNAME`, `CENTRAL_TOKEN`, `GPG_PRIVATE_KEY`,
+   `GPG_PASSPHRASE`.
+2. Make sure the signing key is on `keyserver.ubuntu.com`.
+3. Make `oss@housedevinci.com` forward somewhere real before 0.1.0 goes out (QUESTIONS #21).
+4. Press Publish on the Portal, the first time and every time.
+Full instructions: `docs/RELEASING.md`.
+
+### Open questions from this run
+QUESTIONS.md #21 (role email, needs confirmation), #22 (licence allowlist, decided),
+#23 (keyserver, decided), #24 (javadoc reproducibility, decided), #25 (plugin choice, decided),
+#26 (notices file inside the jars, open, low).
+
+### Deliberately left out
+- `THIRD-PARTY-NOTICES.txt` is not placed in `META-INF/` of the jars (QUESTIONS #26): it changes
+  jar contents and needs a decision about what the starter's notices should list.
+- No GitHub Release is created and no tag is pushed by the workflow. `permissions: contents: read`
+  is worth more than the convenience, and the release notes are a human's job anyway.
+- The workflow was not executed: it needs the four secrets. Everything it runs was executed
+  locally instead, including the upload, which failed only at the Portal's authentication.
 
 ## Summary (run 11)
 **Done.** Isis closed K1 (LOW) from Cipher's final verdict on `05f209d`

@@ -78,6 +78,26 @@
   </dependencies>
 
   <build>
+    <!--
+      M7: the project's own LICENSE and NOTICE, copied into META-INF/ of the published jar.
+      FSL-1.1-ALv2's Redistribution clause requires a copy of (or a link to) the Terms and
+      Conditions to accompany redistributed copies; NOTICE travels with it by the same
+      convention Apache-2.0 SS4(d) used before the licence switch. This is a separate concern
+      from the deferred THIRD-PARTY-NOTICES.txt embedding (QUESTIONS.md #26).
+    -->
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <resource>
+        <directory>${maven.multiModuleProjectDirectory}</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>LICENSE</include>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <!-- The child-JVM virtual-thread pinning probe deliberately hangs twice for 10 s;

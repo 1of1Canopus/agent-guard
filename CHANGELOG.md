@@ -4,6 +4,21 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (post-merge follow-up, QUESTIONS.md #33)
+- **G2**: `.github/workflows/ci.yml`'s `dco` job no longer carries the `GRANDFATHER_SHA`
+  exemption (env var + `git cat-file`/`merge-base --is-ancestor` block). It grandfathered
+  PR #9's own pre-`Signed-off-by`-rule commits, was proven self-limiting (QUESTIONS.md #29),
+  and is now dead code: PR #9 is merged into `main`, so `ddd250c` is part of `main`'s
+  history and every future PR's `base..head` range can never contain an ancestor of it
+  (engineering, 2026-09-09). Verified against a scratch repo directly with the committed step body:
+  an unsigned commit fails, a signed commit passes, a trivial back-merge of the base is
+  still exempt (parent-count + `git merge-tree` check, G3/G4, unaffected by this removal),
+  and a conflicted back-merge with no sign-off is still checked and fails. Probe suite
+  unaffected: `tools/cipher-probe-release-pipeline.sh` `CIPHER_PROBE_MAVEN=1` still `still
+  weak: 0    fixed: 36`, exit 0 - no probe asserted the exemption's presence (G2/G3/G4 each
+  extract the live step body from `ci.yml` and run it behaviourally, they never grep for
+  `GRANDFATHER_SHA`), so none needed updating.
+
 ### Fixed (the security review final verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verdict pass (`5cac151`)")
 - **G4 (LOW)**: `.github/workflows/ci.yml`'s `dco` job guarded the `auto=` substitution in an `if` so `git merge-tree`'s non-zero exit on a conflicted merge is non-fatal under `set -euo pipefail`, letting a conflict-resolved back-merge fall through to the sign-off check with a visible error instead of the step aborting with no output; also corrected the step's comment, which wrongly claimed that path already fell through (engineering, 2026-09-09; probe suite `still weak: 0    fixed: 36`).
 

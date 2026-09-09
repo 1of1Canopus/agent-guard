@@ -59,6 +59,21 @@ ALLOWED_COORDINATES=(
 # not [a-z0-9] stripped) against both SPDX-id fragments and prose word-patterns, so
 # "GPL-3.0", "GPL 3.0", "gplv3", "GPL_3" and "GNU General Public License v3" all normalise to
 # a form containing "gpl3" / "generalpubliclicense" and are all denied the same way.
+# F4: the bare pattern "mpl" was a substring of ordinary permissive-licence prose and URLs -
+# "si-mpl-ified" (Simplified BSD License), "exa-mpl-e" (example.com), "te-mpl-ate",
+# "co-mpl-iance" - so a permissive dependency the plugin's own allowlist accepts got DENIED
+# here on a false-positive substring hit. Fail-closed, but the failure mode is a red build on
+# a licence we ship under ourselves, which is exactly the kind of false alarm that gets a gate
+# weakened. Mozilla's own id fragments (mpl11, mpl20, mpl10, mozillapubliclicense) already
+# catch every real MPL spelling without the bare substring, so "mpl" is dropped, not replaced.
+#
+# F5: several copyleft patterns were pinned to one version where the id is not, so a
+# neighbouring version walked past the pass while still failing the plugin's own allowlist
+# (N2's scenario, respelled): "eupl12" missed "EUPL v1.1" / "EUPL-1.1"; "sspl10" missed a bare
+# "SSPL" and "SSPL-2.0". Both are now unpinned ("eupl", "sspl") - neither substring occurs in
+# any permissive licence name, so unpinning adds no false positive. OSL-3.0 (Open Software
+# License, strong copyleft) and CPAL (Common Public Attribution License) were absent
+# entirely and are added.
 DENIED_PATTERNS=(
   # "gpl" as a bare substring catches every SPDX spelling in one go: GPL-1.0/2.0/3.0, every
   # "-only"/"-or-later" suffix, GPLv2/GPLv3, and (because the letters "gpl" occur inside
@@ -67,26 +82,29 @@ DENIED_PATTERNS=(
   # "l" running together ("GNU General Public License" has no contiguous "gpl") - that is
   # what "generalpubliclicense" below is for.
   gpl
-  sspl10
+  sspl
   cddl10 cddl11
-  mpl11 mpl20
+  mpl11 mpl20 mpl10
   cpol
-  eupl12
+  eupl
   busl11
   elastic20
+  osl30
+  cpal
   ccbyncsa ccbync ccbysa
   # Prose word-patterns, for spellings that contain none of the SPDX-id fragments above.
   generalpubliclicense
   lessergeneralpublic
   affero
   mozillapubliclicense
-  mpl
   commondevelopmentanddistribution
   cddl
   serversidepublic
   businesssourcelicense
   businesssource
   europeanunionpublic
+  opensoftwarelicense
+  commonpublicattribution
   noncommercial
 )
 
@@ -128,18 +146,60 @@ is_allowed_coordinate() {
 # its content is validated against the g:a:v shape (version now allowing `+`, in addition to
 # `.` and `-`, since Maven versions legally contain it) before being trusted as a coordinate.
 #
+# F2: [^()]* cannot span a nested pair, so a dependency's own project <url> - free text on the
+# same line, inside the coordinate group - could contain a balanced "(...)" and make the
+# scanner return that INNER group as the "last" one, dropping the real (outer) coordinate.
+# Scanning is now depth-aware: it walks the line character by character, tracking paren
+# depth, and collects only DEPTH-1 ("top-level") groups - a group whose own parens are never
+# nested inside another paren the rest of the line owns. The last top-level group is the one
+# trusted as the coordinate, exactly as before, but a nested pair inside it (a URL's own
+# "(bar)") is now part of that group's content instead of splitting it into two. The line is
+# additionally required to END with the closing ")" of that last top-level group; anything
+# trailing it is not a valid notices line and falls to UNPARSEABLE (fail closed, as today). A
+# legitimate URL with a balanced pair, e.g. ".../wiki/Foo_(bar)", now parses cleanly instead
+# of tripping UNPARSEABLE and the count check as it did under the old flat scan.
+#
 # A line that starts like a dependency line (a leading run of "(...)" groups) but whose last
-# paren group does not parse as a coordinate is NOT skipped - it is printed as UNPARSEABLE,
-# and the caller fails the build on it (fail closed, per N3: "a line with no parsable
-# coordinate fails closed").
+# top-level paren group does not parse as a coordinate is NOT skipped - it is printed as
+# UNPARSEABLE, and the caller fails the build on it (fail closed, per N3: "a line with no
+# parsable coordinate fails closed").
 # ---------------------------------------------------------------------------------------
 parse_notices() {
   perl -ne '
     if (/^\s*((?:\([^()]*\)\s*)+)(\S.*)$/) {
       my ($lic_run, $rest) = ($1, $2);
+
+      # Depth-aware top-level group scan: walk char by char, tracking paren depth. A
+      # top-level group opens at depth 0->1 and closes at depth 1->0; everything between,
+      # including any nested "(...)" inside it, is its content verbatim.
       my @parens;
-      while ($rest =~ /\(([^()]*)\)/g) { push @parens, $1; }
-      if (@parens) {
+      my $depth = 0;
+      my $cur = "";
+      my $ends_at_close = 0;
+      for my $ch (split //, $rest) {
+        if ($ch eq "(") {
+          $cur .= $ch if $depth > 0;
+          $depth++;
+        } elsif ($ch eq ")") {
+          $depth--;
+          if ($depth == 0) {
+            push @parens, $cur;
+            $cur = "";
+            $ends_at_close = 1;
+          } else {
+            $cur .= $ch;
+            $ends_at_close = 0;
+          }
+        } else {
+          $cur .= $ch if $depth > 0;
+          $ends_at_close = 0 if $depth == 0 && $ch !~ /\s/;
+        }
+      }
+      # The line must end with the closing paren of its last top-level group (only
+      # trailing whitespace after it) and must not be left mid-group (depth != 0).
+      my $trailing_ok = ($depth == 0 && $ends_at_close);
+
+      if (@parens && $trailing_ok) {
         my $last = $parens[-1];
         if ($last =~ /^\s*([\w.\-]+):([\w.\-]+):([\w.+\-]+)\s*-\s*.*$/) {
           my ($g, $a, $v) = ($1, $2, $3);
@@ -226,6 +286,16 @@ run_self_test() {
     "CC-BY-NC-4.0"
     "GPL-3.0-with-classpath-exception"
     "GPL2 w/ CPE"
+    # F5: version-pinned patterns missing the neighbouring version, and licences that were
+    # absent from the table entirely.
+    "EUPL v1.1"
+    "EUPL-1.1"
+    "SSPL"
+    "SSPL-2.0"
+    "OSL-3.0"
+    "Open Software License"
+    "CPAL"
+    "Common Public Attribution License"
   )
   # tokens that must be ALLOWED (permissive licences this project actually ships under).
   local -a allow_cases=(
@@ -236,6 +306,11 @@ run_self_test() {
     "EPL-2.0"
     "Public Domain"
     ""
+    # F4: the bare "mpl" pattern used to deny these on a false-positive substring hit.
+    "Simplified BSD License"
+    "BSD 2-Clause Simplified License"
+    "https://example.com/licence.txt"
+    "The Apache Software License (example)"
   )
 
   local c
@@ -255,6 +330,35 @@ run_self_test() {
       echo "self-test OK    allow '$c'"
     fi
   done
+
+  # F2: parser-level cases, run through the real check_notices_file / parse_notices path
+  # against a synthetic notices file - is_denied_token alone cannot exercise the paren-depth
+  # scan. Case 1 is Cipher's URL-forgery repro: a dependency's own <url> contains a balanced
+  # "(...)" that must NOT be read as the coordinate. Case 2 is the false-positive this fix
+  # also removes: a legitimate URL with a balanced pair (Wikipedia-style) must parse cleanly
+  # instead of tripping UNPARSEABLE.
+  local work
+  work="$(mktemp -d)"
+
+  printf 'Lists of 1 third-party dependencies.\n     (Apache-2.0) (GPL-3.0) evil-url (cipher.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))\n' \
+    > "$work/THIRD-PARTY-NOTICES.txt"
+  if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
+    echo "self-test FAIL  parse 'evil-url' forged coordinate via a parenthesised <url> was NOT denied"
+    failures=$((failures + 1))
+  else
+    echo "self-test OK    parse 'evil-url' forged coordinate via a parenthesised <url> is denied"
+  fi
+
+  printf 'Lists of 1 third-party dependencies.\n     (Apache-2.0) Foo (com.example:foo:1.0 - https://en.wikipedia.org/wiki/Foo_(bar))\n' \
+    > "$work/THIRD-PARTY-NOTICES.txt"
+  if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
+    echo "self-test OK    parse legitimate URL with balanced parens parses cleanly"
+  else
+    echo "self-test FAIL  parse legitimate URL with balanced parens was rejected"
+    failures=$((failures + 1))
+  fi
+
+  rm -rf "$work"
 
   echo
   if [ "$failures" -eq 0 ]; then

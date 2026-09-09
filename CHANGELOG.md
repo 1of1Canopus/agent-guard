@@ -5,6 +5,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Fixed
+- **N13 (LOW)**: `probe_probe_suite_is_not_run_by_ci` reported FIXED for four ways of
+  disabling the `Cipher probes` job while nothing ran: a job-level `if: false`, a job-level
+  `continue-on-error: true`, a step-level `if: false`, and the `run:` line commented out. The
+  probe now strips full-line comments first (same standard as `release.yml`'s own static
+  check, `grep -vE '^\s*#'`), splits `ci.yml` into per-job blocks instead of per-step, and
+  refuses any `if:`/`continue-on-error:` anywhere in the job, not just `continue-on-error:
+  true` next to the `run:` line. New `probe_suite_probe_accepts_a_disabled_probes_job` applies
+  all four mutations to a scratch copy of `ci.yml` and asserts each is caught (WEAK before,
+  FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0 (engineering, 2026-09-10).
 - **N12 (LOW)**: `tools/cipher-probe-release-pipeline.sh` was only ever invoked by hand -
   `grep -rl 'cipher-probe' .github/` returned zero files - which is the mechanical reason
   N6 reached a tagged release: the suite that would have caught it was never executed by CI

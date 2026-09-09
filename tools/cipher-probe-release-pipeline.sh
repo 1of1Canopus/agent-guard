@@ -423,16 +423,32 @@ probe_probe_suite_is_not_run_by_ci() {
 # is the fix only when it invokes the script in a `run:` line AND carries no `if:` and no
 # `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
 # value, since a skipped/soft-failed job is exactly as blind as a deleted one.
+#
+# N14: a substring/regex match on the `run:` line is still fooled by a trailing comment -
+# `run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` runs `true` and
+# reports the probe suite FIXED. Same belt as the MAVEN_OPTS guard elsewhere in this file:
+# stop pattern-matching, require the trimmed value of the `run:` line to be string-equal to
+# the exact command. No YAML parser - this is still line-oriented - but equality instead of
+# substring match refuses any decoration (comment, prefix, substitution) without needing one.
 _probe_suite_wired_unconditionally_in() {
   local wf="$1"
-  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' '
-      $0 ~ /run:[[:space:]]*.*cipher-probe-release-pipeline\.sh/ {
+  local want='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh'
+  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' -v want="$want" '
+      {
         n = split($0, lines, "\n")
+        matched = 0
         guarded = 0
         for (i = 1; i <= n; i++) {
-          if (lines[i] ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
+          line = lines[i]
+          if (match(line, /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/)) {
+            val = substr(line, RLENGTH + 1)
+            gsub(/^[[:space:]]+/, "", val)
+            gsub(/[[:space:]]+$/, "", val)
+            if (val == want) { matched = 1 }
+          }
+          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
         }
-        if (!guarded) { found = 1 }
+        if (matched && !guarded) { found = 1 }
       }
       END { exit(found ? 0 : 1) }
     '
@@ -479,6 +495,44 @@ probe_suite_probe_accepts_a_disabled_probes_job() {
     rc=$?
     # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
     # fooled into believing the suite still runs unconditionally: the N13 weakness is present.
+    [ "$rc" -eq 0 ] || overall=1
+  done
+
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
+# N14 - the N13 fix still matched the `run:` line by substring, so a trailing comment after
+#       the command (`run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`)
+#       runs `true` and still reads as wired. Also cover the `run: |` multi-line form, where
+#       the command appears on a line of the block after another command has already run -
+#       that must be refused too, since the `run:` line itself is just `|`. Applies both
+#       mutations to a scratch copy of ci.yml and asserts probe_probe_suite_is_not_run_by_ci
+#       reports WEAK (returns 0) for both. WEAK before the fix above, FIXED after.
+# ---------------------------------------------------------------------------
+probe_suite_probe_accepts_a_trailing_comment_disable() {
+  local base d rc overall
+  base="$(mktemp -d)"
+  mkdir -p "$base/.github/workflows"
+  cp .github/workflows/ci.yml "$base/.github/workflows/ci.yml"
+  overall=0
+
+  # a: the command hidden after a trailing comment on a `run: true` line
+  d="$base/a"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1run: true # CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # b: the command hidden inside a `run: |` multi-line block, after another command
+  d="$base/b"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1run: |\n\1  true\n\1  CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  for d in a b; do
+    ( cd "$base/$d" && probe_probe_suite_is_not_run_by_ci )
+    rc=$?
+    # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
+    # fooled into believing the suite still runs unconditionally: the N14 weakness is present.
     [ "$rc" -eq 0 ] || overall=1
   done
 
@@ -816,6 +870,7 @@ probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md tr
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
 probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
 probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
+probe probe_suite_probe_accepts_a_trailing_comment_disable      "N14 a trailing comment still hides a disabled job"   probe_suite_probe_accepts_a_trailing_comment_disable
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url

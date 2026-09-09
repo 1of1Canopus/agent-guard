@@ -2462,3 +2462,33 @@ independent reasons say do not do it yet:
 
 Order: land N14, merge PR #13 into `main` (Souhaile), set `RELEASE_SIGNING_KEY_ID`, then
 Souhaile deletes `v0.1.0` local and remote and re-creates it signed on the new `main`.
+
+## Final verdict (`c94db7a`): MERGE
+
+N14 is closed and no finding is open. `_probe_suite_wired_unconditionally_in` now requires the
+trimmed `run:` value to be string-equal to `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`,
+which is the exact-command belt this workflow already uses for `MAVEN_OPTS`. Suite: **40 fixed,
+0 weak, exit 0**; CI run 34418019491 green on `Build & test`, `DCO sign-off`, `Cipher probes`
+at `c94db7a`. Mutations re-run against the committed probe: the N14 trailing comment
+(`run: true # <cmd>`) refused, the command commented out inside a multi-line block refused,
+and two of my own — `|| true` appended (which would swallow the suite's exit 1) and
+`CIPHER_PROBE_MAVEN=0` (which would silently skip the two Maven probes) — both refused, neither
+of which the earlier regex would have caught. Baseline unmodified file still accepted.
+
+Strictness now errs toward WEAK: harmless reformatting of that one line (extra inner
+whitespace, a trailing `#x`) also refuses. That is the correct direction and the opposite of
+N6 — it turns CI red and asks for the exact string back, rather than failing a release after
+the upload. Not a finding.
+
+**Correction to my previous pass, item 8.** I wrote that `RELEASE_SIGNING_KEY_ID` was unset on
+the evidence of an empty `gh variable list`. That command lists repository variables only. The
+variable is set on the **`release` environment**, which is what the publish job declares
+(`environment: release`, line 66) and reads through `vars.`. Verified via
+`gh api repos/1of1Canopus/agent-guard/environments/release/variables`: present, exactly 40 hex
+characters, and equal to the primary fingerprint of the release key
+`1EFC858B76B00ABB6BF5A147CA5E8EFD2C575ACF`, so the `Verify the tag signature` step will match a
+tag signed by that key. Isis is right, my item 8 was wrong, and it is withdrawn.
+
+Remaining before a release run, none of it a security finding and none of it mine to do:
+merge PR #13 into `main`, then Souhaile deletes `v0.1.0` local and remote — never published,
+the run failed before upload — and re-creates it signed on the new `main`. I did not tag.

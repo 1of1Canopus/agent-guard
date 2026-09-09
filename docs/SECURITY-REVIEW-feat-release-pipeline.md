@@ -2356,3 +2356,51 @@ invokes the suite unconditionally.
 is the pattern change the failed release needed and it gives up nothing, because the exact-pin
 belt already covers everything the removed bare-word matches covered. No HIGH, no MEDIUM.
 Tag `v0.1.0` is untouched and can be re-run once N12 is in.
+
+### N12 re-verification — 2026-09-10 — `aad8091`
+
+Confirmed closed at the workflow level. `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
+locally: **38 fixed, 0 weak, exit 0**, with `probe_probe_suite_is_not_run_by_ci` FIXED. The
+`cipher-probes` job in `ci.yml` has no `if:`, no `continue-on-error`, actions pinned by SHA,
+`permissions: contents: read`; `ci.yml` has no `paths:` filter, so it cannot be dodged by
+touching only `release.yml`. Ruleset 22670337 is `active` on `refs/heads/main` with
+**zero bypass actors**, `strict_required_status_checks_policy: true`, and requires
+`Build & test`, `DCO sign-off`, `Cipher probes`. Run 34413322220 green on all three at
+`aad8091`.
+
+### N13 — LOW — `probe_probe_suite_is_not_run_by_ci` accepts four disabled forms
+
+The job is correct today; the probe that is supposed to keep it correct is not. It splits the
+file on step boundaries and looks for a `run:` line naming the script with no
+`continue-on-error: true` in the same step. It therefore reports FIXED for all of:
+
+| Mutation of `ci.yml` | Probe says |
+| --- | --- |
+| job-level `if: false` on `cipher-probes` | FIXED |
+| job-level `continue-on-error: true` | FIXED |
+| step-level `if: false` | FIXED |
+| the `run:` line commented out with `#` | FIXED |
+| step-level `continue-on-error: true` | WEAK (caught) |
+| the `run:` line deleted | WEAK (caught) |
+
+The commented-out case is the same defect the release guard's own static check already avoids
+one file away, where it pipes through `grep -vE '^\s*#'` before matching. Here a single `#`
+disables the suite and the suite still passes itself. The job-level `if:` case matters most in
+combination with the ruleset: GitHub counts a **skipped** job as satisfying a required status
+check, so `if: false` would leave `Cipher probes` green on the branch-protection page while
+nothing ran.
+
+Repro (no repo files touched): copy `ci.yml` into a scratch `.github/workflows/`, apply each
+mutation above, source `probe_probe_suite_is_not_run_by_ci` and call it — it returns 1 (FIXED)
+for four of the six.
+
+Fix (Isis): strip full-line comments before matching; require the invoking step to carry no
+`if:` and no `continue-on-error:` at all (not just `continue-on-error: true`); and check the
+enclosing **job** block for `if:` / `continue-on-error:` as well as the step. Add
+`probe_suite_probe_accepts_a_disabled_probes_job`, which builds each of the four mutations
+above in a temporary directory and asserts `probe_probe_suite_is_not_run_by_ci` reports WEAK
+for every one — WEAK on current code, FIXED after.
+
+**Verdict on `aad8091`: MERGE WITH FIXES** — one LOW (N13). N12 itself is closed: the job, the
+triggers and the ruleset are all correct and fail-closed. What is missing is only the
+regression guard on that job, and it is a change to one awk block in a file CI already runs.

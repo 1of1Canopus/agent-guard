@@ -4,6 +4,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (Cipher final verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verdict pass (`5cac151`)")
+- **G4 (LOW)**: `.github/workflows/ci.yml`'s `dco` job guarded the `auto=` substitution in an `if` so `git merge-tree`'s non-zero exit on a conflicted merge is non-fatal under `set -euo pipefail`, letting a conflict-resolved back-merge fall through to the sign-off check with a visible error instead of the step aborting with no output; also corrected the step's comment, which wrongly claimed that path already fell through (Isis, 2026-09-09; probe suite `still weak: 0    fixed: 36`).
+
 ### Fixed (Cipher final confirmation pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final confirmation pass (`cae839e`)")
 - **G3 (LOW)**: `.github/workflows/ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (exactly two parents, second an ancestor of `BASE_SHA`, tree matching `git merge-tree --write-tree` of its parents), closing the octopus/evil-merge bypass an unconstrained parent-count exemption left open (Isis, 2026-09-09; probe suite `still weak: 0    fixed: 35`).
 

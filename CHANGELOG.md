@@ -4,6 +4,59 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (the security review final verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verification (78c808e)")
+1 MEDIUM, 6 LOW and 2 INFO closed (engineering, 2026-09-09). All 32 probes in
+`tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
+- **F2 (MEDIUM)**: `parse_notices` collected `(...)` groups with `[^()]*`, which cannot span
+  a nested pair, so a dependency's own `<url>` containing a balanced `(...)` made that inner
+  group win over the real, outer coordinate - forging which dependency the denial pass
+  checked. The scan is now depth-aware: it tracks paren depth and keeps only top-level
+  groups, and requires the line to end with the closing paren of the last one. A URL with a
+  genuinely balanced pair (Wikipedia-style) now parses cleanly instead of tripping
+  `UNPARSEABLE`. `--self-test` gained both the forged-URL case and the legitimate-URL case.
+- **F1**: `pom.xml`'s `<excludedGroups>com\.housedevinci</excludedGroups>` was, once wrapped
+  by `license-maven-plugin`'s own pattern, a substring test on the groupId:
+  `com.housedevinci-evil` and `xcom.housedevinci` were excluded from both licence gates too,
+  and an excluded dependency reaches neither. Anchored to
+  `^com\.housedevinci(\.[^:]*)?(?=:)`, which only matches `com.housedevinci` and its dotted
+  subgroups once wrapped. Verified with three real builds against a scratch dependency:
+  `com.housedevinci-evil` and `xcom.housedevinci` now fail the build (scanned, GPL-3.0
+  denied); `com.housedevinci:agent-guard-core` stays excluded.
+- **F3**: the tag-signature check's `VALIDSIG` match was bound to the *first* field of the
+  status line - the key that made the signature - which is the signing **subkey** whenever
+  the release key has one (`git tag -s` uses it even with `-u <primary>`). The primary
+  fingerprint `RELEASE_SIGNING_KEY_ID` is configured with is always the *last* field, for
+  both key shapes. Verified with two throwaway keys (primary-only, primary+signing-subkey):
+  the new regex matches the primary fingerprint in both cases; the old one only matched the
+  primary-only case. `docs/RELEASING.md` gains one clarifying paragraph.
+- **F4**: the deny pattern `mpl` was a bare substring, matching "si**mpl**ified",
+  "exa**mpl**e", "te**mpl**ate": `Simplified BSD License` and any `example.com` licence URL
+  were denied even though the plugin's own allowlist accepts them. Dropped; `mpl11`/`mpl20`
+  already cover real MPL spellings, `mpl10` added.
+- **F5**: `eupl12`/`sspl10` were version-pinned and missed `EUPL v1.1`/`EUPL-1.1` and a bare
+  `SSPL`/`SSPL-2.0`; `OSL-3.0` and `CPAL` were absent entirely. Unpinned to `eupl`/`sspl`
+  (neither occurs in a permissive licence name) and added `osl30`/`opensoftwarelicense`,
+  `cpal`/`commonpublicattribution`. All eight spellings added to `--self-test`.
+- **F6 (INFO)**: `pom.xml`'s licence-allowlist comment still called Apache-2.0 "the licence
+  of this project", stale since the FSL-1.1-ALv2 switch. Reworded.
+- **F7**: `CONTRIBUTING.md` said nothing about the licence of a contribution, and FSL has no
+  contribution clause of its own. Added a DCO (`Signed-off-by`, `git commit -s`) requirement
+  plus the one-paragraph inbound grant `specs/LICENSING.md`'s "simple CLA" already promises;
+  `ci.yml` gained a `dco` job that fails a pull request carrying an unsigned commit. The
+  `commit-msg` hook already accepted `Signed-off-by:` (it only forbids attribution trailers
+  naming Claude) - verified, not changed.
+- **F8 (INFO)**: `78c808e` ("spell the licensor HouseDevinci everywhere") missed two lines
+  in `docs/RELEASING.md`: the release signing key's real name and the Central Portal
+  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; `git grep -n
+  -i -E 'house ?devinci' -- ':!docs/SECURITY-REVIEW*'` now shows only `HouseDevinci`, URLs,
+  packages and emails.
+- **F9**: `SampleEndToEndTest` read the wall clock, so its four tool calls could straddle
+  the budget's tumbling one-minute window boundary and reset the counter mid-scenario -
+  observed for real on a clean tree. It now supplies its own `agentGuardClock` bean (a
+  `MutableClock` pinned well inside a window, never advanced during the test), using the
+  seam `AgentGuardAutoConfiguration.agentGuardClock()` already exposed
+  (`@ConditionalOnMissingBean(name = "agentGuardClock")`). No sleeps, no retries.
+
 ### Changed
 - **Licensing:** the free core switches from Apache-2.0 to the Functional Source License, Version
   1.1, ALv2 Future License (FSL-1.1-ALv2) - free to use, not as a base for a competing product,

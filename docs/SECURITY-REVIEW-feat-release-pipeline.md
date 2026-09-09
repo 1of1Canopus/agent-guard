@@ -2404,3 +2404,61 @@ for every one — WEAK on current code, FIXED after.
 **Verdict on `aad8091`: MERGE WITH FIXES** — one LOW (N13). N12 itself is closed: the job, the
 triggers and the ruleset are all correct and fail-closed. What is missing is only the
 regression guard on that job, and it is a change to one awk block in a file CI already runs.
+
+## Verdict (`7baf844`): MERGE WITH FIXES — one LOW (N14)
+
+N13 is closed. Suite: **39 fixed, 0 weak, exit 0**. CI run 34416162458 green on
+`Build & test`, `DCO sign-off`, `Cipher probes`. `_probe_suite_wired_unconditionally_in`
+now strips full-line comments, splits per job, and refuses any `if:` or
+`continue-on-error:` on the job or the step. Re-ran my four mutations — job-level
+`if: false`, job-level `continue-on-error: true`, step-level `if: false`, `run:` line
+commented out — all four now WEAK (refused). Two of my own choosing also refused:
+`continue-on-error: ${{ expr }}` (no literal `true`) and `if: ${{ expr }}` at job level,
+so the fix keys on the presence of the key, not on its value. Deleting the whole job:
+refused. Baseline unmodified file: accepted, as it must be.
+
+### N14 — LOW — a trailing comment still hides a disabled probes job
+
+Comment stripping is anchored at `^[[:space:]]*#`, so only whole-line comments go. The
+`run:` regex then still matches the script name when it appears **after** a `#` on a line
+that runs something else:
+
+```yaml
+        run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
+```
+
+`probe_probe_suite_is_not_run_by_ci` reports FIXED for this. CI would be green, the
+required `Cipher probes` check satisfied, and no probe would have run. This is the same
+defect as N13's whole-line-comment case, one variant further out.
+
+Repro: copy `ci.yml` to a scratch `.github/workflows/`, apply the line above, source
+`_probe_suite_wired_unconditionally_in` and `probe_probe_suite_is_not_run_by_ci`, call it —
+returns 1 (FIXED).
+
+Fix (Isis), using the pattern this repository already trusts twice: stop pattern-matching
+and assert the **exact** command. Require the `cipher-probes` job to contain a `run:` line
+whose value is string-equal to `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
+— the same exact-pin belt that makes the `MAVEN_OPTS` guard sound. Any decoration, comment
+or substitution then fails equality without needing a YAML parser. Add
+`probe_suite_probe_accepts_a_trailing_comment_disable`: WEAK on current code, FIXED after.
+
+### Re-tag not performed — preconditions are not met
+
+I was asked to delete and re-create `v0.1.0` if the verdict was MERGE. It is not, and three
+independent reasons say do not do it yet:
+
+1. **There is no new main commit to tag.** `origin/main` is `a01f03a`, which is exactly what
+   `v0.1.0` already points at. PR #13 is still `OPEN`; `git merge-base --is-ancestor 39435f1
+   origin/main` returns false. Re-tagging today would either re-create the identical tag or
+   put a release tag on an unmerged branch — the very thing the N8 ancestry check exists to
+   refuse.
+2. **I must not sign it.** The release key (`1EFC858B76B00ABB6BF5A147CA5E8EFD2C575ACF`,
+   Souhaile) is in this machine's keyring, so the command would succeed. Signing a release
+   tag as the key holder from an agent session defeats control F3 and the human gate it
+   exists to enforce. The tag is Souhaile's signature or it is worthless. Refused.
+3. **The next run would fail anyway.** `gh variable list` is empty: `RELEASE_SIGNING_KEY_ID`
+   is not set, so `Verify the tag signature` will exit 1 at step 6 of the checklist. Correct
+   fail-closed behaviour, but it must be set before any re-run.
+
+Order: land N14, merge PR #13 into `main` (Souhaile), set `RELEASE_SIGNING_KEY_ID`, then
+Souhaile deletes `v0.1.0` local and remote and re-creates it signed on the new `main`.

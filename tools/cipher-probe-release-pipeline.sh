@@ -397,6 +397,31 @@ probe_gpg_arguments_comment_still_credits_the_wrong_actor() {
   grep -q 'required because there is no tty' pom.xml
 }
 
+# ---------------------------------------------------------------------------
+# N12 - the probe suite is not run by anything: `grep -rl 'cipher-probe' .github/` returns
+#       zero files. This is the mechanical reason N6 reached a tagged release. Returns 0
+#       (WEAK) unless some workflow under .github/workflows/ invokes this suite
+#       unconditionally - a `run:` line naming the script, on a step with no
+#       `continue-on-error: true` anywhere in that step.
+# ---------------------------------------------------------------------------
+probe_probe_suite_is_not_run_by_ci() {
+  local wf
+  for wf in .github/workflows/*.yml; do
+    [ -f "$wf" ] || continue
+    # Split the file into per-step blocks on lines that start a new step ("      - "),
+    # then check each block as a whole: a step that names the script in a `run:` line and
+    # carries no `continue-on-error: true` anywhere in that same step is the fix.
+    if awk -v RS='\n      - ' '
+        $0 ~ /run: .*cipher-probe-release-pipeline\.sh/ && $0 !~ /continue-on-error: *true/ { found = 1 }
+        END { exit(found ? 0 : 1) }
+      ' "$wf"
+    then
+      return 1   # a workflow runs the suite unconditionally: FIXED
+    fi
+  done
+  return 0   # no such step anywhere: WEAK
+}
+
 
 # ===========================================================================
 # Final verification of 1da507e (F-ids). Everything below asserts a weakness
@@ -725,6 +750,7 @@ probe probe_debug_guard_refuses_its_own_maven_opts_pin       "N6 the guard refus
 probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispatch skips the ancestry check"       probe_ancestry_check_skips_the_dispatch_path
 probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
+probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url

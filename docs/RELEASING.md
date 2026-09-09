@@ -209,6 +209,13 @@ keyserver - no longer passes. Then tag releases with `git tag -s` (not `-a`) so 
 signature to verify. This is a release gate, not a merge gate, but it is unconditional once
 the tag-push path runs: there is no `workflow_dispatch` exemption to reason about.
 
+The fingerprint above is always the **primary** key's, even if that key has a separate
+signing subkey (`git tag -s` signs with the subkey when one exists, even when you pass `-u`
+with the primary's id): the workflow's `VALIDSIG` check matches the **last** field of the
+status line, which is the primary key's fingerprint whichever key actually made the
+signature, so `RELEASE_SIGNING_KEY_ID` is always the value the command above prints and
+never the subkey's.
+
 ---
 
 ## Part 2 - every release

@@ -116,7 +116,17 @@ jobs:
           fingerprint="${RELEASE_SIGNING_KEY_ID^^}"
           gpg --keyserver keyserver.ubuntu.com --recv-keys "$fingerprint"
           git verify-tag --raw "$GITHUB_REF_NAME" 2>&1 | tee /tmp/verify-tag.out
-          grep -q "^\[GNUPG:\] VALIDSIG ${fingerprint} " /tmp/verify-tag.out \
+          # F3: "VALIDSIG <fpr> ..." names the key that MADE the signature in its first field,
+          # which is the SIGNING SUBKEY whenever the release key has one (git tag -s uses the
+          # subkey even when -u names the primary). The PRIMARY key fingerprint - the value
+          # docs/RELEASING.md has Souhaile put in RELEASE_SIGNING_KEY_ID via `gpg --fingerprint`
+          # - is always the LAST field of the same status line, for both key shapes: a primary
+          # with no signing subkey signs with itself, so its own fingerprint is both the first
+          # and the last field. Matching the last field therefore binds the control to the
+          # identity (the primary), which is what RELEASE_SIGNING_KEY_ID is supposed to name and
+          # what stays correct across subkey rotation, while still refusing a tag signed by any
+          # other key.
+          grep -qE "^\[GNUPG:\] VALIDSIG [0-9A-F]{40} .* ${fingerprint}\$" /tmp/verify-tag.out \
             || { echo "::error::$GITHUB_REF_NAME is not signed by $fingerprint"; exit 1; }
 
       # I4/N6: Maven's debug output (`-X`/`--debug`, `-e`/`--errors` for stack traces, or the

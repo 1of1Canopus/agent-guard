@@ -28,8 +28,12 @@ probe, by a control run against the pre-fix step body, and by eight cases agains
 `docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Final verdict (3a0cb46): MERGE".
 
 ## After merge
-- Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`
-  block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` — QUESTIONS.md #29/#33.
+- [x] Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base
+  --is-ancestor` block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` —
+  QUESTIONS.md #29/#33. Done (Isis, 2026-09-09, branch `chore/dco-remove-grandfather`):
+  block removed, verified against a scratch repo (unsigned fails, signed passes, trivial
+  back-merge still exempt, conflicted back-merge still checked), probe suite `still weak: 0
+  fixed: 36` unaffected.
 
 ## Summary (run 16)
 **Done.** Closed both findings from Cipher's clean-verdict pass at `fad6659`

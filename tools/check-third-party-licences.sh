@@ -199,9 +199,24 @@ parse_notices() {
       # trailing whitespace after it) and must not be left mid-group (depth != 0).
       my $trailing_ok = ($depth == 0 && $ends_at_close);
 
-      if (@parens && $trailing_ok) {
-        my $last = $parens[-1];
-        if ($last =~ /^\s*([\w.\-]+):([\w.\-]+):([\w.+\-]+)\s*-\s*.*$/) {
+      # G1: F2 closed the case where a URL nested parens split the coordinate group; the
+      # depth-aware scan above fixed that. But trusting "the last top-level group" by
+      # POSITION alone is still forgeable FORWARD: a dependency own url is free text
+      # that can simply close its own group early and open a fresh, allowlisted one after
+      # it - e.g. url = http://x) (ch.qos.logback:logback-core:1.5.6 - http://y
+      # renders as two top-level groups, the last of which is a real, allowlisted
+      # coordinate, so the actual (denied) coordinate before it is never checked. The
+      # coordinate cannot be recovered by position when the line is attacker-shaped, so
+      # stop trying: count how many top-level groups are coordinate-shaped and require
+      # EXACTLY ONE. Zero means no coordinate at all; two or more is genuine ambiguity
+      # (which one is real) - both fall to UNPARSEABLE, fail closed, same as an
+      # unparseable line always has.
+      my $coord_re = qr/^\s*([\w.\-]+):([\w.\-]+):([\w.+\-]+)\s*-\s*.*$/;
+      my @coord_like = grep { $_ =~ $coord_re } @parens;
+
+      if (@parens && $trailing_ok && @coord_like == 1) {
+        my $last = $coord_like[0];
+        if ($last =~ $coord_re) {
           my ($g, $a, $v) = ($1, $2, $3);
           my @tokens;
           while ($lic_run =~ /\(([^()]*)\)/g) { push @tokens, $1; }
@@ -355,6 +370,32 @@ run_self_test() {
     echo "self-test OK    parse legitimate URL with balanced parens parses cleanly"
   else
     echo "self-test FAIL  parse legitimate URL with balanced parens was rejected"
+    failures=$((failures + 1))
+  fi
+
+  # G1: Cipher's forward-forgery repro - a dependency's own <url> closes its coordinate
+  # group early and opens a fresh, allowlisted one after it. The line now has TWO
+  # coordinate-shaped top-level groups (the real cipher.synth:evil-c:1.0 and the trailing
+  # forged ch.qos.logback:logback-core:1.5.6), which is genuine ambiguity - must fall to
+  # UNPARSEABLE (fail closed), never be silently read as the allowlisted one.
+  printf 'Lists of 1 third-party dependencies.\n     (GPL-3.0) evil-trailing (cipher.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)\n' \
+    > "$work/THIRD-PARTY-NOTICES.txt"
+  if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
+    echo "self-test FAIL  parse coordinate forged by a trailing allowlisted group was NOT denied"
+    failures=$((failures + 1))
+  else
+    echo "self-test OK    parse coordinate forged by a trailing allowlisted group is denied"
+  fi
+
+  # G1 regression guard: a legitimate parenthesised project name ("Apache Commons (Core)")
+  # must still parse cleanly - the name's own paren is a top-level group but is not
+  # coordinate-shaped, so it does not count toward the "exactly one" requirement.
+  printf 'Lists of 1 third-party dependencies.\n     (Apache-2.0) Apache Commons (Core) (org.apache.commons:commons-lang3:3.12.0 - https://commons.apache.org/)\n' \
+    > "$work/THIRD-PARTY-NOTICES.txt"
+  if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
+    echo "self-test OK    parse legitimate parenthesised project name parses cleanly"
+  else
+    echo "self-test FAIL  parse legitimate parenthesised project name was rejected"
     failures=$((failures + 1))
   fi
 

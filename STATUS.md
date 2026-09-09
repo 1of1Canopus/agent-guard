@@ -1,10 +1,37 @@
-# STATUS.md - Module B - Agent Guard, free core (run 15: Isis closes the final-verification findings)
+# STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
 Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`
 (merge of PR #8), pushed to `origin` (https://github.com/1of1Canopus/agent-guard.git).
 Pro edition out of scope.
+
+## After merge
+- Delete the `GRANDFATHER_SHA` exemption (env var + `git cat-file`/`merge-base --is-ancestor`
+  block) from `ci.yml`'s `dco` job once PR #9 is merged into `main` — QUESTIONS.md #29/#33.
+
+## Summary (run 16)
+**Done.** Closed both findings from Cipher's clean-verdict pass at `fad6659`
+(`docs/SECURITY-REVIEW-feat-release-pipeline.md`, "Clean-verdict pass (`fad6659`)"): G1
+(MEDIUM), G2 (LOW). Full detail in `CHANGELOG.md`'s "Fixed (Cipher clean-verdict pass)"
+entry; commits carry `Cipher-Finding:` footers per id.
+
+`tools/cipher-probe-release-pipeline.sh` with `CIPHER_PROBE_MAVEN=1`: **34/34 probes
+FIXED**, script exits **0**.
+
+| Item | State |
+|---|---|
+| `./mvnw -B verify` (fresh state) | green, 220 run, 0 failures, 0 errors, 1 skipped (pre-existing, unrelated) |
+| `./mvnw -B -Prelease -DskipTests -Dgpg.skip=true install` | green |
+| `scripts/verify-reproducible.sh` | 6/6 jars byte-identical |
+| `tools/check-third-party-licences.sh --self-test` | all cases correct, incl. G1's forward-forgery, legitimate nested-paren URL and parenthesised-name rows |
+| `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`) | 34/34 FIXED, exits 0 |
+| Real corpus (`check-third-party-licences` Maven execution) | clean, 0 regressions |
+| GitHub CI on the pushed branch, incl. `dco` job | see PR #9 checks |
+| Docker | up; no test skipped for want of it |
+
+QUESTIONS.md #29 ruling confirmed and recorded as #33: the `GRANDFATHER_SHA` exemption stays
+for this PR; deletion is a follow-up PR after #9 merges (see "After merge" above).
 
 ## Summary (run 15)
 **Done.** Closed all nine items from Cipher's final verification at `78c808e`

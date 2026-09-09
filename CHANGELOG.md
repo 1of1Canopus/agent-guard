@@ -4,6 +4,29 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (Cipher clean-verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Clean-verdict pass (`fad6659`)")
+1 MEDIUM and 1 LOW closed (Isis, 2026-09-09). All 34 probes in
+`tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
+- **G1 (MEDIUM)**: `tools/check-third-party-licences.sh`'s `parse_notices` trusted "the last
+  top-level `(...)` group" as the dependency coordinate by position. F2 closed the case
+  where a URL's *nested* parens split the real coordinate group; this was the same forgery
+  pointed the other way — a dependency's own `<url>` can simply close its group early and
+  open a fresh, allowlisted one after it (`http://x) (ch.qos.logback:logback-core:1.5.6 -
+  http://y`), so the denied coordinate before it is never checked and the plugin's own
+  dependency-count header still matches. The scan now counts how many top-level groups are
+  coordinate-shaped and requires **exactly one**; zero or two-or-more both fall to
+  `UNPARSEABLE` (fail closed) instead of picking one by position. `--self-test` gained the
+  forward-forgery case, a legitimate nested-paren URL, and a legitimate parenthesised
+  project name (`Apache Commons (Core)`) — all three correct, zero regressions on the real
+  corpus (dependency lines still parse `OK`, no new `UNPARSEABLE`).
+- **G2 (LOW)**: `.github/workflows/ci.yml`'s `dco` job decided a commit was an exempt merge
+  commit by matching its **subject** (`"Merge branch"*`), which is free text the committer
+  chooses — an ordinary single-parent commit titled `Merge branch 'x' into y` skipped the
+  DCO check with no `Signed-off-by` trailer at all. Now branches on the commit's parent
+  count (`git log -1 --format='%P'`): two-or-more parents is a real merge and is exempt,
+  one parent is checked regardless of subject. Parent count cannot be forged by a commit
+  message.
+
 ### Fixed (Cipher final verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verification (78c808e)")
 1 MEDIUM, 6 LOW and 2 INFO closed (Isis, 2026-09-09). All 32 probes in
 `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).

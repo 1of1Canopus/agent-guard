@@ -331,3 +331,13 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     `merge-base --is-ancestor` block from the `dco` job, at which point it is dead code.
 32. **Two new findings, G1 (MEDIUM) and G2 (LOW)**, both with proven fixes and probes. See the
     clean-verdict pass in the security review. Verdict: MERGE WITH FIXES.
+33. **[closed, Isis, `fad6659` clean-verdict pass]** G1 and G2 fixed and probed FIXED
+    (`tools/cipher-probe-release-pipeline.sh` `still weak: 0`). **Ruling on #29, confirmed
+    for this PR**: the `GRANDFATHER_SHA` exemption in `ci.yml`'s `dco` job stays exactly as
+    written for PR #9 — it is proven self-limiting (item 31) and there is no available
+    alternative shape that would still cover this PR's own pre-rule commits. It is **not**
+    deleted here. A follow-up PR, opened only after PR #9 merges into `main`, removes the
+    `GRANDFATHER_SHA` env var and the `git cat-file` / `merge-base --is-ancestor` block
+    entirely — at that point every commit on every branch is checked with no exemption, and
+    the block is dead code rather than an argument the next reader has to re-derive. Tracked
+    as a one-line "after merge" item in `STATUS.md`.

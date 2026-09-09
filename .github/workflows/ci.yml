@@ -14,6 +14,93 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # F7: CONTRIBUTING.md now requires every commit in a pull request to carry a DCO
+  # "Signed-off-by:" trailer (git commit -s). This is the only enforcement of that
+  # requirement - nothing rejects an unsigned commit at merge time otherwise. Runs only on
+  # pull_request, where github.event.pull_request.base.sha / .head.sha give an exact commit
+  # range; a plain push to main (already reviewed, already merged) is not re-checked.
+  #
+  # GRANDFATHER_SHA: this requirement is adopted mid-flight, on PR #9, which already carries
+  # commits pushed before CONTRIBUTING.md asked for a sign-off. Those commits cannot gain a
+  # trailer without rewriting already-pushed history, which this project's git rules forbid
+  # (no force-push, ever - see AGENTS.md/CLAUDE.md "Never force-push"). ddd250c is the last
+  # commit made before this exemption was added; a commit is exempt only if it IS ddd250c or
+  # an ANCESTOR of it. That makes the exemption self-limiting: once this PR merges, ddd250c
+  # becomes part of main's history, and every commit on every future branch is a DESCENDANT
+  # of it, never an ancestor - so `git merge-base --is-ancestor <sha> ddd250c` is false for
+  # any commit that did not already exist before this line was written, and no future
+  # contribution is ever grandfathered by accident. Full reasoning: QUESTIONS.md #29.
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify every commit in this pull request is signed off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GRANDFATHER_SHA: ddd250c3d0fbdf67fb6cea8d3acb583c3b07de43
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            if git cat-file -e "$GRANDFATHER_SHA" 2>/dev/null \
+                && git merge-base --is-ancestor "$sha" "$GRANDFATHER_SHA"; then
+              continue
+            fi
+            subject="$(git log -1 --format='%s' "$sha")"
+            # G2: a merge commit is exempt because it has two-or-more parents (%P), never
+            # because of its subject - a subject is free text the committer chooses, and an
+            # ordinary single-parent commit titled "Merge branch 'x' into y" used to be
+            # exempted from the sign-off requirement with no trailer at all. Parent count
+            # cannot be forged the way a commit message can.
+            # G3: parent count alone is too broad - a merge commit's tree is not constrained
+            # by its parents, so an octopus merge or a two-parent commit whose second parent
+            # is not from the base can carry authored content ("evil merge") that exists in
+            # no parent, while still being waved through as "a real merge". Exempt a merge
+            # only when it is a trivial back-merge of the base: exactly two parents, the
+            # second an ancestor of BASE_SHA, and the commit's own tree identical to the tree
+            # git itself computes for merging those two parents (git merge-tree, needs
+            # git >= 2.38; ubuntu-latest is well past it). An octopus, a two-parent commit
+            # whose second parent is not from the base, and any merge carrying an evil-merge
+            # delta all fall through to the sign-off requirement.
+            # G4: git merge-tree --write-tree exits non-zero when the merge it computes has a
+            # conflict, even though it still writes a tree. Under set -euo pipefail that
+            # would kill this step outright before the sign-off check ever ran. Guard the
+            # substitution in an if so errexit skips it on that path: auto stays empty, the
+            # exempt check fails, and a conflict-resolution merge (which is authored content)
+            # correctly falls through to the sign-off requirement below, with a visible error.
+            parents="$(git log -1 --format='%P' "$sha")"
+            set -- $parents
+            if [ "$#" -ge 2 ]; then
+              exempt=0
+              if [ "$#" -eq 2 ] && git merge-base --is-ancestor "$2" "$BASE_SHA" 2>/dev/null; then
+                auto=""
+                if merged="$(git merge-tree --write-tree "$1" "$2" 2>/dev/null)"; then
+                  auto="$(printf '%s\n' "$merged" | head -1)"
+                fi
+                own="$(git rev-parse "$sha^{tree}")"
+                [ -n "$auto" ] && [ "$auto" = "$own" ] && exempt=1
+              fi
+              [ "$exempt" -eq 1 ] && continue
+            fi
+            if ! git log -1 --format='%B' "$sha" | grep -Eiq '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "::error::commit $sha (\"$subject\") has no 'Signed-off-by:' trailer - see CONTRIBUTING.md, git commit -s"
+              missing=$((missing + 1))
+            fi
+          done < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing commit(s) missing a DCO sign-off"
+            exit 1
+          fi
+          echo "all commits in ${BASE_SHA}..${HEAD_SHA} are signed off"
+
   build-and-test:
     name: Build & test
     runs-on: ubuntu-latest

@@ -1,5 +1,15 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**N12 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: nothing in `.github/` ran
+`tools/cipher-probe-release-pipeline.sh` — the mechanical reason N6 reached a tagged
+release. Added a `Cipher probes` job to `ci.yml` that runs
+`CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` on every push and pull
+request, no `continue-on-error`, no skippable `if:`, actions pinned by SHA,
+`permissions: contents: read`. Added `probe_probe_suite_is_not_run_by_ci` to the script
+(WEAK before this branch's `ci.yml`, FIXED after). Added `Cipher probes` to the required
+status checks of the `main` branch protection ruleset. Suite: `still weak: 0    fixed: 38`,
+exit 0.
+
 **N6 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: the first real release run
 (34389977548, tag `v0.1.0`) failed at the `Refuse Maven debug output in this job` guard
 because it also matched the workflow's own `MAVEN_OPTS` info-level pin; fixed so

@@ -359,3 +359,15 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     real job env the guard actually runs against in CI, is incomplete. New guard probes must
     include at least one case built from the workflow's own declared values, not just
     adversarial synthetic ones.
+
+35. **N12 [closed, Isis, this branch].** `docs/SECURITY-REVIEW-feat-release-pipeline.md`'s
+    re-verification pass flagged that nothing in `.github/` ran
+    `tools/cipher-probe-release-pipeline.sh` — the mechanical reason item 34 (N6) reached a
+    tagged release before its own probe suite ever ran in CI. Fixed exactly as described:
+    added a `Cipher probes` job to `ci.yml` running
+    `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` unconditionally (no
+    `continue-on-error`, no skippable `if:`), and `probe_probe_suite_is_not_run_by_ci`,
+    which greps every workflow under `.github/workflows/` for such a step. No deviation from
+    the described fix; no design stop needed — this is a probe-suite wiring change, not a
+    new mechanism. Also added the new job name to the required status checks of the `main`
+    branch protection ruleset (`gh api -X PUT repos/1of1Canopus/agent-guard/rulesets/<id>`).

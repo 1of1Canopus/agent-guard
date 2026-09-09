@@ -242,7 +242,7 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     (`nexus-staging-maven-plugin` + oss.sonatype.org) is retired and is not an option. The
     plugin needs no `id-token` permission: it authenticates with the Central user-token pair,
     not OIDC, so the release workflow requests `contents: read` and nothing else.
-26. **[open, low]** `THIRD-PARTY-NOTICES.txt` is generated into `target/` and uploaded as a
+26. **[decided 2026-09-09 by Dollar: deferred to 0.2.0, ships as-is in 0.1.0]** (was open, low) `THIRD-PARTY-NOTICES.txt` is generated into `target/` and uploaded as a
     workflow artifact; it is **not** placed inside the published jars under `META-INF/`.
     `specs/LICENSING.md` says the notices file is "shipped" without saying where.
     Recommendation: put it in `META-INF/` of both jars in a follow-up, once someone decides

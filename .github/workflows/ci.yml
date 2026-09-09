@@ -14,6 +14,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # F7: CONTRIBUTING.md now requires every commit in a pull request to carry a DCO
+  # "Signed-off-by:" trailer (git commit -s). This is the only enforcement of that
+  # requirement - nothing rejects an unsigned commit at merge time otherwise. Runs only on
+  # pull_request, where github.event.pull_request.base.sha / .head.sha give an exact commit
+  # range; a plain push to main (already reviewed, already merged) is not re-checked.
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify every commit in this pull request is signed off
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            subject="$(git log -1 --format='%s' "$sha")"
+            case "$subject" in
+              "Merge branch"*|"Merge remote-tracking"*) continue ;;
+            esac
+            if ! git log -1 --format='%B' "$sha" | grep -Eiq '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "::error::commit $sha (\"$subject\") has no 'Signed-off-by:' trailer - see CONTRIBUTING.md, git commit -s"
+              missing=$((missing + 1))
+            fi
+          done < <(git rev-list "${BASE_SHA}..${HEAD_SHA}")
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing commit(s) missing a DCO sign-off"
+            exit 1
+          fi
+          echo "all commits in ${BASE_SHA}..${HEAD_SHA} are signed off"
+
   build-and-test:
     name: Build & test
     runs-on: ubuntu-latest

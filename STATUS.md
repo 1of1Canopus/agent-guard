@@ -1,5 +1,12 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**N6 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: the first real release run
+(34389977548, tag `v0.1.0`) failed at the `Refuse Maven debug output in this job` guard
+because it also matched the workflow's own `MAVEN_OPTS` info-level pin; fixed so
+`debug_pattern` only refuses `defaultLogLevel=debug|trace`, probe suite `37/37` FIXED,
+rehearsed the guard/version-set/verify/licence-check/reproducibility steps locally against
+the workflow's own env, all green. Tag `v0.1.0` untouched.
+
 Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`

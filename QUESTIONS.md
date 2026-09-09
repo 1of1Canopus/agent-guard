@@ -341,3 +341,21 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     entirely — at that point every commit on every branch is checked with no exemption, and
     the block is dead code rather than an argument the next reader has to re-derive. Tracked
     as a one-line "after merge" item in `STATUS.md`.
+
+## Post-release finding (Isis, 2026-09-10, branch `fix/release-debug-guard`)
+
+34. **N6 recurred in production, not caught by the probe suite.** The first real release run
+    (34389977548, tag `v0.1.0`) failed at the debug guard because `debug_pattern` matched
+    `simpleLogger`/`defaultLogLevel` as bare words, which also matches the workflow's own
+    job-level `MAVEN_OPTS` pin. Every probe for this guard up to now (including the N6 probe
+    that closed the original finding) only exercised synthetic `MAVEN_ARGS`/`MAVEN_OPTS`
+    values chosen by the probe, never the job's real declared env, so this hole shipped
+    past both the original fix and its own re-verification. Fixed: `debug_pattern` now
+    matches `defaultLogLevel=(debug|trace)` instead of the bare property names; the exact-pin
+    belt check is unchanged. Added `probe_debug_guard_refuses_its_own_maven_opts_pin`, which
+    parses `MAVEN_ARGS`/`MAVEN_OPTS` out of the workflow's own `env:` block and runs the real
+    guard step body against them, asserting exit 0. **Standing rule for this probe suite from
+    now on**: any guard/gate probe that only exercises values it invents itself, and never the
+    real job env the guard actually runs against in CI, is incomplete. New guard probes must
+    include at least one case built from the workflow's own declared values, not just
+    adversarial synthetic ones.

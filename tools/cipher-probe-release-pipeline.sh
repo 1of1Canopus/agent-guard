@@ -343,6 +343,28 @@ probe_debug_guard_misses_the_slf4j_log_level() {
 }
 
 # ---------------------------------------------------------------------------
+# N6 (run 34389977548, tag v0.1.0): the first version of the guard matched the bare words
+#      `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the workflow's
+#      OWN job-level MAVEN_OPTS pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`) on
+#      every run, before anything was uploaded - the guard's synthetic env cases above
+#      never exercised the real job env, so this hole shipped past them. This probe reads
+#      the workflow's actual declared MAVEN_ARGS/MAVEN_OPTS out of its own "env:" block
+#      (not a hardcoded copy) and runs the real guard step body against exactly that env:
+#      weak if the guard refuses its own declared pin.
+# ---------------------------------------------------------------------------
+probe_debug_guard_refuses_its_own_maven_opts_pin() {
+  local guard maven_args maven_opts rc
+  guard=$(awk '/- name: Refuse Maven debug output in this job/{i=1} i&&/run: \|/{r=1;next} r&&/^      - name:/{exit} r{print}' "$WF")
+  [ -n "$guard" ] || return 0
+  maven_args=$(awk -F'"' '/^  MAVEN_ARGS:/{print $2; exit}' "$WF")
+  maven_opts=$(awk -F'"' '/^  MAVEN_OPTS:/{print $2; exit}' "$WF")
+  [ -n "$maven_opts" ] || return 0   # env pin vanished: cannot prove the fix, count as weak
+  MAVEN_ARGS="$maven_args" MAVEN_OPTS="$maven_opts" bash -c "$guard" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ]   # guard refused the workflow's own declared MAVEN_ARGS/MAVEN_OPTS: weak
+}
+
+# ---------------------------------------------------------------------------
 # N8 - the ancestry check is `if: github.event_name == 'push'`, so a workflow_dispatch run
 #      on any branch skips it entirely and releases whatever is on that ref. Same set of
 #      people can do either, so it is not a narrower privilege.
@@ -699,6 +721,7 @@ probe probe_verify_fails_on_a_clean_checkout                 "N1 ./mvnw verify f
 probe probe_bundle_assertion_points_at_the_wrong_path        "N4 the L5 bundle path is not where it is written"    probe_bundle_assertion_points_at_the_wrong_path
 probe probe_tag_signature_check_is_optional_and_unbound      "N5 tag signature check is off by default"            probe_tag_signature_check_is_optional_and_unbound
 probe probe_debug_guard_misses_the_slf4j_log_level           "N6 --errors and slf4j debug walk past the guard"     probe_debug_guard_misses_the_slf4j_log_level
+probe probe_debug_guard_refuses_its_own_maven_opts_pin       "N6 the guard refuses the workflow's own MAVEN_OPTS"  probe_debug_guard_refuses_its_own_maven_opts_pin
 probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispatch skips the ancestry check"       probe_ancestry_check_skips_the_dispatch_path
 probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor

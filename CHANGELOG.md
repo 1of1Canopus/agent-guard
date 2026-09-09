@@ -4,6 +4,18 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed
+- **N6**: the release workflow's `Refuse Maven debug output in this job` guard matched the
+  bare words `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the
+  workflow's own job-level `MAVEN_OPTS` pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`)
+  on every run, before anything was uploaded - confirmed on the first real release run
+  (34389977548, tag `v0.1.0`), which failed at this step. `debug_pattern` now only refuses
+  the level actually being `debug`/`trace`; the belt check right after it, unchanged, still
+  requires `MAVEN_OPTS` to be exactly the info-level pin. `tools/cipher-probe-release-pipeline.sh`
+  gained a probe that runs the guard against the workflow's own declared
+  `MAVEN_ARGS`/`MAVEN_OPTS`, parsed from the yml, and asserts it passes; the existing
+  `-X`/`--errors`/`defaultLogLevel=debug` negative cases still fail it (Isis, 2026-09-10).
+
 ## [0.1.0] - 2026-09-09
 
 ### Fixed (post-merge follow-up, QUESTIONS.md #33)

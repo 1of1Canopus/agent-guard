@@ -55,8 +55,13 @@ jobs:
               continue
             fi
             subject="$(git log -1 --format='%s' "$sha")"
-            case "$subject" in
-              "Merge branch"*|"Merge remote-tracking"*) continue ;;
+            # G2: a merge commit is exempt because it has two-or-more parents (%P), never
+            # because of its subject - a subject is free text the committer chooses, and an
+            # ordinary single-parent commit titled "Merge branch 'x' into y" used to be
+            # exempted from the sign-off requirement with no trailer at all. Parent count
+            # cannot be forged the way a commit message can.
+            case "$(git log -1 --format='%P' "$sha")" in
+              *' '*) continue ;;   # two or more parents: a real merge commit
             esac
             if ! git log -1 --format='%B' "$sha" | grep -Eiq '^Signed-off-by: .+ <.+@.+>$'; then
               echo "::error::commit $sha (\"$subject\") has no 'Signed-off-by:' trailer - see CONTRIBUTING.md, git commit -s"

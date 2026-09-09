@@ -4,6 +4,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-09
+
 ### Fixed (post-merge follow-up, QUESTIONS.md #33)
 - **G2**: `.github/workflows/ci.yml`'s `dco` job no longer carries the `GRANDFATHER_SHA`
   exemption (env var + `git cat-file`/`merge-base --is-ancestor` block). It grandfathered

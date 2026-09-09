@@ -4,6 +4,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed (Cipher final confirmation pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final confirmation pass (`cae839e`)")
+- **G3 (LOW)**: `.github/workflows/ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (exactly two parents, second an ancestor of `BASE_SHA`, tree matching `git merge-tree --write-tree` of its parents), closing the octopus/evil-merge bypass an unconstrained parent-count exemption left open (Isis, 2026-09-09; probe suite `still weak: 0    fixed: 35`).
+
 ### Fixed (Cipher clean-verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Clean-verdict pass (`fad6659`)")
 1 MEDIUM and 1 LOW closed (Isis, 2026-09-09). All 34 probes in
 `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).

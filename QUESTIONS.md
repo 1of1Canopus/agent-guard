@@ -274,7 +274,7 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     one level removed). Flagging this rather than silently leaving the probe WEAK: the probe
     script and this entry both say so; `M3` is closed in the workflow, this one static probe
     is not and, on the reasoning above, should not be chased.
-28. **[answered]** F1's fix direction asked whether a group excluded from the licence gate by
+28. **[answered; Cipher ACCEPTED, `fad6659`]** F1's fix direction asked whether a group excluded from the licence gate by
     `<excludedGroups>` can still appear in `THIRD-PARTY-NOTICES.txt` — exclusion from the gate
     only, never from the listing. Checked `license-maven-plugin` 2.7.1's own bytecode
     (`org.codehaus.mojo.license.AbstractAddThirdPartyMojo`): `excludedGroups` is one filter
@@ -293,7 +293,7 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     human-reviewed coordinate exception in `tools/check-third-party-licences.sh`'s
     `ALLOWED_COORDINATES` (which does keep the dependency in the notices file, licences and
     all — see the N9 comment in that script), not a plugin-level group exclusion.
-29. **[decided, flagged]** F7's `ci.yml` `dco` job checks every commit in
+29. **[decided, flagged; Cipher ACCEPTED with a prescribed follow-up, `fad6659`]** F7's `ci.yml` `dco` job checks every commit in
     `github.event.pull_request.base.sha..head.sha`. On a brand-new PR that is exactly right.
     On **this** PR (#9), the requirement is adopted mid-flight: the branch already carried
     nine commits pushed before `CONTRIBUTING.md` asked for a `Signed-off-by` trailer,
@@ -315,3 +315,19 @@ Decisions I took alone are marked **[decided]**; things I want a ruling on are m
     Flagging this first in the report to Dollar, per Isis's method step 3: the F7 direction
     did not anticipate that this PR's own pre-existing history could not satisfy the check it
     asked for without breaking a different rule.
+
+## Clean-verdict round (Cipher, `fad6659`, 2026-09-09)
+
+30. **#28 accepted, no change.** The plugin analysis is right and the case is moot here (the
+    only excluded group is our own, which is not a third party). See
+    `docs/SECURITY-REVIEW-feat-release-pipeline.md`, clean-verdict pass.
+31. **#29 accepted as written, with a prescribed follow-up.** The exemption is sound: proved
+    that no new commit can be made an ancestor of `ddd250c`, that a rebase makes every
+    commit checked (fail closed), and that after merge the exemption is unreachable because a
+    later PR's `base..head` range never contains a commit already on `main`. The alternative
+    end state — "commits already on `main` are exempt" — is **not available**, because PR #9's
+    own commits are not on `main` until #9 merges, so that shape cannot serve the one PR that
+    needs it. Follow-up required after merge: delete `GRANDFATHER_SHA` and the
+    `merge-base --is-ancestor` block from the `dco` job, at which point it is dead code.
+32. **Two new findings, G1 (MEDIUM) and G2 (LOW)**, both with proven fixes and probes. See the
+    clean-verdict pass in the security review. Verdict: MERGE WITH FIXES.

@@ -526,6 +526,47 @@ probe_sample_e2e_depends_on_the_wall_clock() {
   ! grep -q 'agentGuardClock' "$t"
 }
 
+# ---------------------------------------------------------------------------
+# G1 - F2 respelled FORWARD. F2 closed the case where a URL's nested "(...)" splits the
+#      coordinate group; the depth-aware scan fixed that. But the scan still trusts "the
+#      LAST top-level group", and a dependency's own <url> is free text that can simply
+#      CLOSE its own coordinate group and open a fresh, allowlisted one after it:
+#        <url>http://x) (ch.qos.logback:logback-core:1.5.6 - http://y</url>
+#      renders as two top-level groups, the last of which is on ALLOWED_COORDINATES, so the
+#      dependency is skipped and its GPL-3.0 declaration is never checked. The plugin's own
+#      count header still matches (one line in, one line parsed), so the count backstop that
+#      catches a silently-dropped line does not fire here either.
+#      Weak while the script reports a clean notices file for such a line.
+# ---------------------------------------------------------------------------
+probe_denial_pass_coordinate_can_be_forged_by_a_trailing_group() {
+  local d rc
+  d="$(mktemp -d)"
+  cat >"$d/THIRD-PARTY-NOTICES.txt" <<'EOF'
+Lists of 1 third-party dependencies.
+     (GPL-3.0) evil-trailing (cipher.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)
+EOF
+  tools/check-third-party-licences.sh "$d" jar >/dev/null 2>&1
+  rc=$?
+  rm -rf "$d"
+  [ "$rc" -eq 0 ]   # exit 0 on a GPL-3.0 line: still weak
+}
+
+# ---------------------------------------------------------------------------
+# G2 - ci.yml's `dco` job decides a commit is a merge commit, and therefore exempt from the
+#      sign-off requirement, by matching its SUBJECT against "Merge branch"* /
+#      "Merge remote-tracking"*. A subject is free text chosen by the committer, so an
+#      ORDINARY single-parent commit titled `Merge branch 'x' into y` is exempted from the
+#      DCO check with no sign-off at all. Whether a commit is a merge is decided by its
+#      parent count (%P), which the committer cannot forge.
+#      Weak while the job branches on the subject instead of the parent count.
+# ---------------------------------------------------------------------------
+probe_dco_check_is_skipped_by_a_forged_merge_subject() {
+  local w=.github/workflows/ci.yml
+  [ -f "$w" ] || return 0
+  grep -q '"Merge branch"\*' "$w"
+}
+
+
 echo "cipher release-pipeline probes  (WEAK = finding still open)"
 echo
 probe probe_multiline_version_accepted                       "M4 newline in the version input passes validation"   probe_multiline_version_accepted
@@ -562,6 +603,10 @@ probe probe_pom_comment_calls_apache_the_project_licence     "F6 pom.xml still c
 probe probe_contributing_has_no_inbound_licence_terms        "F7 no inbound licence terms for contributions"       probe_contributing_states_no_inbound_licence_terms
 probe probe_licensor_spelling_disagrees_in_releasing_md      "F8 RELEASING.md still says House Devinci"            probe_licensor_spelling_still_disagrees_in_releasing_md
 probe probe_sample_e2e_depends_on_the_wall_clock             "F9 the sample e2e test has no clock of its own"      probe_sample_e2e_depends_on_the_wall_clock
+
+echo
+probe probe_denial_pass_coordinate_forged_by_a_trailing_group "G1 a URL can append an allowlisted coordinate"      probe_denial_pass_coordinate_can_be_forged_by_a_trailing_group
+probe probe_dco_check_skipped_by_a_forged_merge_subject      "G2 a forged 'Merge branch' subject skips the DCO"   probe_dco_check_is_skipped_by_a_forged_merge_subject
 
 echo
 echo "still weak: $pass    fixed: $flipped"

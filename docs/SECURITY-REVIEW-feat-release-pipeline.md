@@ -1563,3 +1563,198 @@ except where noted.
 6. **Whether either mailbox resolves.** No mail was sent.
 7. **F3 against Souhaile's actual release key.** Reproduced with two synthetic keys covering
    both shapes. Which shape his key has, I do not know and did not look for.
+
+---
+
+## Clean-verdict pass (`fad6659`, 2026-09-09) — MERGE WITH FIXES
+
+Fresh clone of `feat/release-pipeline` at `fad6659` into a scratch directory, built and
+attacked from scratch. Docker was up; no test was skipped for want of it.
+
+### Numbers
+
+| Gate | Command | Result |
+|---|---|---|
+| Full verify (fresh clone) | `./mvnw -B verify` | **BUILD SUCCESS**, exit 0, 53.4 s |
+| Tests | core / starter / sample | **220 run, 0 failures, 0 errors, 1 skipped** (161 / 58 / 1) |
+| Release profile | `./mvnw -B -Prelease -DskipTests -Dgpg.skip=true install` | **BUILD SUCCESS**, exit 0, 7.6 s; 6 publishable jars + 1 sample |
+| Reproducibility | `scripts/verify-reproducible.sh` | exit 0, **6/6 artifacts byte-identical** across two clean builds (both javadoc jars matched too, though they are reported-not-enforced) |
+| Probes | `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` | **32 FIXED, 2 WEAK** (the two new findings below), exit non-zero |
+
+The one skipped test is `CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on`,
+an `Assumptions.assumeTrue(ClassUtils.isPresent(...))` on the Spring AI tool
+autoconfiguration jar, which is not a dependency of this module. Pre-existing, outside this
+branch's scope, and it names its own run instruction in the skip message. Recorded, not
+counted as passing.
+
+### F1–F9 — all nine confirmed closed
+
+Each verified in the code and by its probe flipping to FIXED, then attacked again:
+
+- **F1** `excludedGroups` is `^com\.housedevinci(\.[^:]*)?(?=:)`. Anchored at `^`, the
+  subgroup requires a literal `.`, and the `(?=:)` lookahead forces the coordinate
+  separator. `com.housedevinci-evil` and `xcom.housedevinci` are both scanned; only the real
+  group is excluded. Closed.
+- **F2** Depth-aware scan verified against a 10-case matrix: a legitimate
+  `.../wiki/Foo_(bar)` URL parses cleanly; a coordinate forged inside the `<name>` or inside
+  the URL resolves to the real coordinate; an extra `)`, an extra `(`, a `)` before any `(`,
+  and trailing text after the last group all fall to `UNPARSEABLE` (fail closed); a
+  200-deep paren bomb parses without hanging. Closed **as written** — but see G1, which is
+  the same forgery pointed the other way.
+- **F3** `VALIDSIG` last-field match attacked with six forged status lines. Both legitimate
+  shapes match (subkey signs with primary last; primary signs itself). All six attacks are
+  rejected: primary in a middle field, primary as the *suffix* of a longer trailing token
+  (`FFFF<fp>`), primary as its *prefix* (`<fp>FFFF`), a trailing space after it, an
+  unanchored line, and an `ERRSIG` line ending in the fingerprint. The mandatory-and-bound
+  shape is correct. Closed.
+- **F4/F5** Deny-table corrections confirmed by the script's own `--self-test`. Closed.
+- **F6** pom comment. **F7** DCO + inbound grant in `CONTRIBUTING.md` with a `dco` CI job.
+  **F8** licensor spelling. **F9** `MutableClock` seam. All closed.
+
+### Attacks run on the new surfaces
+
+- **Grandfather exemption (#29) — sound.** Built a throwaway repo and ran the job's script
+  verbatim. A new commit **cannot** be made an ancestor of `ddd250c` (ancestry is fixed by
+  that commit's own parent DAG; forging it needs a SHA-1 collision). A **rebase** of the
+  branch gives every commit a new SHA, none of which is an ancestor, so all of them are
+  checked — fail closed. **After merge** the exemption is unreachable: a later PR's
+  `base..head` range never contains a commit that is already on `main`, and an unsigned new
+  commit on such a branch is caught. The check is scoped to `pull_request` only and to the
+  PR range only. All three claims in the job's comment hold.
+- **DCO action pins and permissions — clean.** All three actions (`checkout`, `setup-java`,
+  `upload-artifact`) are pinned to full 40-character commit SHAs with a version comment, and
+  the same SHA is used for a given action everywhere in all three workflows. Every workflow
+  carries a top-level `permissions: contents: read`; the `dco` job restates it at job level.
+  Least privilege, no `id-token`, no `packages`.
+
+### Findings — both must be closed before merge (no-allowance rule)
+
+**G1 — MEDIUM — a dependency's `<url>` can append an allowlisted coordinate and skip the licence gate.**
+`tools/check-third-party-licences.sh`, `parse_notices`. F2 closed the case where a URL's
+*nested* parens split the coordinate group. The scan still trusts "the **last** top-level
+group", and the URL is free text that can simply close its own group and open a fresh one
+after it. A dependency POM with
+
+```xml
+<url>http://x) (ch.qos.logback:logback-core:1.5.6 - http://y</url>
+```
+
+renders the notices line
+
+```
+(GPL-3.0) evil (com.evil:evil:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)
+```
+
+whose last top-level group is on `ALLOWED_COORDINATES`, so `is_allowed_coordinate` returns
+true, `continue` fires, and the `GPL-3.0` token is never tested. Reproduced end to end
+against the real script: **exit 0, "clean"**, on a GPL-3.0 dependency. The count backstop
+does not fire — one line declared, one line parsed. This is N3/F2's exact threat class
+forged *forward* instead of *backward*.
+
+*Repro:* `probe_denial_pass_coordinate_forged_by_a_trailing_group` (added to
+`tools/cipher-probe-release-pipeline.sh`, WEAK on current code).
+
+*Fix:* the coordinate cannot be recovered by position when the line is attacker-shaped, so
+stop trying. In `parse_notices`, after `@parens` is built, count the top-level groups that
+match the coordinate shape and require **exactly one**:
+
+```perl
+my $coord_re = qr/^\s*([\w.\-]+):([\w.\-]+):([\w.+\-]+)\s*-\s*.*$/;
+my $coord_like = grep { $_ =~ $coord_re } @parens;
+if (@parens && $trailing_ok && $coord_like == 1) {
+  my $last = $parens[-1];
+  if ($last =~ $coord_re) { ... }
+}
+```
+
+Two coordinate-shaped groups on one line is genuine ambiguity and must fall to
+`UNPARSEABLE`, which the caller already fails the build on. Verified: this rejects the
+trailing-group forgery **and** the `<name>` forgery, still accepts a legitimate nested-paren
+URL and a legitimate parenthesised project name (`Apache Commons (Core)`), and produces
+**zero regressions** on the real corpus — 7/7 and 87/87 dependency lines still parse `OK`,
+0 `UNPARSEABLE`.
+
+**G2 — LOW — a forged "Merge branch" subject skips the DCO check entirely.**
+`.github/workflows/ci.yml`, `dco` job. Merge commits are exempted by matching the commit
+**subject**:
+
+```sh
+case "$subject" in
+  "Merge branch"*|"Merge remote-tracking"*) continue ;;
+esac
+```
+
+A subject is free text chosen by the committer. An ordinary **single-parent** commit titled
+`Merge branch 'evil' into feat`, carrying no `Signed-off-by` trailer, passes the job.
+Reproduced: `parents=<one sha>`, no sign-off, job reports `OK all signed off`. The exemption
+is legitimate (GitHub's "Update branch" merges carry no trailer) but the test is the wrong
+one — whether a commit is a merge is decided by its parent count, which cannot be forged.
+
+*Repro:* `probe_dco_check_skipped_by_a_forged_merge_subject` (added, WEAK on current code).
+
+*Fix:* branch on `%P` instead of `%s`:
+
+```sh
+case "$(git log -1 --format='%P' "$sha")" in
+  *' '*) continue ;;   # two or more parents: a real merge commit
+esac
+```
+
+Verified: this catches the forged-subject commit and still skips a real two-parent merge
+commit. The `subject` variable is still wanted for the error message.
+
+### Rulings
+
+**#28 — ACCEPT, no change.** The answer is correct and I could not fault it. `excludedGroups`
+is a single filter over a single dependency set in `license-maven-plugin` 2.7.1, so
+"excluded from the gate but kept in the listing" is genuinely not expressible in this
+execution shape. It is also moot here: the only excluded group is `com.housedevinci`, which
+is not a third party, so its absence from a *third*-party notices file is correct rather
+than a gap. The stated escape hatch for any future real third party — a human-reviewed
+entry in `ALLOWED_COORDINATES`, which keeps the dependency and its licences in the file — is
+the right one. Closed.
+
+**#29 — ACCEPT the exemption as written, and PRESCRIBE the follow-up removal (Dollar's end
+state (a)).** The mechanism is sound and I proved all three of its claims above. Of the two
+acceptable end states, **(b) is not available**: expressing the rule as "commits already on
+`main` are exempt" would not exempt PR #9's own nine commits, because they are not on `main`
+until #9 merges — the very PR that needs the exemption is the one that shape cannot serve.
+The pinned-SHA form is therefore the only one that works now, and it is provably
+self-limiting. So: keep it for this PR, and open a follow-up that **deletes** the
+`GRANDFATHER_SHA` env var and the `git cat-file` / `merge-base --is-ancestor` block once #9
+is on `main`, at which point it is demonstrably dead code rather than an argument the next
+reader has to re-derive. Not a blocker for merge; it is a blocker for leaving the file tidy.
+
+### Verdict
+
+**MERGE WITH FIXES.** No HIGH. The release pipeline builds, tests, reproduces and gates
+correctly, F1–F9 are genuinely closed, and #28/#29 are answered soundly. Two findings are
+open — **G1** (MEDIUM) and **G2** (LOW) — both with a proven, regression-tested fix above.
+Under the no-allowance rule the probe script must reach `still weak: 0` before this merges.
+Back to Isis.
+
+### Release gate — state for Souhaile as of 2026-09-09
+
+Done, verified today:
+
+- Sonatype namespace `com.housedevinci` verified.
+- Mail aliases `oss@` and `security@` exist.
+- Sonatype Central Portal token created, **expires 2027-09-09**.
+- GPG release key: **Ed25519, `[SC]` primary-signing** (no separate signing subkey),
+  expires **2029-05**; fingerprint held by Souhaile. Note this is the "primary signs
+  itself" shape, which is the second legitimate `VALIDSIG` case F3 covers — the first and
+  last fields of the status line are the same fingerprint, and the check matches.
+
+Remaining, in order:
+
+1. Close **G1** and **G2**; probe script back to `still weak: 0`.
+2. Merge PR #9.
+3. Add the four secrets from a pipe (never a shell argument, never a file left on disk).
+4. Set repository variable `RELEASE_SIGNING_KEY_ID` to the **full 40-character primary
+   fingerprint** — the workflow rejects a short key id or an email.
+5. Flip the repository to public.
+6. Create the `release` environment with Souhaile as the required reviewer (this is the M5
+   gate; it cannot exist while the repo is private on the free plan).
+7. Tag on `main`.
+8. Publish click at the Central Portal — the bundle waits there; nothing in the workflow can
+   publish on its own.

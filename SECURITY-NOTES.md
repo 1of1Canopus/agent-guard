@@ -197,6 +197,21 @@ does about it, and what still needs a reviewer's eye.
 - **Endpoints refuse anonymous approvers (Cipher M7):** 401 unless `agentguard.endpoints.allow-anonymous=true`
   (trial only). Still put Spring Security in front of `/agentguard/**` (the sample: `hasRole("APPROVER")`).
 
+- **Reproducible-build hazard: a plugin bound to `package` can register `target/` as a live
+  project resource for every other plugin bound to the same phase (2026-09-10 post-release
+  finding).** `license-maven-plugin`'s `add-third-party` execution defaults
+  `addOutputDirectoryAsResourceDir` to `true` and adds `target/**/*.txt` to
+  `project.getResources()` at runtime; `maven-source-plugin`'s `jar-no-fork` execution, bound
+  to the same `package` phase, reads that list at the moment it runs and archives whatever
+  matches into the sources jar - `THIRD-PARTY-NOTICES.txt` deterministically, but also
+  `target/surefire-reports/*.txt` whenever tests ran first, which is never byte-identical run
+  to run. `scripts/verify-reproducible.sh` runs with `-DskipTests` and never saw it; the real
+  release job does run tests and failed the post-deploy checksum comparison on both sources
+  jars (run 34419387032). Fixed by setting `addOutputDirectoryAsResourceDir` to `false` on
+  that execution. General lesson: a Maven "reproducibility" check is only proof for the exact
+  invocation it runs; two plugins sharing a phase can pick up in-memory project state that a
+  `-DskipTests` build never populates.
+
 ## Review status
 Cipher's adversarial pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, seven passes): H1–H3, M1–M7, R1, R2, R5
 fixed and re-verified; under the no-allowance rule every LOW and INFO of the first four passes (L1–L10, I1–I9, R3,

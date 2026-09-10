@@ -2492,3 +2492,126 @@ tag signed by that key. Isis is right, my item 8 was wrong, and it is withdrawn.
 Remaining before a release run, none of it a security finding and none of it mine to do:
 merge PR #13 into `main`, then Souhaile deletes `v0.1.0` local and remote — never published,
 the run failed before upload — and re-creates it signed on the new `main`. I did not tag.
+
+## Re-verification pass — 2026-09-10 — branch `fix/release-sources-reproducible` (PR #14, `5d53221`)
+
+Short pass on Isis's post-release fix for run 34419387032. Root cause verified independently,
+not taken on report; one new LOW opened on the check that was supposed to catch this before
+the upload and structurally cannot.
+
+### Root cause: confirmed, and it is exactly what Isis says it is
+
+Two clean clones, `dfc353d` (before) and `5d53221` (after), each built with
+`./mvnw -B clean verify -Prelease -Dgpg.skip=true -Dproject.build.outputTimestamp=$(scripts/git-commit-timestamp.sh)`
+— tests actually running, which is the condition `scripts/verify-reproducible.sh` never
+creates. Non-`.java` entries of the sources jars at `dfc353d`:
+
+```
+surefire-reports/
+THIRD-PARTY-NOTICES.txt
+surefire-reports/com.housedevinci.agentguard.domain.HashesTest.txt     (+30 more, core)
+surefire-reports/com.housedevinci.agentguard.web.CipherProbeEndpointsTest.txt  (+19 more, starter)
+```
+
+Each of those files carries `Time elapsed: 0.001 s`, i.e. a wall-clock measurement, so the
+sources jar could never be byte-identical between two runs that both executed tests. At
+`5d53221` the same listing is sources plus `META-INF/LICENSE`, `META-INF/NOTICE`,
+`META-INF/maven/**` and (core) `schema-postgresql.sql` — nothing else. `surefire-reports/`
+and `THIRD-PARTY-NOTICES.txt` are both gone from both sources jars.
+
+End-to-end control, mirroring the failed release run: `scripts/verify-reproducible.sh`
+followed by a real release build with tests, comparing all six jars against the recorded
+checksums.
+
+| tree | main jars | javadoc jars | sources jars |
+|---|---|---|---|
+| `dfc353d` (before) | match | match | **both DIFFER** |
+| `5d53221` (after) | match | match | match |
+
+That is run 34419387032 reproduced on this machine, and closed. The `THIRD-PARTY-NOTICES.txt`
+dropping out of the sources jar is not a regression: it was never in the main jar, and
+QUESTIONS.md #26 keeps it out of both on purpose.
+
+### The rest of the fix, checked
+
+- **Notices still generated for the gate and the evidence upload**: `add-third-party` still
+  writes `THIRD-PARTY-NOTICES.txt` to each module's `target/`
+  (core 803 B / starter 11 400 B / sample 12 080 B), and `check-third-party-licences` reports
+  `clean` for all three plus `pom module, no THIRD-PARTY-NOTICES.txt` for the parent. The
+  workflow's `**/target/THIRD-PARTY-NOTICES.txt` upload path still resolves.
+- **M7 intact**: `META-INF/LICENSE` and `META-INF/NOTICE` are present in both main jars and in
+  both sources jars after the fix.
+- **Scope**: one execution, one place, parent pom, inherited by every module. No other plugin
+  in this build registers an output directory as a resource.
+- **Probe soundness**: `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` run
+  standalone against the `dfc353d` clone reports **WEAK**; in the suite at `5d53221`, **FIXED**.
+  Correct polarity, and it fails for the right reason.
+- **Suite**: `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` → `still weak: 0
+  fixed: 41`, exit 0, no probe skipped. CI run 34421229222 green on all three jobs
+  (`Cipher probes`, `Build & test`, `DCO sign-off`).
+- Tag `v0.1.0` untouched, as claimed.
+
+### N15 (LOW) — the reproducibility check cannot see anything that only happens when tests run
+
+`scripts/verify-reproducible.sh` builds twice with `-DskipTests`; the release job publishes a
+build that runs tests. Its header states the reason as fact — *"Tests are skipped: they do not
+contribute a byte to the jar"* — and this incident is that sentence being false. The pom fix
+makes it true again today; nothing in the script can notice the next time it stops being true.
+
+Ruling on the question put to me: **the script must mirror the deploy invocation**, and this is
+a fix, not a doc note. The alternative reading — "the workflow's comparison step compares
+against a build produced the same way" — is not available: the comparison is what runs
+*after* `clean deploy`, so the only build produced the same way as the published one is the
+published one, and by then the bundle is on the Portal. Integrity is not at stake either way
+(the comparison is fail-closed, and a pass still means the deployed jar is byte-equal to a
+build proved identical twice); what is at stake is ordering. On 34419387032 the divergence was
+caught after the upload had happened and the deployment had validated, so Souhaile had to Drop
+it. A release version burned for a defect that a differently-invoked build would have shown a
+step earlier is a LOW under the no-allowance rule, not a nil.
+
+Fix (Isis), in `scripts/verify-reproducible.sh`: keep build 1 as it is
+(`-DskipTests`, it is the fast baseline whose checksums are recorded) and drop `-DskipTests`
+from **build 2** so the comparison is between the baseline and a build invoked the way
+`clean deploy -Prelease` is invoked. One extra test run in the release job; a flaky test then
+fails the release *before* the upload step, which is the direction this pipeline has chosen
+everywhere else. Rewrite the header paragraph: the two builds no longer differ only in the
+tree, they differ in the invocation on purpose, and that is the property being proved.
+`probe_sources_jar_differs_from_a_build_that_actually_ran_tests` stays green across the change
+and is the regression test; no new probe is needed, because the behaviour it asserts is exactly
+the property the script would then be checking itself.
+
+Note for the record on why this matters on the tag path specifically: the `Cipher probes` job
+lives in `ci.yml`, which triggers on push to `main` and on pull requests. `release.yml`
+triggers on `v*` tags and `workflow_dispatch` and does **not** run the probe suite. So on the
+path that actually publishes, the probe is not a control — only `verify-reproducible.sh` and
+the post-deploy comparison are.
+
+### Attacks that did not land
+
+- Another `target/*.txt` producer sneaking back into the sources jar: no other plugin in the
+  reactor registers a resource directory, and the module `<resources>` blocks name
+  `src/main/resources` and two literal files (`LICENSE`, `NOTICE`) at the tree root.
+- `addOutputDirectoryAsResourceDir` being a silently ignored parameter name: disproved
+  empirically — the entries it was adding are gone from the artifacts.
+- Any other test-dependent byte reaching a jar: the six-jar comparison above puts a
+  `-DskipTests` build and a tests-running build at the same checksums, javadoc jars included.
+
+### Verdict (`5d53221`): **MERGE WITH FIXES** — one LOW (N15)
+
+The fix Isis shipped is correct, minimal, in the right place, and proved by its own probe and
+by my independent reproduction of the release failure. N15 is not a defect in that fix; it is
+the check that should have caught it, and it is one line and one paragraph away from being
+sound. Land N15 on this branch, then merge.
+
+## Final verdict (daa4be7): MERGE
+
+N15 is closed and no finding is open on this branch. Argument-level proof from a stubbed
+`mvnw`: build 1 is `-B -q -Dproject.build.outputTimestamp=<ts> -Prelease -Dgpg.skip=true
+-DskipTests clean package`, build 2 is the same line without `-DskipTests` — exactly the fix
+prescribed, and the rewritten header says why instead of repeating the invariant this incident
+falsified. Real run at `daa4be7`, Docker up: **6 of 6 jars `same`**, exit 0, with 29 surefire
+report files left by build 2, so the tests genuinely ran. Decisive control: the same fixed
+script run against the `dfc353d` tree exits **1** and names both sources jars `DIFFERS` — the
+release run that burned `v0.1.0` would now have stopped at the reproducibility step, before the
+upload, which was the whole point of the finding. Suite `still weak: 0    fixed: 41`, exit 0;
+CI run 34440381018 green on `Cipher probes`, `Build & test`, `DCO sign-off`.

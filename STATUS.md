@@ -1,5 +1,27 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**Post-release: sources jars not reproducible (2026-09-10, Isis, branch
+`fix/release-sources-reproducible`)**: release run 34419387032 (tag `v0.1.0`, main `dfc353d`)
+uploaded successfully (deployment VALIDATED) then failed "Confirm the deployed jars match the
+reproducibility check": `agent-guard-core-0.1.0-sources.jar` and
+`agent-guard-spring-boot-starter-0.1.0-sources.jar` differed from the checksums
+`scripts/verify-reproducible.sh` recorded; main jars, javadoc jars and POMs matched. Root
+cause: `license-maven-plugin`'s `add-third-party` execution defaults
+`addOutputDirectoryAsResourceDir` to `true`, registering `target/` as a live project resource
+(`**/*.txt`) at the `package` phase; `maven-source-plugin`'s `jar-no-fork` execution, bound to
+the same phase, reads the project's resources at the moment it runs and archived every
+`target/*.txt` it found - `THIRD-PARTY-NOTICES.txt` deterministically, but also
+`target/surefire-reports/*.txt` whenever tests ran first, which is never byte-identical.
+`verify-reproducible.sh` always runs with `-DskipTests` so its own two builds never saw it; a
+real `clean deploy -Prelease` runs tests. Fixed by setting
+`<addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>` on that execution.
+Proved locally: `scripts/verify-reproducible.sh` followed by a real
+`clean verify -Prelease -Dgpg.skip=true` (tests running, same `outputTimestamp`) now produce
+byte-identical sources jars. New `probe_sources_jar_differs_from_a_build_that_actually_ran_tests`
+in `tools/cipher-probe-release-pipeline.sh` (`CIPHER_PROBE_MAVEN=1`), WEAK before, FIXED
+after. Tag `v0.1.0` not touched. PR opened against `main`, awaiting Cipher re-verification -
+this fix is not self-verified.
+
 **N14 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: `_probe_suite_wired_unconditionally_in`
 still matched the `run:` line by substring, so a trailing comment (`run: true # CIPHER_PROBE_MAVEN=1
 tools/cipher-probe-release-pipeline.sh`) still reported the suite FIXED. Now requires the trimmed

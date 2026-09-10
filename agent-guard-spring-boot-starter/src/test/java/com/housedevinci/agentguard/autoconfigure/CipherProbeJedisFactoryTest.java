@@ -43,7 +43,7 @@ class CipherProbeJedisFactoryTest {
     var pool = new AgentGuardProperties.Pool();
     pool.setPreparePool(prefill);
     // V5: max-total (the Jedis connection pool) stays small and contended, as H3/R6 intended —
-    // the platform-thread pool and its bounded queue (Cipher C7) are sized from their own
+    // the platform-thread pool and its bounded queue (C7) are sized from their own
     // properties, decoupled from max-total, so the burst does not have to inflate the connection
     // pool just to get enough workers to submit to
     pool.setMaxTotal(4);

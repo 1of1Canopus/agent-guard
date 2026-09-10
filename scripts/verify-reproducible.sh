@@ -14,8 +14,8 @@
 # baseline whose checksums get written to disk and later compared against what actually
 # got deployed. Build 2 runs the tests, because `clean deploy -Prelease` (the invocation
 # that publishes) runs the tests too, and a surefire report or any other test-only byte
-# landing in a jar is exactly the defect this script exists to catch (see run 34419387032
-# and N15 in docs/SECURITY-REVIEW-feat-release-pipeline.md: a `-DskipTests` vs `-DskipTests`
+# landing in a jar is exactly the defect this script exists to catch (see run 34419387032:
+# a `-DskipTests` vs `-DskipTests`
 # comparison agreed the sources jars were reproducible while the real, tests-running release
 # build produced a sources jar with surefire-reports/ baked in). A flaky test now fails this
 # script before anything is deployed, which is where this pipeline wants that failure.
@@ -28,7 +28,7 @@
 #
 # Reported but NOT enforced: the javadoc jars. javadoc embeds the JDK build string and,
 # in some JDK versions, generation-time detail that -notimestamp does not remove. Maven
-# Central requires a javadoc jar; nobody diffs one. See QUESTIONS.md #24.
+# Central requires a javadoc jar; nobody diffs one.
 #
 # Also writes a checksum file, "<sha256>  <filename>" per jar from build 1 (the two
 # builds already matched by the time this is written, or the script has already exited
@@ -37,7 +37,7 @@
 # to be what got published. Written OUTSIDE target/ by default (target/*.jar is what
 # `mvn clean deploy` deletes and rebuilds next, a third time, right after this script
 # runs) - override with REPRODUCIBLE_SHA_FILE to put it somewhere that survives that
-# clean, e.g. $RUNNER_TEMP in CI. See docs/SECURITY-REVIEW-feat-release-pipeline.md L1.
+# clean, e.g. $RUNNER_TEMP in CI.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -93,10 +93,10 @@ for f in "$WORK/one"/*.jar; do
   else
     case "$name" in
       *-javadoc.jar)
-        printf '%-56s %-8s %s\n' "$name" "differs" "$a  (not enforced, see QUESTIONS #24)"
+        printf '%-56s %-8s %s\n' "$name" "differs" "$a  (not enforced: the javadoc jar is not diffed)"
         # Recorded anyway, not-enforced marker and all: L1's post-deploy comparison needs
         # a line to look up, and it applies the same not-enforced rule for *-javadoc.jar.
-        printf '%s  %s  # not enforced, see QUESTIONS #24\n' "$a" "$name" >> "$sha_file"
+        printf '%s  %s  # not enforced: the javadoc jar is not diffed\n' "$a" "$name" >> "$sha_file"
         ;;
       *)
         printf '%-56s %-8s %s\n' "$name" "DIFFERS" "$a vs $b"

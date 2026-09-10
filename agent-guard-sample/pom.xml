@@ -29,8 +29,7 @@
       coordinates out of that bundle is <excludeArtifacts> in the parent pom's release
       profile. A future plugin version that honoured skipPublishing at the aggregate step
       would make the release silently upload nothing while reporting success, which is why
-      it is removed rather than left as a harmless-looking belt. See
-      docs/SECURITY-REVIEW-feat-release-pipeline.md L5.
+      it is removed rather than left as a harmless-looking belt (security review finding L5).
     -->
     <maven.deploy.skip>true</maven.deploy.skip>
     <maven.install.skip>true</maven.install.skip>

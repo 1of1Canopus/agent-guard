@@ -4,12 +4,6 @@
 
 Email **security@housedevinci.com**.
 
-> **Placeholder, not yet confirmed to exist.** `oss@housedevinci.com` (the address in the
-> published POM's `<developers>` block) and `security@housedevinci.com` both need to exist
-> and forward before `v0.1.0` is published. See `QUESTIONS.md` #21 and
-> `docs/RELEASING.md`'s release gates: creating the mailbox is Souhaile's, this file is the
-> engineering agent's. Do not remove this notice until the address is confirmed live.
-
 Please do not open a public GitHub issue for a suspected vulnerability. Include:
 
 - the version of `agent-guard-core` / `agent-guard-spring-boot-starter` affected
@@ -39,6 +33,6 @@ reporter who needs a longer window for coordinated disclosure elsewhere should s
 ## Scope
 
 In scope: `agent-guard-core`, `agent-guard-spring-boot-starter`, and the release pipeline
-that publishes them (`.github/workflows/release.yml`, `pom.xml` release profile,
-`docs/RELEASING.md`). `agent-guard-sample` is a demo application, never published, and is
-in scope only insofar as a vulnerability in it also reaches the library code.
+that publishes them (`.github/workflows/release.yml`, `pom.xml` release profile).
+`agent-guard-sample` is a demo application, never published, and is in scope only insofar
+as a vulnerability in it also reaches the library code.

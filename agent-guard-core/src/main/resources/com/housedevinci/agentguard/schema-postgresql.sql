@@ -3,19 +3,19 @@
 -- the sink's advisory lock (see JdbcSupport.initializeSchema).
 SELECT pg_advisory_xact_lock(18374244850549833);
 
--- Keyed-from-birth (QUESTIONS.md #20) declares agentguard_audit.key_id and
+-- Keyed-from-birth declares agentguard_audit.key_id and
 -- agentguard_audit_anchor.keyed NOT NULL in the CREATE TABLE bodies below, with no backfill: this
 -- branch is unreleased, so there is no upgrade path from a database written by an earlier build.
 -- A pre-redesign agentguard_audit (append-only trigger already installed, no key_id column) or a
 -- pre-redesign anchor (no keyed column) is refused here, with a clear message, rather than left to
 -- fail later on the append-only trigger, the anchor's monotonic trigger, or a missing-column error
 -- from an INSERT.
--- J1 (Cipher): resolved search_path-relative via to_regclass, the same way every other statement in
+-- J1: resolved search_path-relative via to_regclass, the same way every other statement in
 -- this step resolves the table, instead of scanning information_schema across every schema the role
 -- can see. A pre-redesign copy sitting in another visible schema (e.g. after an operator followed
 -- docs/index.md's "rename or drop" and did `ALTER TABLE ... SET SCHEMA archive`) no longer blocks a
 -- fresh install in the current schema.
--- K1 (Cipher): to_regclass resolves like a *reference* — the first schema on the search_path that
+-- K1: to_regclass resolves like a *reference* — the first schema on the search_path that
 -- holds the name, anywhere along the path — while the unqualified CREATE TABLE below targets only
 -- current_schema(), the first *existing* entry. A pre-redesign copy in a schema that is on the
 -- search_path but behind the creation schema was therefore visible to to_regclass and refused a
@@ -96,7 +96,7 @@ ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS actor_id varchar(255);
 -- pre-key trail report BROKEN; the verifier applies the function each row actually recorded.
 ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) NOT NULL DEFAULT 'ag1';
 
--- Key id each row was signed with (keyed-from-birth, QUESTIONS.md #20): part of the hashed material
+-- Key id each row was signed with (keyed-from-birth): part of the hashed material
 -- itself, from row 1, so key rotation is data (a new id, a new secret), not a chain-format change.
 -- 'none' for unkeyed rows (AuditChain.UNKEYED_KEY_ID). Declared NOT NULL in the CREATE TABLE body
 -- above: this branch is unreleased, so there is no earlier row to backfill (see the schema-predates
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS agentguard_audit_anchor (
   keyed      boolean NOT NULL
 );
 
--- Design change: keyed-from-birth (QUESTIONS.md #20, Dollar's ruling). A trail is keyed from row 1
+-- Design change: keyed-from-birth. A trail is keyed from row 1
 -- or unkeyed forever; there is no mixing and no later switch. `keyed` is the external,
 -- attacker-unwritable record of which one this trail is: set once, at the first append, and
 -- immutable afterwards (the monotonic trigger below). A row's own chain_version is not enough on
@@ -177,7 +177,7 @@ DO $$ BEGIN
 END $$;
 
 -- Append-only, mirroring agentguard_audit: nothing refuses DELETE/TRUNCATE on the anchor without
--- this (Cipher F3(a)) — an anchor row is only as protective as it is hard to lose, and losing it
+-- this (F3(a)) — an anchor row is only as protective as it is hard to lose, and losing it
 -- silently reopened the exact V2/whole-trail-downgrade attack the anchor exists to close.
 CREATE OR REPLACE FUNCTION agentguard_audit_anchor_append_only() RETURNS trigger AS $$
 BEGIN
@@ -199,7 +199,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- Amendment (Dollar, after Cipher's design review): the schema step never seeds an anchor row from
+-- Amendment (after further design review): the schema step never seeds an anchor row from
 -- an existing, non-empty trail — deriving `keyed` (or, before it, `keyed_from_seq`) from row data
 -- is exactly the guess the anchor exists to make unnecessary. If a trail already has rows and no
 -- anchor, `JdbcAuditSink` refuses to append (AG-AUDIT-002) rather than silently re-anchoring: see

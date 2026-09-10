@@ -29,13 +29,12 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Design change: keyed-from-birth (Dollar ruling, QUESTIONS.md #20). A trail is keyed from row 1 or
- * unkeyed forever — no mixing, no later switch. {@code agentguard_audit_anchor.keyed} (a plain
- * {@code boolean}, set once at the first append and immutable afterwards) replaces the earlier
- * {@code keyed_from_seq} mechanism (and the F1/F2 findings against it, which no longer apply: there
- * is no sequence arithmetic left to get wrong). This class replaces Cipher's F1–F4 probes; see
- * {@code docs/SECURITY-REVIEW-feat-agent-guard-core.md}, "Design change: keyed-from-birth", for the
- * old-probe -> new-probe map.
+ * Design change: keyed-from-birth. A trail is keyed from row 1 or unkeyed forever — no mixing, no
+ * later switch. {@code agentguard_audit_anchor.keyed} (a plain {@code boolean}, set once at the
+ * first append and immutable afterwards) replaces the earlier {@code keyed_from_seq} mechanism (and
+ * the F1/F2 findings against it, which no longer apply: there is no sequence arithmetic left to get
+ * wrong). This class replaces the prior F1-F4 probes; see the "Design change: keyed-from-birth"
+ * security review notes for the old-probe -> new-probe map.
  */
 @Testcontainers
 class CipherProbeAnchorKeyingJdbcTest {
@@ -130,11 +129,11 @@ class CipherProbeAnchorKeyingJdbcTest {
   }
 
   /**
-   * Replaces F4's mirror image, and replaces Cipher's C6 probe (superseded by keyed-from-birth,
-   * QUESTIONS.md #20): a newly-keyed instance must not silently start signing a trail that began
-   * unkeyed and was never meant to switch. "Enabling {@code agentguard.audit.hmac-secret} on a
-   * running installation" is refused at startup, naming the property and the remedy, rather than
-   * accommodated (the old C6 goal, no longer the design).
+   * Replaces F4's mirror image, and replaces the prior C6 probe (superseded by keyed-from-birth): a
+   * newly-keyed instance must not silently start signing a trail that began unkeyed and was never
+   * meant to switch. "Enabling {@code agentguard.audit.hmac-secret} on a running installation" is
+   * refused at startup, naming the property and the remedy, rather than accommodated (the old C6
+   * goal, no longer the design).
    */
   @Test
   void a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed() throws Exception {
@@ -269,11 +268,11 @@ class CipherProbeAnchorKeyingJdbcTest {
   }
 
   /**
-   * Amendment (Dollar, after Cipher's design review): superseded version of the schema-seed test.
-   * The schema step never re-seeds an anchor from an existing, non-empty trail — deriving {@code
-   * keyed} from row data is exactly the guess the anchor exists to make unnecessary, the same class
-   * of gap the retired {@code keyed_from_seq} F1/F2 findings were about. A keyed trail that loses
-   * its anchor row is refused, not silently re-anchored: {@code AG-AUDIT-002}, naming the remedy.
+   * Amendment (after further design review): superseded version of the schema-seed test. The schema
+   * step never re-seeds an anchor from an existing, non-empty trail — deriving {@code keyed} from
+   * row data is exactly the guess the anchor exists to make unnecessary, the same class of gap the
+   * retired {@code keyed_from_seq} F1/F2 findings were about. A keyed trail that loses its anchor
+   * row is refused, not silently re-anchored: {@code AG-AUDIT-002}, naming the remedy.
    */
   @Test
   void an_orphaned_keyed_trail_without_an_anchor_refuses_to_append() throws Exception {
@@ -309,7 +308,7 @@ class CipherProbeAnchorKeyingJdbcTest {
   }
 
   /**
-   * Key rotation (amendment, after Cipher's design review): the key id is part of the hashed
+   * Key rotation (amendment, after further design review): the key id is part of the hashed
    * material from row 1, so a trail can carry rows signed under different ids while staying keyed
    * throughout — this is data, not a mode switch. A verifier whose keyring holds both ids sees the
    * whole trail INTACT.

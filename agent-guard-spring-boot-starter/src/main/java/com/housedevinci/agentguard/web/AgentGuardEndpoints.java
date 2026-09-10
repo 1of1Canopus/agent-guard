@@ -70,7 +70,7 @@ public class AgentGuardEndpoints {
 
   /**
    * @param requireTenant when {@code tenantScoped}, refuse (403) an approver with no tenant instead
-   *     of letting them see and decide every tenant's work (Cipher C9)
+   *     of letting them see and decide every tenant's work (C9)
    */
   public AgentGuardEndpoints(
       ApprovalService approvals,

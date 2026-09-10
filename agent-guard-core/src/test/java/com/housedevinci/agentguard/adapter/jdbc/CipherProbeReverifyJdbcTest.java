@@ -106,7 +106,7 @@ class CipherProbeReverifyJdbcTest {
   }
 
   /**
-   * R2, superseded by the amendment after Cipher's design review of keyed-from-birth: a missing
+   * R2, superseded by the amendment after further design review of keyed-from-birth: a missing
    * anchor on a non-empty trail is no longer re-derived from the trail head (that was exactly the
    * "guess a keyed value from row data" the anchor exists to make unnecessary — the same class of
    * gap as the retired {@code keyed_from_seq} F1/F2 findings). It is refused instead, on both the

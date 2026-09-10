@@ -387,8 +387,8 @@ public class AgentGuardProperties {
     private Integer platformThreadCount;
 
     /**
-     * V5: bound of the platform-thread pool's work queue (Cipher C7). Null defaults to the
-     * effective {@link #effectivePlatformThreadCount()}.
+     * V5: bound of the platform-thread pool's work queue (C7). Null defaults to the effective
+     * {@link #effectivePlatformThreadCount()}.
      */
     @Min(1)
     private Integer platformThreadQueueSize;

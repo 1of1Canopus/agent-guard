@@ -9,7 +9,7 @@
 # lists two CUMULATIVE licences, e.g. "Apache-2.0 OR GPL-3.0" declared as two licence blocks.
 # The plugin has no way to tell the two cases apart; this script is the second pass that does,
 # by only ever allowing the exception for a coordinate a human wrote down. See
-# docs/SECURITY-REVIEW-feat-release-pipeline.md M1/M2/N2/N3/N9/N10, QUESTIONS.md #22.
+# the security review's M1/M2/N2/N3/N9/N10 findings.
 #
 # Never add <excludedLicenses> to the plugin execution instead of this script: it makes the
 # build pass AND deletes the GPL-3.0 declaration from the notices file that ships as release
@@ -134,7 +134,7 @@ is_allowed_coordinate() {
 # ---------------------------------------------------------------------------------------
 # Parses one THIRD-PARTY-NOTICES.txt on stdin. Each dependency line looks like:
 #   (Apache-2.0) Gson (com.google.code.gson:gson:2.13.2 - https://...)
-#   (Apache-2.0) (GPL-3.0) syn-dual (cipher.synthetic:syn-dual:1.0 - no url defined)
+#   (Apache-2.0) (GPL-3.0) syn-dual (example.synthetic:syn-dual:1.0 - no url defined)
 #
 # N3: the coordinate is read from the LAST "(...)" group on the line, never the first. The
 # earlier version took the first `(group:artifact:version - url)`-shaped group with a
@@ -279,7 +279,7 @@ check_notices_file() {
 run_self_test() {
   local failures=0
 
-  # tokens that must be DENIED (Cipher's N2 repro table, plus the original SPDX spellings).
+  # tokens that must be DENIED (the N2 repro table, plus the original SPDX spellings).
   local -a deny_cases=(
     "GPL-3.0"
     "GPLv3"
@@ -348,14 +348,14 @@ run_self_test() {
 
   # F2: parser-level cases, run through the real check_notices_file / parse_notices path
   # against a synthetic notices file - is_denied_token alone cannot exercise the paren-depth
-  # scan. Case 1 is Cipher's URL-forgery repro: a dependency's own <url> contains a balanced
+  # scan. Case 1 is the URL-forgery repro: a dependency's own <url> contains a balanced
   # "(...)" that must NOT be read as the coordinate. Case 2 is the false-positive this fix
   # also removes: a legitimate URL with a balanced pair (Wikipedia-style) must parse cleanly
   # instead of tripping UNPARSEABLE.
   local work
   work="$(mktemp -d)"
 
-  printf 'Lists of 1 third-party dependencies.\n     (Apache-2.0) (GPL-3.0) evil-url (cipher.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))\n' \
+  printf 'Lists of 1 third-party dependencies.\n     (Apache-2.0) (GPL-3.0) evil-url (example.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))\n' \
     > "$work/THIRD-PARTY-NOTICES.txt"
   if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
     echo "self-test FAIL  parse 'evil-url' forged coordinate via a parenthesised <url> was NOT denied"
@@ -373,12 +373,12 @@ run_self_test() {
     failures=$((failures + 1))
   fi
 
-  # G1: Cipher's forward-forgery repro - a dependency's own <url> closes its coordinate
+  # G1: the forward-forgery repro - a dependency's own <url> closes its coordinate
   # group early and opens a fresh, allowlisted one after it. The line now has TWO
-  # coordinate-shaped top-level groups (the real cipher.synth:evil-c:1.0 and the trailing
+  # coordinate-shaped top-level groups (the real example.synth:evil-c:1.0 and the trailing
   # forged ch.qos.logback:logback-core:1.5.6), which is genuine ambiguity - must fall to
   # UNPARSEABLE (fail closed), never be silently read as the allowlisted one.
-  printf 'Lists of 1 third-party dependencies.\n     (GPL-3.0) evil-trailing (cipher.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)\n' \
+  printf 'Lists of 1 third-party dependencies.\n     (GPL-3.0) evil-trailing (example.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)\n' \
     > "$work/THIRD-PARTY-NOTICES.txt"
   if check_notices_file "$work/THIRD-PARTY-NOTICES.txt" >/dev/null 2>&1; then
     echo "self-test FAIL  parse coordinate forged by a trailing allowlisted group was NOT denied"

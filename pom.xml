@@ -39,7 +39,7 @@
     <developer>
       <id>canopus</id>
       <name>Souhaile (Canopus)</name>
-      <!-- Role address, not a personal mailbox. See QUESTIONS.md #21. -->
+      <!-- Role address, not a personal mailbox. -->
       <email>oss@housedevinci.com</email>
       <organization>HouseDevinci</organization>
       <organizationUrl>https://housedevinci.com</organizationUrl>
@@ -314,8 +314,8 @@
               <failOnMissing>true</failOnMissing>
               <failOnBlacklist>true</failOnBlacklist>
               <!--
-                Do NOT add <excludedLicenses> here as a second gate. It was tried (M1/M2,
-                docs/SECURITY-REVIEW-feat-release-pipeline.md): the build still passes a
+                Do NOT add <excludedLicenses> here as a second gate. It was tried (security
+                review findings M1/M2): the build still passes a
                 dependency declaring "Apache-2.0 OR GPL-3.0", because <includedLicenses>
                 already let it through on its permissive half, and <excludedLicenses>
                 REMOVES the GPL-3.0 declaration from THIRD-PARTY-NOTICES.txt in the process
@@ -454,7 +454,7 @@
             <configuration>
               <!-- settings.xml <server><id>central</id>, username/password = Central user token. -->
               <publishingServerId>central</publishingServerId>
-              <!-- Souhaile presses Publish on the portal. Never flip this to true. -->
+              <!-- The maintainer presses Publish on the portal. Never flip this to true. -->
               <autoPublish>false</autoPublish>
               <!-- validated, not published: the upload waits for Sonatype's validation, then stops. -->
               <waitUntil>validated</waitUntil>

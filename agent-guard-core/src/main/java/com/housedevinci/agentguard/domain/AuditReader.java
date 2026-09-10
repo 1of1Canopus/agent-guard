@@ -11,7 +11,7 @@ public interface AuditReader {
   /**
    * Newest events first, at most {@code limit}, every tenant. Prefer {@link #latest(String, int)}
    * for a tenant-scoped caller: filtering after this applies {@code limit} can hide a tenant's own
-   * rows behind a busier neighbour's (Cipher C10).
+   * rows behind a busier neighbour's (C10).
    */
   default List<AuditEvent> latest(int limit) {
     return latest(null, limit);

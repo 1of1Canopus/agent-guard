@@ -134,10 +134,10 @@ class AuditChainVerifierTest {
   }
 
   /**
-   * Amendment (Dollar, after Cipher's design review): the Report carries the trail's mode, and an
-   * unkeyed trail's clean result must render with a word distinct from a keyed trail's — never
-   * plain {@code INTACT} — so an operator glancing at a status string cannot mistake "nothing is
-   * signing this trail" for "the signature checked out".
+   * Amendment (after further design review): the Report carries the trail's mode, and an unkeyed
+   * trail's clean result must render with a word distinct from a keyed trail's — never plain {@code
+   * INTACT} — so an operator glancing at a status string cannot mistake "nothing is signing this
+   * trail" for "the signature checked out".
    */
   @Test
   void an_unkeyed_trail_never_renders_plain_intact() {

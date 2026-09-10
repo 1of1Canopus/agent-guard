@@ -247,7 +247,7 @@ previews, per-call evaluation plus per-conversation budgets, append-only chained
 pieces only when their classes are present. You can call `ToolGuard.execute(...)` from any code.
 
 **Async / WebFlux MCP servers?** Not yet: async tool specification beans make startup fail rather than run
-unguarded (see QUESTIONS.md).
+unguarded.
 
 **A tool failed after approval — can the agent retry?** No: the single execution is spent (`"retryable":false`).
 The agent must ask again and a human must approve again.

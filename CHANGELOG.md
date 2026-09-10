@@ -4,6 +4,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Changed
+- Internal working documents (`SPEC.md`, `STATUS.md`, `QUESTIONS.md`, the security review
+  write-ups, design plans, and the release runbook) moved out of this repository to a
+  private location; they named an internal review process that has no reason to be public.
+  `SECURITY-NOTES.md` and this changelog stay, with that narration scrubbed and every
+  finding id and technical detail kept. Two probes in
+  `tools/cipher-probe-release-pipeline.sh` (N7, F8) that checked the exact wording of the
+  now-private release runbook were retired as out of scope for a probe suite that ships in
+  a public repository; both findings were already verified fixed before retirement.
+
 ### Fixed
 - **N15 (LOW)**: `scripts/verify-reproducible.sh` built both comparison builds with
   `-DskipTests`, so it could never see a test-only byte reach a jar the way `clean deploy
@@ -12,7 +22,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   `-DskipTests` baseline whose checksums are recorded. Header rewritten to say the two
   invocations differ on purpose. `scripts/verify-reproducible.sh` still reports 6/6 jars
   `same`; `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` unchanged and
-  green (engineering, 2026-09-10).
+  green (2026-09-10).
 - **Post-release (release run 34419387032, tag `v0.1.0`)**: the "Confirm the deployed jars
   match the reproducibility check" step failed on `agent-guard-core-0.1.0-sources.jar` and
   `agent-guard-spring-boot-starter-0.1.0-sources.jar` (main jars, javadoc jars and POMs all
@@ -34,7 +44,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   `outputTimestamp` now produce byte-identical sources jars, twice. New
   `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` in
   `tools/cipher-probe-release-pipeline.sh` (gated behind `CIPHER_PROBE_MAVEN=1`), WEAK
-  before this fix, FIXED after. Tag `v0.1.0` untouched (engineering, 2026-09-10).
+  before this fix, FIXED after. Tag `v0.1.0` untouched (2026-09-10).
 - **N14 (LOW)**: `_probe_suite_wired_unconditionally_in` still matched the `run:` line by
   substring, so a trailing comment after the command (`run: true # CIPHER_PROBE_MAVEN=1
   tools/cipher-probe-release-pipeline.sh`) ran `true` and the probe still reported the suite
@@ -43,7 +53,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   any decoration without a YAML parser. New
   `probe_suite_probe_accepts_a_trailing_comment_disable` covers the trailing-comment mutation
   and a `run: |` multi-line block hiding the command after another command; both WEAK before,
-  FIXED after. Suite: `still weak: 0    fixed: 40`, exit 0 (engineering, 2026-09-10).
+  FIXED after. Suite: `still weak: 0    fixed: 40`, exit 0 (2026-09-10).
 - **N13 (LOW)**: `probe_probe_suite_is_not_run_by_ci` reported FIXED for four ways of
   disabling the `Cipher probes` job while nothing ran: a job-level `if: false`, a job-level
   `continue-on-error: true`, a step-level `if: false`, and the `run:` line commented out. The
@@ -52,7 +62,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   refuses any `if:`/`continue-on-error:` anywhere in the job, not just `continue-on-error:
   true` next to the `run:` line. New `probe_suite_probe_accepts_a_disabled_probes_job` applies
   all four mutations to a scratch copy of `ci.yml` and asserts each is caught (WEAK before,
-  FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0 (engineering, 2026-09-10).
+  FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0 (2026-09-10).
 - **N12 (LOW)**: `tools/cipher-probe-release-pipeline.sh` was only ever invoked by hand -
   `grep -rl 'cipher-probe' .github/` returned zero files - which is the mechanical reason
   N6 reached a tagged release: the suite that would have caught it was never executed by CI
@@ -65,7 +75,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   `probe_probe_suite_is_not_run_by_ci`, which greps every workflow under
   `.github/workflows/` for a step whose `run:` line names the script without
   `continue-on-error: true`; confirmed WEAK against the pre-fix `ci.yml`, FIXED against the
-  post-fix one. Suite: `still weak: 0    fixed: 38`, exit 0 (engineering, 2026-09-10).
+  post-fix one. Suite: `still weak: 0    fixed: 38`, exit 0 (2026-09-10).
 - **N6**: the release workflow's `Refuse Maven debug output in this job` guard matched the
   bare words `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the
   workflow's own job-level `MAVEN_OPTS` pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`)
@@ -75,17 +85,17 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   requires `MAVEN_OPTS` to be exactly the info-level pin. `tools/cipher-probe-release-pipeline.sh`
   gained a probe that runs the guard against the workflow's own declared
   `MAVEN_ARGS`/`MAVEN_OPTS`, parsed from the yml, and asserts it passes; the existing
-  `-X`/`--errors`/`defaultLogLevel=debug` negative cases still fail it (engineering, 2026-09-10).
+  `-X`/`--errors`/`defaultLogLevel=debug` negative cases still fail it (2026-09-10).
 
 ## [0.1.0] - 2026-09-09
 
-### Fixed (post-merge follow-up, QUESTIONS.md #33)
+### Fixed (post-merge follow-up)
 - **G2**: `.github/workflows/ci.yml`'s `dco` job no longer carries the `GRANDFATHER_SHA`
   exemption (env var + `git cat-file`/`merge-base --is-ancestor` block). It grandfathered
-  PR #9's own pre-`Signed-off-by`-rule commits, was proven self-limiting (QUESTIONS.md #29),
+  PR #9's own pre-`Signed-off-by`-rule commits, was proven self-limiting,
   and is now dead code: PR #9 is merged into `main`, so `ddd250c` is part of `main`'s
   history and every future PR's `base..head` range can never contain an ancestor of it
-  (engineering, 2026-09-09). Verified against a scratch repo directly with the committed step body:
+  (2026-09-09). Verified against a scratch repo directly with the committed step body:
   an unsigned commit fails, a signed commit passes, a trivial back-merge of the base is
   still exempt (parent-count + `git merge-tree` check, G3/G4, unaffected by this removal),
   and a conflicted back-merge with no sign-off is still checked and fails. Probe suite
@@ -94,14 +104,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   extract the live step body from `ci.yml` and run it behaviourally, they never grep for
   `GRANDFATHER_SHA`), so none needed updating.
 
-### Fixed (the security review final verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verdict pass (`5cac151`)")
-- **G4 (LOW)**: `.github/workflows/ci.yml`'s `dco` job guarded the `auto=` substitution in an `if` so `git merge-tree`'s non-zero exit on a conflicted merge is non-fatal under `set -euo pipefail`, letting a conflict-resolved back-merge fall through to the sign-off check with a visible error instead of the step aborting with no output; also corrected the step's comment, which wrongly claimed that path already fell through (engineering, 2026-09-09; probe suite `still weak: 0    fixed: 36`).
+### Fixed (security review, Final verdict pass (`5cac151`))
+- **G4 (LOW)**: `.github/workflows/ci.yml`'s `dco` job guarded the `auto=` substitution in an `if` so `git merge-tree`'s non-zero exit on a conflicted merge is non-fatal under `set -euo pipefail`, letting a conflict-resolved back-merge fall through to the sign-off check with a visible error instead of the step aborting with no output; also corrected the step's comment, which wrongly claimed that path already fell through (2026-09-09; probe suite `still weak: 0    fixed: 36`).
 
-### Fixed (the security review final confirmation pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final confirmation pass (`cae839e`)")
-- **G3 (LOW)**: `.github/workflows/ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (exactly two parents, second an ancestor of `BASE_SHA`, tree matching `git merge-tree --write-tree` of its parents), closing the octopus/evil-merge bypass an unconstrained parent-count exemption left open (engineering, 2026-09-09; probe suite `still weak: 0    fixed: 35`).
+### Fixed (security review, Final confirmation pass (`cae839e`))
+- **G3 (LOW)**: `.github/workflows/ci.yml`'s `dco` job now exempts a merge only when it is a trivial back-merge of the base (exactly two parents, second an ancestor of `BASE_SHA`, tree matching `git merge-tree --write-tree` of its parents), closing the octopus/evil-merge bypass an unconstrained parent-count exemption left open (2026-09-09; probe suite `still weak: 0    fixed: 35`).
 
-### Fixed (the security review clean-verdict pass, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Clean-verdict pass (`fad6659`)")
-1 MEDIUM and 1 LOW closed (engineering, 2026-09-09). All 34 probes in
+### Fixed (security review, Clean-verdict pass (`fad6659`))
+1 MEDIUM and 1 LOW closed (2026-09-09). All 34 probes in
 `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
 - **G1 (MEDIUM)**: `tools/check-third-party-licences.sh`'s `parse_notices` trusted "the last
   top-level `(...)` group" as the dependency coordinate by position. F2 closed the case
@@ -123,8 +133,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   one parent is checked regardless of subject. Parent count cannot be forged by a commit
   message.
 
-### Fixed (the security review final verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Final verification (78c808e)")
-1 MEDIUM, 6 LOW and 2 INFO closed (engineering, 2026-09-09). All 32 probes in
+### Fixed (security review, Final verification (78c808e))
+1 MEDIUM, 6 LOW and 2 INFO closed (2026-09-09). All 32 probes in
 `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0 (`CIPHER_PROBE_MAVEN=1`).
 - **F2 (MEDIUM)**: `parse_notices` collected `(...)` groups with `[^()]*`, which cannot span
   a nested pair, so a dependency's own `<url>` containing a balanced `(...)` made that inner
@@ -147,7 +157,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   fingerprint `RELEASE_SIGNING_KEY_ID` is configured with is always the *last* field, for
   both key shapes. Verified with two throwaway keys (primary-only, primary+signing-subkey):
   the new regex matches the primary fingerprint in both cases; the old one only matched the
-  primary-only case. `docs/RELEASING.md` gains one clarifying paragraph.
+  primary-only case. The release runbook gains one clarifying paragraph.
 - **F4**: the deny pattern `mpl` was a bare substring, matching "si**mpl**ified",
   "exa**mpl**e", "te**mpl**ate": `Simplified BSD License` and any `example.com` licence URL
   were denied even though the plugin's own allowlist accepts them. Dropped; `mpl11`/`mpl20`
@@ -160,14 +170,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   of this project", stale since the FSL-1.1-ALv2 switch. Reworded.
 - **F7**: `CONTRIBUTING.md` said nothing about the licence of a contribution, and FSL has no
   contribution clause of its own. Added a DCO (`Signed-off-by`, `git commit -s`) requirement
-  plus the one-paragraph inbound grant `specs/LICENSING.md`'s "simple CLA" already promises;
-  `ci.yml` gained a `dco` job that fails a pull request carrying an unsigned commit. The
-  `commit-msg` hook already accepted `Signed-off-by:` (it only forbids attribution trailers
-  naming Claude) - verified, not changed.
+  plus a one-paragraph inbound licensing grant ("simple CLA"); `ci.yml` gained a `dco` job
+  that fails a pull request carrying an unsigned commit. The `commit-msg` hook already
+  accepted `Signed-off-by:` (it only forbids attribution trailers naming Claude) - verified,
+  not changed.
 - **F8 (INFO)**: `78c808e` ("spell the licensor HouseDevinci everywhere") missed two lines
-  in `docs/RELEASING.md`: the release signing key's real name and the Central Portal
-  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; `git grep -n
-  -i -E 'house ?devinci' -- ':!docs/SECURITY-REVIEW*'` now shows only `HouseDevinci`, URLs,
+  in the release runbook: the release signing key's real name and the Central Portal
+  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; a repository-wide
+  case-insensitive search for the licensor's name now shows only `HouseDevinci`, URLs,
   packages and emails.
 - **F9**: `SampleEndToEndTest` read the wall clock, so its four tool calls could straddle
   the budget's tumbling one-minute window boundary and reset the counter mid-scenario -
@@ -179,15 +189,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ### Changed
 - **Licensing:** the free core switches from Apache-2.0 to the Functional Source License, Version
   1.1, ALv2 Future License (FSL-1.1-ALv2) - free to use, not as a base for a competing product,
-  converts to Apache-2.0 two years after each version's release. Decision by the maintainer,
-  2026-09-08; see `LICENSING.md` (portfolio-level) for the reasoning. `LICENSE` and `NOTICE`
+  converts to Apache-2.0 two years after each version's release. Decision by the maintainer, 2026-09-08; see `LICENSING.md` (portfolio-level) for the reasoning. `LICENSE` and `NOTICE`
   updated, `pom.xml` `<licenses>`, still embedded in the core and starter jars' `META-INF/`. The
   reactor's own modules are now excluded from the third-party licence scan by `groupId`
   (`excludedGroups`), not by licence name, since `com.housedevinci:agent-guard-core` no longer
   matches the third-party allowlist.
 
-### Fixed (the security review re-verification, `docs/SECURITY-REVIEW-feat-release-pipeline.md` "Re-verification (30aec6f)")
-Every MEDIUM, LOW and INFO from the re-verification pass closed (engineering, 2026-09-08). All 23
+### Fixed (security review, Re-verification (30aec6f))
+Every MEDIUM, LOW and INFO from the re-verification pass closed (2026-09-08). All 23
 probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
 - **N1 (merge blocker)**: `./mvnw verify` failed on a fresh clone - the licence denial
   `exec:exec` execution ran once, tree-wide, on `agent-guard-parent`, before any module had
@@ -200,7 +209,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   2.0", …) passed on their permissive half. Matching is now on a normalised
   (lowercased, non-alphanumeric-stripped) form against SPDX-id fragments and prose
   word-patterns; `tools/check-third-party-licences.sh --self-test` table-tests every
-  phrasing from the security review's repro.
+  phrasing from the reported repro.
 - **N3**: the dependency coordinate used for the allowlist was read from the *first*
   `(g:a:v - url)`-shaped group on the notices line, which a dependency's own `<name>` could
   forge; and a version containing `+` matched no coordinate and was silently skipped. Now
@@ -221,7 +230,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   slf4j simple-logger level directly via `MAVEN_OPTS` printed the identical clear-text
   secret dump without tripping it. Guard extended, and `MAVEN_ARGS`/`MAVEN_OPTS` pinned at
   workflow level so an externally supplied override cannot win.
-- **N7**: `docs/RELEASING.md`'s scratch-keyring sanity check set `trap ... EXIT` at the top
+- **N7**: the release runbook's scratch-keyring sanity check set `trap ... EXIT` at the top
   level of the pasted shell, which only fires when the terminal tab closes, not when a step
   in the block fails. Wrapped in a subshell so the trap fires at the closing parenthesis
   either way.
@@ -235,7 +244,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
 - **N11 (I1, never closed in the first pass)**: `pom.xml` still passed a duplicate
   `--pinentry-mode loopback` to `maven-gpg-plugin`, which supplies it itself, and credited
   the wrong reason in its comment. Removed.
-- **N12**: `docs/RELEASING.md`'s "How the pieces fit" table still listed the removed
+- **N12**: the release runbook's "How the pieces fit" table still listed the removed
   `skipPublishing` property. Corrected.
 
 ### Added (release pipeline, `feat/release-pipeline`)
@@ -251,7 +260,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   `maven.deploy.skip` / `maven.install.skip` / `maven.source.skip` / `maven.javadoc.skip` /
   `gpg.skip` / `skipPublishing` in its own POM keep it from being built for release at all.
 - **POM metadata Central requires**: `inceptionYear`, `organization`, `developers` (role address
-  `oss@housedevinci.com`, see QUESTIONS #21), `scm`, `issueManagement`, `licenses` with
+  `oss@housedevinci.com`), `scm`, `issueManagement`, `licenses` with
   `<distribution>repo</distribution>`. `url` and `scm` carry
   `child.*.inherit.append.path="false"` so the child POMs point at the repository rather than at
   a made-up `.../agent-guard-core` path.
@@ -268,14 +277,13 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   OIDC. Every action pinned by full commit SHA with the tag in a comment. A second job re-runs the
   sample from a clean clone with a fresh PostgreSQL and times it to its first HTTP response
   (RELEASE-PROCESS step 6).
-- **`docs/RELEASING.md`**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
+- **The release runbook**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
   with the exact export commands) and the per-release steps.
 
-### Fixed (the security review security review, `docs/SECURITY-REVIEW-feat-release-pipeline.md`)
+### Fixed (security review)
 Every MEDIUM, LOW and the one INFO that needed a code change, closed under the no-allowance
-rule (the maintainer, 2026-09-07). `tools/cipher-probe-release-pipeline.sh`: 12 of 13 probes FIXED;
-see QUESTIONS.md #27 for why the thirteenth, a static check of the vendored `mvnw` script's
-general behaviour, is not chased.
+rule (2026-09-07). `tools/cipher-probe-release-pipeline.sh`: 12 of 13 probes FIXED; the thirteenth, a
+static check of the vendored `mvnw` script's general behaviour, is not chased.
 - **M1/M2 licence gate**: the plugin's `includedLicenses` is an any-of permission check, so
   `Apache-2.0 OR GPL-3.0` slipped through on its permissive half. Added
   `tools/check-third-party-licences.sh`, an all-of denial pass over every
@@ -294,7 +302,7 @@ general behaviour, is not chased.
 - **M5 release gate**: any tag on any commit could start a release. Added
   `environment: release` (a release gate, enforceable once the repository is public),
   `git merge-base --is-ancestor` against `origin/main`, and a conditional `git verify-tag`.
-- **M6 key handling**: `docs/RELEASING.md` put the armoured private key on the macOS
+- **M6 key handling**: the release runbook put the armoured private key on the macOS
   clipboard and left a `mktemp` keyring on disk. Rewritten to export straight into
   `gh secret set` and to remove the sanity-check keyring with a `trap` on exit.
 - **M7 licence text**: `LICENSE` and `NOTICE` added at the repository root and copied into
@@ -310,7 +318,7 @@ general behaviour, is not chased.
   in the reactor and assembles the bundle regardless); removed, and a post-deploy step now
   asserts the bundle contains exactly the three published coordinates and never the sample.
 - **L6** added `SECURITY.md`.
-- **L7** documented as a release gate in `docs/RELEASING.md` (cannot be fixed by this branch:
+- **L7** documented as a release gate in the release runbook (cannot be fixed by this branch:
   the repository must go public first).
 - **I4** added a guard step that fails the job if a Maven debug flag (`-X`/`--debug`/`-e`)
   reaches `MAVEN_ARGS`/`MAVEN_OPTS` or either `mvnw` invocation in the job.
@@ -324,10 +332,9 @@ general behaviour, is not chased.
   `<force>true</force>` is the important part: the goal silently skips when
   `target/THIRD-PARTY-NOTICES.txt` is newer than the POM, so on every incremental local build the
   old gate checked nothing. Verified by narrowing the allowlist to `MIT` and watching the build
-  fail with "There are 2 forbidden licenses used". See QUESTIONS #22.
+  fail with "There are 2 forbidden licenses used".
 
-
-### Security (the security review final verdict on `05f209d`: K1 LOW closed)
+### Security (final verdict on `05f209d`: K1 LOW closed)
 - **K1 (LOW):** the J1 fix scoped the schema-predates guard to search_path *visibility*
   (`to_regclass('agentguard_audit')`, which resolves like a reference — the first schema on the search_path that
   holds the name, anywhere along the path), while the unqualified `CREATE TABLE IF NOT EXISTS agentguard_audit` in
@@ -347,7 +354,7 @@ general behaviour, is not chased.
   (`CipherProbeCleanVerdictJdbcTest.probe_a_pre_redesign_table_in_another_schema_blocks_a_fresh_install`) and both
   G1/G2 same-schema probes are unchanged and still green.
 
-### Security (the security review clean verdict on `f27c45e`: J1 LOW closed)
+### Security (clean verdict on `f27c45e`: J1 LOW closed)
 - **J1 (LOW):** the schema step's pre-redesign guard matched `information_schema.tables`/`.columns` with no
   `table_schema` filter, while every other statement in the step (`CREATE TABLE IF NOT EXISTS agentguard_audit`,
   the triggers, the anchor) is unqualified and therefore search_path-relative — a stale pre-redesign copy of
@@ -362,11 +369,10 @@ general behaviour, is not chased.
   inverted from asserting the refusal to `doesNotThrowAnyException()`; the G1/G2 same-schema pre-redesign probes
   (column absent in the current schema still refuses) are unchanged and still pass.
 
-### Security (the security review verification of keyed-from-birth, `722e9a5`: G1/G2 MEDIUM, H1/H2 LOW, H3/H4 INFO closed)
-the security review's verification pass on the keyed-from-birth design (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`,
-"Verification of keyed-from-birth") found two MEDIUM in the schema step and two LOW/two INFO in configuration and
-docs. the maintainers ruled: this branch is unreleased, so there is no upgrade path from a pre-redesign database — no
-backfill is added back.
+### Security (verification of keyed-from-birth, `722e9a5`: G1/G2 MEDIUM, H1/H2 LOW, H3/H4 INFO closed)
+The verification pass on the keyed-from-birth design found two MEDIUM in the schema step and two LOW/two INFO
+in configuration and docs. Decision: this branch is unreleased, so there is no upgrade path from a
+pre-redesign database — no backfill is added back.
 - **G1/G2 (MEDIUM):** the schema step's backfills of `agentguard_audit.key_id` and `agentguard_audit_anchor.keyed`
   were both refused by the tables' own triggers (an UPDATE against the append-only trigger; a plain UPDATE that
   does not advance the anchor's `row_count`), aborting startup on any database written by an earlier build of this
@@ -396,7 +402,7 @@ backfill is added back.
   / `.probe_unkeyed_true_with_a_secret_is_silently_ignored` now assert startup failure naming both properties,
   plus a new `confirms_a_retired_key_entry_matching_the_appending_secret_is_a_noop` regression test.
 
-### Security (the security review review of `feat/agent-guard-core`, all HIGH and MEDIUM fixed)
+### Security (review of `feat/agent-guard-core`, all HIGH and MEDIUM fixed)
 - H1: executors are registered per decision id and released after the run; approved calls execute inside a
   security context rebuilt from the stored principal (`ResumeContextProvider` SPI, `RunAsAuthentication`), with the
   parking caller's `ToolContext` / MCP exchange, never as the approver.
@@ -451,7 +457,7 @@ backfill is added back.
 - I6 two different policies for one tool name fail at startup.
 - I7 optional keyed chain (`agentguard.audit.hmac-secret`, >= 32 bytes, version `ag2h`).
 - I8 `STEPS` only with `CONVERSATION`, `TOOL_CALLS` only with `PRINCIPAL`/`TENANT` (fail fast);
-  `AgentGuardUsageAdvisor` records model tokens for `TOKENS` budgets (closes QUESTIONS #8).
+  `AgentGuardUsageAdvisor` records model tokens for `TOKENS` budgets.
 - I9 workflows: `permissions: contents: read`, actions pinned by SHA, wrapper `distributionSha256Sum`, container
   images pinned by digest.
 - R3 startup log names the wrapped manager and the hand-built-manager caveat.
@@ -503,12 +509,12 @@ backfill is added back.
   silently re-verified with plain SHA-256. C6's migration case (an unkeyed prefix, then keyed rows) is unaffected.
   **Scope (superseded, see below):** as first fixed, this closed only a *partial* downgrade — a genuinely keyed
   prefix followed by a downgraded tail — because no purely row-embedded version scheme can tell a whole-trail
-  downgrade to GENESIS apart from a deployment that has genuinely never used HMAC (QUESTIONS.md #20).
+  downgrade to GENESIS apart from a deployment that has genuinely never used HMAC.
 
-### Security (the maintainers's ruling on QUESTIONS.md #20: V2 closed in full with an external anchor)
+### Security (V2 closed in full with an external anchor)
 - `agentguard_audit_anchor` gets a `keyed_from_seq` column (nullable bigint): `null` until the sink appends the
   first row written under a keyed chain, then that row's sequence, set in the same transaction as the append.
-  The anchor's monotonic trigger (the security review R4) is extended so `keyed_from_seq` may go from `null` to a value exactly
+  The anchor's monotonic trigger (R4) is extended so `keyed_from_seq` may go from `null` to a value exactly
   once and never change or return to `null` — the same trigger that already stops a runtime-role attacker from
   resetting `head_hash`/`row_count` now also stops them erasing where the keyed chain legitimately began.
 - `AuditChainVerifier.verify` reads `keyed_from_seq` from the anchor: every row before it must be unkeyed and
@@ -517,7 +523,7 @@ backfill is added back.
   `keyed_from_seq` is `null` and no keyed row exists reports the new `Status.UNKEYED`, distinct from `INTACT`, so
   an operator who believes `agentguard.audit.hmac-secret` is protecting a trail can see that it is not yet. The
   previous in-trail `keyedSeen` forward-only rule is kept as a fallback for readers that do not implement
-  `AuditAnchor`. **This closes V2 in full**, including the security review's original whole-trail-downgrade repro (a keyed
+  `AuditAnchor`. **This closes V2 in full**, including the original whole-trail-downgrade repro (a keyed
   trail rewritten entirely to `ag1`/GENESIS and re-verified with the key): the attacker's row-level rewrite cannot
   touch the anchor's `keyed_from_seq`, which lives outside the rows they rewrite.
 - `InMemoryAuditSink` gets the same `keyed_from_seq` bookkeeping (and a seeding constructor,
@@ -549,11 +555,11 @@ backfill is added back.
   scenario) with `platform-thread-count`/`platform-thread-queue-size=200`, so the burst still passes without
   inflating the connection pool.
 
-### Security (the security review final verification + the maintainers's design change: keyed-from-birth; QUESTIONS.md #20)
-the security review's final-verification pass (`docs/SECURITY-REVIEW-feat-agent-guard-core.md`, `25da6af`) found the
-`keyed_from_seq` mechanism above had its own plumbing wrong (F1/F2 MEDIUM), its silent-fallback gap unclosed
-(F3 MEDIUM) and a rolling-restart hole (F4 LOW). Rather than iterate that mechanism again, the maintainers and the maintainer
-ruled the design itself, then amended it once more after the security review's design review.
+### Security (final verification + design change: keyed-from-birth)
+The final-verification pass (`25da6af`) found the `keyed_from_seq` mechanism above had its
+own plumbing wrong (F1/F2 MEDIUM), its silent-fallback gap unclosed (F3 MEDIUM) and a
+rolling-restart hole (F4 LOW). Rather than iterate that mechanism again, the maintainers
+ruled the design itself, then amended it once more after further design review.
 - **Breaking (a trail is keyed from row 1 or unkeyed forever):** no mixing, no later switch, no accommodating
   "enabling the key on a running installation" (the C6 goal, invalid by design now). `agentguard.audit.hmac-secret`
   is **required by default**; missing, startup fails naming the property and the remedy (`openssl rand -base64 32`).
@@ -564,13 +570,13 @@ ruled the design itself, then amended it once more after the security review's d
   `AgentGuardException` (`AG-AUDIT-001`), naming the property and the remedy — this is what actually closes F4
   (fail-closed, not detectable-after-the-fact).
 - `AuditChainVerifier.verify` checks every row's `chain_version` against what `keyed` says the whole trail must
-  be — a table-owning attacker's row-level rewrite (even a whole-trail downgrade, the security review's original V2 repro)
+  be — a table-owning attacker's row-level rewrite (even a whole-trail downgrade, the original V2 repro)
   cannot flip `keyed`, which lives outside the rows they rewrite. F1/F2 do not carry forward: both were about
   deriving a sequence position correctly, and the new design has no sequence position left to derive.
 - `agentguard_audit_anchor` gets `BEFORE DELETE`/`BEFORE TRUNCATE` triggers (F3(a), independent of the migration):
   nothing previously refused deleting the anchor row, which silently reopened the exact whole-trail-downgrade
   attack the anchor exists to close.
-- **Amendment, after the security review's design review:**
+- **Amendment, after further design review:**
   - **Key rotation from v1:** `agentguard.audit.hmac-key-id` (default `k1`) is baked into every row's hashed
     material (`agentguard_audit.key_id`, `'none'` for unkeyed rows). `AuditChainVerifier` holds a keyring
     (current key plus every `agentguard.audit.hmac-keys.<id>`); a row's `key_id` absent from the keyring is
@@ -581,7 +587,7 @@ ruled the design itself, then amended it once more after the security review's d
     one-time-warn guard are removed; the schema seed's `INSERT … ON CONFLICT DO NOTHING` no longer derives values
     from an existing, non-empty trail — it only ever matches a genuinely empty one.
   - **`NO_ANCHOR` unconditionally:** reported whenever the reader is not an `AuditAnchor`, or has no anchor row,
-    and the trail is not empty — keyed or unkeyed, not only when a key was given (widening the security review F3(a)).
+    and the trail is not empty — keyed or unkeyed, not only when a key was given (widening F3(a)).
   - **`Report` carries the trail's mode** (`anchored`, `keyed`, `keyIds`). `Status.INTACT_UNKEYED` replaces the
     deleted `Status.UNKEYED` (a different, now-impossible situation): an unkeyed trail's clean result never
     renders with the same word as a keyed trail's.
@@ -596,8 +602,8 @@ ruled the design itself, then amended it once more after the security review's d
   `AuditChainVerifier` gains a `Map<String, byte[]>`-keyring constructor/factory alongside the existing
   single-`AuditChain` ones (unchanged). `ErrorCodes.AUDIT_KEY_MISMATCH` (`AG-AUDIT-001`) and
   `ErrorCodes.AUDIT_ANCHOR_MISSING` (`AG-AUDIT-002`) are new.
-- **Test:** `CipherProbeAnchorKeyingJdbcTest` replaces the security review's F1–F4 probes in full (see
-  `docs/SECURITY-REVIEW-feat-agent-guard-core.md`, "Design change: keyed-from-birth", for the old-probe →
+- **Test:** `CipherProbeAnchorKeyingJdbcTest` replaces the prior F1–F4 probes in full (see
+  "Design change: keyed-from-birth", for the old-probe →
   new-probe map); `AuditChainVerifierTest`, `CipherProbeReverifyJdbcTest`, `CipherProbeFinalJdbcTest`,
   `AgentGuardAutoConfigurationTest` updated or extended alongside it.
 

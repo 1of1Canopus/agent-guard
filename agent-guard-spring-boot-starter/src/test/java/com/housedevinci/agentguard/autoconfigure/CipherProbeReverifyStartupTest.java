@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
 /**
- * the security review re-verification of {@code 6f026ff}. Asserts the behaviour as it is today (the vulnerable
- * one); engineering flips the assertion when the fix lands.
+ * Re-verification of {@code 6f026ff}. Asserts the behaviour as it is today (the vulnerable one);
+ * the fix flips the assertion when it lands.
  */
 class CipherProbeReverifyStartupTest {
 

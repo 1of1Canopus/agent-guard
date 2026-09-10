@@ -98,12 +98,12 @@ class AuditChainVerifierTest {
   }
 
   /**
-   * F3(a) of the final-verification round (QUESTIONS.md #20): a key given to the verifier when the
-   * reader has no anchor at all — not an {@link com.housedevinci.agentguard.domain.AuditAnchor}, or
-   * an {@code AuditAnchor} whose anchor row is missing — must never silently fall back to an
-   * unanchored check. Reported as the distinct {@code NO_ANCHOR}, never {@code INTACT}: an
-   * unanchored verification carries no attacker-unwritable record of whether this trail is really
-   * keyed, so the verifier refuses to guess.
+   * F3(a) of the final-verification round: a key given to the verifier when the reader has no
+   * anchor at all — not an {@link com.housedevinci.agentguard.domain.AuditAnchor}, or an {@code
+   * AuditAnchor} whose anchor row is missing — must never silently fall back to an unanchored
+   * check. Reported as the distinct {@code NO_ANCHOR}, never {@code INTACT}: an unanchored
+   * verification carries no attacker-unwritable record of whether this trail is really keyed, so
+   * the verifier refuses to guess.
    */
   @Test
   void a_key_given_with_no_anchor_reports_no_anchor_never_intact() {
@@ -134,10 +134,10 @@ class AuditChainVerifierTest {
   }
 
   /**
-   * Amendment (the maintainers, after the security review's design review): the Report carries the trail's mode, and an
-   * unkeyed trail's clean result must render with a word distinct from a keyed trail's — never
-   * plain {@code INTACT} — so an operator glancing at a status string cannot mistake "nothing is
-   * signing this trail" for "the signature checked out".
+   * Amendment (after further design review): the Report carries the trail's mode, and an unkeyed
+   * trail's clean result must render with a word distinct from a keyed trail's — never plain {@code
+   * INTACT} — so an operator glancing at a status string cannot mistake "nothing is signing this
+   * trail" for "the signature checked out".
    */
   @Test
   void an_unkeyed_trail_never_renders_plain_intact() {

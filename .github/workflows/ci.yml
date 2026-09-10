@@ -20,7 +20,7 @@ jobs:
   # pull_request, where github.event.pull_request.base.sha / .head.sha give an exact commit
   # range; a plain push to main (already reviewed, already merged) is not re-checked.
   #
-  # The GRANDFATHER_SHA exemption that used to live here (QUESTIONS.md #29/#33) grandfathered
+  # The GRANDFATHER_SHA exemption that used to live here grandfathered
   # PR #9's own pre-rule commits and was proven self-limiting: once PR #9 merged into main,
   # ddd250c became part of main's history, so every commit on every future branch is a
   # DESCENDANT of it, never an ancestor, and the exemption could never match a new commit

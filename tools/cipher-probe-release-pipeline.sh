@@ -3,12 +3,12 @@
 # Cipher probes for the Maven Central release pipeline (branch feat/release-pipeline).
 #
 # Every probe below asserts a WEAKNESS. Each one PASSES while its finding is open and must
-# FLIP TO FAILING once the matching finding in
-# docs/SECURITY-REVIEW-feat-release-pipeline.md is fixed. A probe that starts failing is
-# the signal that the item is closed; delete it in the same PR that fixes it.
+# FLIP TO FAILING once the matching finding from the security review is fixed. A probe
+# that starts failing is the signal that the item is closed; delete it in the same PR that
+# fixes it.
 #
 # The first block (M-, L-, I-ids) is the first pass, on 645397d: all FIXED at 30aec6f
-# except the one reclassified as not-a-finding, see QUESTIONS.md #27 and the note on
+# except the one reclassified as not-a-finding; see the note on
 # probe_release_job_can_exec_an_unverified_maven_distribution below, which replaces it.
 # The second block (N-ids) is the re-verification of 30aec6f: all WEAK there, all FIXED at
 # 1da507e.
@@ -79,10 +79,10 @@ probe_release_job_restores_maven_cache() {
   awk 'f && /^  [a-z][a-z-]*:$/ {exit} /^  publish:$/ {f=1} f' "$WF" | grep -q 'cache: maven'
 }
 
-# Re-verification of 30aec6f, ruling on QUESTIONS.md #27. The probe that used to sit here,
+# Re-verification of 30aec6f. The probe that used to sit here,
 # probe_mvnw_skips_checksum_for_existing_distribution, grepped the vendored `mvnw` for a
-# checksum re-check inside its "found existing MAVEN_HOME, exec it" branch. engineering refused to
-# flip it and engineering is right: no Maven Wrapper script re-checks an unpacked distribution
+# checksum re-check inside its "found existing MAVEN_HOME, exec it" branch. That probe was
+# refused: no Maven Wrapper script re-checks an unpacked distribution
 # (distributionSha256Sum is only ever compared against the freshly downloaded zip), and the
 # only marker that would satisfy the text match - a sidecar checksum file written at install
 # time - is writable by exactly the attacker M3 describes, in the same write that plants the
@@ -183,7 +183,7 @@ probe_licence_gate_accepts_a_dual_apache_or_gpl_dependency() {
   local work rc; work=$(mktemp -d)
   cat > "$work/syn.pom" <<'EOF'
 <project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
-<groupId>the security review.synthetic</groupId><artifactId>syn-dual</artifactId><version>1.0</version><packaging>jar</packaging>
+<groupId>example.synthetic</groupId><artifactId>syn-dual</artifactId><version>1.0</version><packaging>jar</packaging>
 <name>syn-dual</name><licenses>
   <license><name>Apache-2.0</name><url>http://example.invalid</url></license>
   <license><name>GPL-3.0</name><url>http://example.invalid</url></license>
@@ -195,7 +195,7 @@ EOF
     cd "$work/tree" || exit 1
     ./mvnw -B -q org.apache.maven.plugins:maven-install-plugin:3.1.4:install-file \
       -Dfile="$work/syn.jar" -DpomFile="$work/syn.pom" >/dev/null 2>&1 || exit 1
-    perl -0pi -e 's{<dependencies>}{<dependencies>\n    <dependency><groupId>the security review.synthetic</groupId><artifactId>syn-dual</artifactId><version>1.0</version></dependency>}' \
+    perl -0pi -e 's{<dependencies>}{<dependencies>\n    <dependency><groupId>example.synthetic</groupId><artifactId>syn-dual</artifactId><version>1.0</version></dependency>}' \
       agent-guard-core/pom.xml
     ./mvnw -B -pl agent-guard-core -am verify \
       -DskipTests -Dspotless.check.skip=true -Djacoco.skip=true -Denforcer.skip=true >/dev/null 2>&1
@@ -209,8 +209,8 @@ EOF
 # ===========================================================================
 # Re-verification of 30aec6f: probes for the findings the fixes introduced.
 # Every one of these asserts a weakness that is present at 30aec6f and must flip
-# to FIXED when the matching N-finding in
-# docs/SECURITY-REVIEW-feat-release-pipeline.md, "Re-verification (30aec6f)", is closed.
+# to FIXED when the matching N-finding from the security review's "Re-verification
+# (30aec6f)" pass is closed.
 # ===========================================================================
 
 # Runs tools/check-third-party-licences.sh against ONE synthetic dependency line, in a
@@ -417,17 +417,11 @@ probe_ancestry_check_skips_the_dispatch_path() {
 }
 
 # ---------------------------------------------------------------------------
-# N7 - docs/RELEASING.md's scratch-keyring sanity check sets `trap ... EXIT` at the top
-#      level of the shell the maintainer is told to paste it into. That trap fires when the SHELL
-#      exits, not when a step in the block fails: after a failure the directory holding the
-#      imported secret key is still there and GNUPGHOME is still exported over the rest of
-#      the session. The doc claims the opposite ("even if a step above it fails").
-#      Weak until the block runs in a subshell.
+# N7 - RETIRED. Verified FIXED (the release runbook's scratch-keyring sanity check now
+#      runs in a subshell, so its `trap ... EXIT` fires on any step failure, not only on
+#      shell exit). The release runbook that this probe read is maintained privately and
+#      is out of scope for this public probe suite; it is no longer checked here.
 # ---------------------------------------------------------------------------
-probe_releasing_scratch_keyring_trap_does_not_fire_on_failure() {
-  grep -q 'trap .*rm -rf "\$GNUPGHOME"' docs/RELEASING.md &&
-    ! grep -q '^($' docs/RELEASING.md
-}
 
 # ---------------------------------------------------------------------------
 # N11 - I1 from the first pass was never closed: the release profile still passes
@@ -634,7 +628,7 @@ probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url() {
   d="$(mktemp -d)"
   cat >"$d/THIRD-PARTY-NOTICES.txt" <<'EOF'
 Lists of 1 third-party dependencies.
-     (Apache-2.0) (GPL-3.0) evil-url (the security review.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))
+     (Apache-2.0) (GPL-3.0) evil-url (example.synth:evil-b:1.0 - http://x/(ch.qos.logback:logback-core:1.5.6 - y))
 EOF
   tools/check-third-party-licences.sh "$d" jar >/dev/null 2>&1
   rc=$?
@@ -645,8 +639,8 @@ EOF
 # ---------------------------------------------------------------------------
 # F3 - `VALIDSIG <fpr> ...` names the key that MADE the signature. On a key with a signing
 #      subkey (git tag -s uses it even when -u names the primary) that is the SUBKEY
-#      fingerprint; the PRIMARY fingerprint - the one docs/RELEASING.md tells the maintainer to put
-#      in RELEASE_SIGNING_KEY_ID, via `gpg --fingerprint` - is the LAST field of the same
+#      fingerprint; the PRIMARY fingerprint - the one the release runbook tells the
+#      maintainer to put in RELEASE_SIGNING_KEY_ID, via `gpg --fingerprint` - is the LAST field of the same
 #      line. Reproduced: with a primary+signing-subkey key the step's grep does not match and
 #      the release is refused with "is not signed by <fpr>".
 #      Weak while the grep anchors the fingerprint to field 1 instead of the primary-key field.
@@ -697,8 +691,6 @@ probe_pom_comment_still_calls_apache_the_licence_of_this_project() {
 #      was conventional (ASF SS5); FSL-1.1-ALv2 has no contribution clause at all, and this
 #      repository is about to be made public with a paid Pro edition beside it. Without a DCO
 #      or an explicit grant, a merged outside PR arrives with no licence to relicense it.
-#      It also points contributors at 15/specs and 14/AGENTS.md, paths that will not exist
-#      for anyone outside this machine.
 #      Weak while the file says nothing about the licence of a contribution.
 # ---------------------------------------------------------------------------
 probe_contributing_states_no_inbound_licence_terms() {
@@ -706,16 +698,12 @@ probe_contributing_states_no_inbound_licence_terms() {
 }
 
 # ---------------------------------------------------------------------------
-# F8 - 78c808e spells the licensor "HouseDevinci" in LICENSE, NOTICE and the POM, and its
-#      subject says "everywhere". Two places still disagree: docs/RELEASING.md line 71 tells
-#      the maintainer to create the release signing key with real name "House Devinci", so the UID
-#      on the key that signs every release tag and every .asc will not match the licensor
-#      named in LICENSE; and line 31 records the Central Portal namespace organisation as
-#      "Housedevinci". Weak while either survives.
+# F8 - RETIRED. Verified FIXED (the release runbook's release-signing-key instructions
+#      and Central Portal namespace organisation both now spell the licensor
+#      "HouseDevinci", matching LICENSE/NOTICE/the POM). The release runbook that this
+#      probe read is maintained privately and is out of scope for this public probe
+#      suite; it is no longer checked here.
 # ---------------------------------------------------------------------------
-probe_licensor_spelling_still_disagrees_in_releasing_md() {
-  grep -qE 'House Devinci|Housedevinci' docs/RELEASING.md
-}
 
 # ---------------------------------------------------------------------------
 # F9 - SampleEndToEndTest asserts that the 4th tool call in the minute is BUDGET_EXCEEDED,
@@ -750,7 +738,7 @@ probe_denial_pass_coordinate_can_be_forged_by_a_trailing_group() {
   d="$(mktemp -d)"
   cat >"$d/THIRD-PARTY-NOTICES.txt" <<'EOF'
 Lists of 1 third-party dependencies.
-     (GPL-3.0) evil-trailing (the security review.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)
+     (GPL-3.0) evil-trailing (example.synth:evil-c:1.0 - http://x) (ch.qos.logback:logback-core:1.5.6 - http://y)
 EOF
   tools/check-third-party-licences.sh "$d" jar >/dev/null 2>&1
   rc=$?
@@ -909,7 +897,6 @@ probe probe_tag_signature_check_is_optional_and_unbound      "N5 tag signature c
 probe probe_debug_guard_misses_the_slf4j_log_level           "N6 --errors and slf4j debug walk past the guard"     probe_debug_guard_misses_the_slf4j_log_level
 probe probe_debug_guard_refuses_its_own_maven_opts_pin       "N6 the guard refuses the workflow's own MAVEN_OPTS"  probe_debug_guard_refuses_its_own_maven_opts_pin
 probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispatch skips the ancestry check"       probe_ancestry_check_skips_the_dispatch_path
-probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
 probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
 probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
@@ -922,7 +909,6 @@ probe probe_denial_list_denies_simplified_bsd                "F4 bare mpl denies
 probe probe_denial_list_misses_eupl_1_1_and_bare_sspl        "F5 EUPL 1.1 / SSPL / OSL-3.0 are allowed"            probe_denial_list_misses_eupl_1_1_bare_sspl_and_osl
 probe probe_pom_comment_calls_apache_the_project_licence     "F6 pom.xml still claims Apache-2.0 for us"           probe_pom_comment_still_calls_apache_the_licence_of_this_project
 probe probe_contributing_has_no_inbound_licence_terms        "F7 no inbound licence terms for contributions"       probe_contributing_states_no_inbound_licence_terms
-probe probe_licensor_spelling_disagrees_in_releasing_md      "F8 RELEASING.md still says House Devinci"            probe_licensor_spelling_still_disagrees_in_releasing_md
 probe probe_sample_e2e_depends_on_the_wall_clock             "F9 the sample e2e test has no clock of its own"      probe_sample_e2e_depends_on_the_wall_clock
 
 echo

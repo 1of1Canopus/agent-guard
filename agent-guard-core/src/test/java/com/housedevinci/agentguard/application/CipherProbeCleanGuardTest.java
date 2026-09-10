@@ -113,11 +113,11 @@ class CipherProbeCleanGuardTest {
   }
 
   /**
-   * C6 (superseded by the keyed-from-birth design change, QUESTIONS.md #20): the original probe
-   * modelled "turning on {@code agentguard.audit.hmac-secret} on a running installation" and
-   * required the existing unkeyed trail to keep verifying INTACT. Under keyed-from-birth this is no
-   * longer the goal — a trail is keyed from row 1 or unkeyed forever, and switching is refused, not
-   * accommodated. The replacement lives in {@code CipherProbeAnchorKeyingJdbcTest
+   * C6 (superseded by the keyed-from-birth design change): the original probe modelled "turning on
+   * {@code agentguard.audit.hmac-secret} on a running installation" and required the existing
+   * unkeyed trail to keep verifying INTACT. Under keyed-from-birth this is no longer the goal — a
+   * trail is keyed from row 1 or unkeyed forever, and switching is refused, not accommodated. The
+   * replacement lives in {@code CipherProbeAnchorKeyingJdbcTest
    * .a_keyed_instance_is_refused_on_a_trail_that_started_unkeyed}: restarting an installation with
    * the secret newly set fails at startup, naming {@code agentguard.audit.hmac-secret} and the
    * remedy (start a new trail).

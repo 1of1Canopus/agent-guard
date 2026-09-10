@@ -21,10 +21,10 @@ import redis.clients.jedis.UnifiedJedis;
  * Redis counters through Jedis: {@code INCRBY} plus a {@code PEXPIRE} on first write, in one Lua
  * script so the pair is atomic. On JDK 21-23 every Jedis call can run on a bounded pool of daemon
  * platform threads ({@link #onPlatformThreads}), so a virtual-thread caller never reaches the
- * connection pool's growth lock whatever happens to the connections (the security review R6). The pool's queue
- * is bounded and a timed-out call is cancelled and removed from it (the security review C7): while Redis is
- * slow, calls fail fast instead of piling up on an unbounded queue that outlives the outage.
- * Closing the store shuts the pool down (the security review C8).
+ * connection pool's growth lock whatever happens to the connections (R6). The pool's queue is
+ * bounded and a timed-out call is cancelled and removed from it (C7): while Redis is slow, calls
+ * fail fast instead of piling up on an unbounded queue that outlives the outage. Closing the store
+ * shuts the pool down (C8).
  */
 public final class JedisBudgetStore implements BudgetStore, AutoCloseable {
 
@@ -54,11 +54,10 @@ public final class JedisBudgetStore implements BudgetStore, AutoCloseable {
   }
 
   /**
-   * Same, with the worker pool and its bounded work queue (the security review C7) sized independently (V5):
-   * {@code threads} need not equal the Jedis connection pool's own {@code max-total} — a small,
-   * contended connection pool and a large burst of concurrent virtual-thread callers are two
-   * different numbers, and workers simply block on the connection pool the way a virtual thread
-   * never should.
+   * Same, with the worker pool and its bounded work queue (C7) sized independently (V5): {@code
+   * threads} need not equal the Jedis connection pool's own {@code max-total} — a small, contended
+   * connection pool and a large burst of concurrent virtual-thread callers are two different
+   * numbers, and workers simply block on the connection pool the way a virtual thread never should.
    */
   public static JedisBudgetStore onPlatformThreads(
       UnifiedJedis jedis, int threads, int queueSize, Duration maxWait) {
@@ -84,7 +83,7 @@ public final class JedisBudgetStore implements BudgetStore, AutoCloseable {
     return executor != null;
   }
 
-  /** Shuts the platform-thread pool down, if this store has one (the security review C8). No-op otherwise. */
+  /** Shuts the platform-thread pool down, if this store has one (C8). No-op otherwise. */
   @Override
   public void close() {
     if (executor != null) {

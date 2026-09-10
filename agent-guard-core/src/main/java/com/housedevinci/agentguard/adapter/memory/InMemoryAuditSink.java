@@ -11,14 +11,13 @@ import java.util.List;
 /**
  * Append-only, hash-chained, in memory. For tests and development. A trail is keyed from row 1 or
  * unkeyed forever, matching the sink's own {@link AuditChain} for the whole lifetime of the
- * instance (design change, QUESTIONS.md #20: "keyed-from-birth") — there is no persisted state to
- * restart against, so this store has nothing analogous to {@code JdbcAuditSink}'s startup/append
- * key-mismatch check.
+ * instance (design change: "keyed-from-birth") — there is no persisted state to restart against, so
+ * this store has nothing analogous to {@code JdbcAuditSink}'s startup/append key-mismatch check.
  *
- * <p><b>No external anchor (the security review H3):</b> {@link #anchor()} derives {@code headHash}/{@code
- * rowCount} from the last element of {@link #events} and {@code keyed} from this instance's own
- * {@link AuditChain}, i.e. from the very list it claims to anchor. Unlike {@code JdbcAuditSink},
- * whose anchor is a separate, append-only-guarded row, this store cannot detect its own tail being
+ * <p><b>No external anchor (H3):</b> {@link #anchor()} derives {@code headHash}/{@code rowCount}
+ * from the last element of {@link #events} and {@code keyed} from this instance's own {@link
+ * AuditChain}, i.e. from the very list it claims to anchor. Unlike {@code JdbcAuditSink}, whose
+ * anchor is a separate, append-only-guarded row, this store cannot detect its own tail being
  * trimmed: a trimmed trail still verifies {@code INTACT}/{@code INTACT_UNKEYED} with {@code
  * anchored() == true}. Not a substitute for the JDBC store in any deployment where the audit trail
  * matters.

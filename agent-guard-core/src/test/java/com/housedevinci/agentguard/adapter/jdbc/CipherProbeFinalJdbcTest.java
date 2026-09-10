@@ -68,11 +68,11 @@ class CipherProbeFinalJdbcTest {
   }
 
   /**
-   * Amendment note (the maintainers, after the security review's design review): this probe used to delete the anchor row
-   * on a non-empty trail to model "a pre-anchor installation" and expect the schema step and the
-   * sink to re-anchor it consistently under concurrent load. Under keyed-from-birth that premise no
-   * longer holds — a missing anchor on a non-empty trail is refused (AG-AUDIT-002), not re-derived
-   * — so this probe now keeps the anchor intact throughout and exercises the still-valid part: many
+   * Amendment note (after further design review): this probe used to delete the anchor row on a
+   * non-empty trail to model "a pre-anchor installation" and expect the schema step and the sink to
+   * re-anchor it consistently under concurrent load. Under keyed-from-birth that premise no longer
+   * holds — a missing anchor on a non-empty trail is refused (AG-AUDIT-002), not re-derived — so
+   * this probe now keeps the anchor intact throughout and exercises the still-valid part: many
    * instances starting (schema step) and appending concurrently on an already-anchored trail never
    * abort each other (R11).
    */

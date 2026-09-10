@@ -27,13 +27,13 @@ import javax.sql.DataSource;
  * advisory lock so the chain is linear even under concurrent writers; the table's trigger refuses
  * UPDATE and DELETE.
  *
- * <p>A trail is keyed from row 1 or unkeyed forever (design change, QUESTIONS.md #20:
- * "keyed-from-birth"): the anchor's {@code keyed} column records which, once, at the first append,
- * and is immutable afterwards. Every append after that — from this instance or any other — must
- * agree with it, or is refused with {@link ErrorCodes#AUDIT_KEY_MISMATCH}. A missing anchor on a
- * trail that already has rows is never re-derived by guessing from the trail head: it is refused
- * with {@link ErrorCodes#AUDIT_ANCHOR_MISSING}, both at construction and on every append, because a
- * guessed {@code keyed} value is exactly the thing the anchor exists to make unguessable.
+ * <p>A trail is keyed from row 1 or unkeyed forever (design: "keyed-from-birth"): the anchor's
+ * {@code keyed} column records which, once, at the first append, and is immutable afterwards. Every
+ * append after that — from this instance or any other — must agree with it, or is refused with
+ * {@link ErrorCodes#AUDIT_KEY_MISMATCH}. A missing anchor on a trail that already has rows is never
+ * re-derived by guessing from the trail head: it is refused with {@link
+ * ErrorCodes#AUDIT_ANCHOR_MISSING}, both at construction and on every append, because a guessed
+ * {@code keyed} value is exactly the thing the anchor exists to make unguessable.
  */
 public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor {
 

@@ -122,7 +122,7 @@ public final class AuditChainVerifier {
   }
 
   public Report verify() {
-    // Keyed-from-birth (QUESTIONS.md #20): a trail is keyed from row 1 or unkeyed forever, recorded
+    // Keyed-from-birth: a trail is keyed from row 1 or unkeyed forever, recorded
     // once on the anchor's `keyed` flag and immutable afterwards (the anchor's monotonic trigger).
     // A reader with no anchor available is never rendered INTACT/INTACT_UNKEYED, keyed or not: the
     // anchor is the only attacker-unwritable record of what every row's chain_version/key_id ought

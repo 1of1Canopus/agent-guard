@@ -191,10 +191,10 @@ class AgentGuardAutoConfigurationTest {
   }
 
   /**
-   * Design change (QUESTIONS.md #20, "keyed-from-birth"): {@code agentguard.audit.hmac-secret} is
-   * required by default. Missing, and without the explicit {@code agentguard.audit.unkeyed=true}
-   * opt-out, startup fails naming the property and the remedy (generate a secret with {@code
-   * openssl rand -base64 32}).
+   * Design change ("keyed-from-birth"): {@code agentguard.audit.hmac-secret} is required by
+   * default. Missing, and without the explicit {@code agentguard.audit.unkeyed=true} opt-out,
+   * startup fails naming the property and the remedy (generate a secret with {@code openssl rand
+   * -base64 32}).
    */
   @Test
   void missing_hmac_secret_fails_startup_naming_the_property_and_the_remedy() {

@@ -53,7 +53,7 @@ class SchemaStepIntegrationTest {
         new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(AgentGuardAutoConfiguration.class))
             // no destroy method: JdbcAuditSink's constructor now opens a connection to check the
-            // trail's keyed state at startup (keyed-from-birth, QUESTIONS.md #20), so this shared
+            // trail's keyed state at startup (keyed-from-birth), so this shared
             // DataSource must survive the first context's shutdown for the second "same DataSource"
             // context below — Spring's default inferred destroy method (close/shutdown) would
             // otherwise close the pool when the first context closes.

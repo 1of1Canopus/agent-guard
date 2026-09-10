@@ -4,6 +4,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Changed
+- Internal working documents (`SPEC.md`, `STATUS.md`, `QUESTIONS.md`, the security review
+  write-ups, design plans, and the release runbook) moved out of this repository to a
+  private location; they named an internal review process that has no reason to be public.
+  `SECURITY-NOTES.md` and this changelog stay, with that narration scrubbed and every
+  finding id and technical detail kept. Two probes in
+  `tools/cipher-probe-release-pipeline.sh` (N7, F8) that checked the exact wording of the
+  now-private release runbook were retired as out of scope for a probe suite that ships in
+  a public repository; both findings were already verified fixed before retirement.
+
 ### Fixed
 - **N15 (LOW)**: `scripts/verify-reproducible.sh` built both comparison builds with
   `-DskipTests`, so it could never see a test-only byte reach a jar the way `clean deploy
@@ -147,7 +157,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   fingerprint `RELEASE_SIGNING_KEY_ID` is configured with is always the *last* field, for
   both key shapes. Verified with two throwaway keys (primary-only, primary+signing-subkey):
   the new regex matches the primary fingerprint in both cases; the old one only matched the
-  primary-only case. `docs/RELEASING.md` gains one clarifying paragraph.
+  primary-only case. The release runbook gains one clarifying paragraph.
 - **F4**: the deny pattern `mpl` was a bare substring, matching "si**mpl**ified",
   "exa**mpl**e", "te**mpl**ate": `Simplified BSD License` and any `example.com` licence URL
   were denied even though the plugin's own allowlist accepts them. Dropped; `mpl11`/`mpl20`
@@ -160,14 +170,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   of this project", stale since the FSL-1.1-ALv2 switch. Reworded.
 - **F7**: `CONTRIBUTING.md` said nothing about the licence of a contribution, and FSL has no
   contribution clause of its own. Added a DCO (`Signed-off-by`, `git commit -s`) requirement
-  plus the one-paragraph inbound grant `specs/LICENSING.md`'s "simple CLA" already promises;
-  `ci.yml` gained a `dco` job that fails a pull request carrying an unsigned commit. The
-  `commit-msg` hook already accepted `Signed-off-by:` (it only forbids attribution trailers
-  naming Claude) - verified, not changed.
+  plus a one-paragraph inbound licensing grant ("simple CLA"); `ci.yml` gained a `dco` job
+  that fails a pull request carrying an unsigned commit. The `commit-msg` hook already
+  accepted `Signed-off-by:` (it only forbids attribution trailers naming Claude) - verified,
+  not changed.
 - **F8 (INFO)**: `78c808e` ("spell the licensor HouseDevinci everywhere") missed two lines
-  in `docs/RELEASING.md`: the release signing key's real name and the Central Portal
-  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; `git grep -n
-  -i -E 'house ?devinci' -- ':!docs/SECURITY-REVIEW*'` now shows only `HouseDevinci`, URLs,
+  in the release runbook: the release signing key's real name and the Central Portal
+  namespace organisation, both still `House Devinci`/`Housedevinci`. Corrected; a repository-wide
+  case-insensitive search for the licensor's name now shows only `HouseDevinci`, URLs,
   packages and emails.
 - **F9**: `SampleEndToEndTest` read the wall clock, so its four tool calls could straddle
   the budget's tumbling one-minute window boundary and reset the counter mid-scenario -
@@ -220,7 +230,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   slf4j simple-logger level directly via `MAVEN_OPTS` printed the identical clear-text
   secret dump without tripping it. Guard extended, and `MAVEN_ARGS`/`MAVEN_OPTS` pinned at
   workflow level so an externally supplied override cannot win.
-- **N7**: `docs/RELEASING.md`'s scratch-keyring sanity check set `trap ... EXIT` at the top
+- **N7**: the release runbook's scratch-keyring sanity check set `trap ... EXIT` at the top
   level of the pasted shell, which only fires when the terminal tab closes, not when a step
   in the block fails. Wrapped in a subshell so the trap fires at the closing parenthesis
   either way.
@@ -234,7 +244,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
 - **N11 (I1, never closed in the first pass)**: `pom.xml` still passed a duplicate
   `--pinentry-mode loopback` to `maven-gpg-plugin`, which supplies it itself, and credited
   the wrong reason in its comment. Removed.
-- **N12**: `docs/RELEASING.md`'s "How the pieces fit" table still listed the removed
+- **N12**: the release runbook's "How the pieces fit" table still listed the removed
   `skipPublishing` property. Corrected.
 
 ### Added (release pipeline, `feat/release-pipeline`)
@@ -267,7 +277,7 @@ probes in `tools/cipher-probe-release-pipeline.sh` FIXED, script exits 0.
   OIDC. Every action pinned by full commit SHA with the tag in a comment. A second job re-runs the
   sample from a clean clone with a fresh PostgreSQL and times it to its first HTTP response
   (RELEASE-PROCESS step 6).
-- **`docs/RELEASING.md`**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
+- **The release runbook**: the one-off founder steps (namespace, GPG key, the four GitHub secrets,
   with the exact export commands) and the per-release steps.
 
 ### Fixed (security review)
@@ -292,7 +302,7 @@ static check of the vendored `mvnw` script's general behaviour, is not chased.
 - **M5 release gate**: any tag on any commit could start a release. Added
   `environment: release` (a release gate, enforceable once the repository is public),
   `git merge-base --is-ancestor` against `origin/main`, and a conditional `git verify-tag`.
-- **M6 key handling**: `docs/RELEASING.md` put the armoured private key on the macOS
+- **M6 key handling**: the release runbook put the armoured private key on the macOS
   clipboard and left a `mktemp` keyring on disk. Rewritten to export straight into
   `gh secret set` and to remove the sanity-check keyring with a `trap` on exit.
 - **M7 licence text**: `LICENSE` and `NOTICE` added at the repository root and copied into
@@ -308,7 +318,7 @@ static check of the vendored `mvnw` script's general behaviour, is not chased.
   in the reactor and assembles the bundle regardless); removed, and a post-deploy step now
   asserts the bundle contains exactly the three published coordinates and never the sample.
 - **L6** added `SECURITY.md`.
-- **L7** documented as a release gate in `docs/RELEASING.md` (cannot be fixed by this branch:
+- **L7** documented as a release gate in the release runbook (cannot be fixed by this branch:
   the repository must go public first).
 - **I4** added a guard step that fails the job if a Maven debug flag (`-X`/`--debug`/`-e`)
   reaches `MAVEN_ARGS`/`MAVEN_OPTS` or either `mvnw` invocation in the job.
@@ -322,7 +332,7 @@ static check of the vendored `mvnw` script's general behaviour, is not chased.
   `<force>true</force>` is the important part: the goal silently skips when
   `target/THIRD-PARTY-NOTICES.txt` is newer than the POM, so on every incremental local build the
   old gate checked nothing. Verified by narrowing the allowlist to `MIT` and watching the build
-  fail with "There are 2 forbidden licenses used". 
+  fail with "There are 2 forbidden licenses used".
 
 ### Security (final verdict on `05f209d`: K1 LOW closed)
 - **K1 (LOW):** the J1 fix scoped the schema-predates guard to search_path *visibility*
@@ -499,7 +509,7 @@ pre-redesign database — no backfill is added back.
   silently re-verified with plain SHA-256. C6's migration case (an unkeyed prefix, then keyed rows) is unaffected.
   **Scope (superseded, see below):** as first fixed, this closed only a *partial* downgrade — a genuinely keyed
   prefix followed by a downgraded tail — because no purely row-embedded version scheme can tell a whole-trail
-  downgrade to GENESIS apart from a deployment that has genuinely never used HMAC .
+  downgrade to GENESIS apart from a deployment that has genuinely never used HMAC.
 
 ### Security (V2 closed in full with an external anchor)
 - `agentguard_audit_anchor` gets a `keyed_from_seq` column (nullable bigint): `null` until the sink appends the
@@ -546,9 +556,9 @@ pre-redesign database — no backfill is added back.
   inflating the connection pool.
 
 ### Security (final verification + design change: keyed-from-birth)
-The final-verification pass (`25da6af`) found the
-`keyed_from_seq` mechanism above had its own plumbing wrong (F1/F2 MEDIUM), its silent-fallback gap unclosed
-(F3 MEDIUM) and a rolling-restart hole (F4 LOW). Rather than iterate that mechanism again, the maintainers
+The final-verification pass (`25da6af`) found the `keyed_from_seq` mechanism above had its
+own plumbing wrong (F1/F2 MEDIUM), its silent-fallback gap unclosed (F3 MEDIUM) and a
+rolling-restart hole (F4 LOW). Rather than iterate that mechanism again, the maintainers
 ruled the design itself, then amended it once more after further design review.
 - **Breaking (a trail is keyed from row 1 or unkeyed forever):** no mixing, no later switch, no accommodating
   "enabling the key on a running installation" (the C6 goal, invalid by design now). `agentguard.audit.hmac-secret`

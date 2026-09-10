@@ -98,12 +98,12 @@ class AuditChainVerifierTest {
   }
 
   /**
-   * F3(a) of the final-verification round (QUESTIONS.md #20): a key given to the verifier when the
-   * reader has no anchor at all — not an {@link com.housedevinci.agentguard.domain.AuditAnchor}, or
-   * an {@code AuditAnchor} whose anchor row is missing — must never silently fall back to an
-   * unanchored check. Reported as the distinct {@code NO_ANCHOR}, never {@code INTACT}: an
-   * unanchored verification carries no attacker-unwritable record of whether this trail is really
-   * keyed, so the verifier refuses to guess.
+   * F3(a) of the final-verification round: a key given to the verifier when the reader has no
+   * anchor at all — not an {@link com.housedevinci.agentguard.domain.AuditAnchor}, or an {@code
+   * AuditAnchor} whose anchor row is missing — must never silently fall back to an unanchored
+   * check. Reported as the distinct {@code NO_ANCHOR}, never {@code INTACT}: an unanchored
+   * verification carries no attacker-unwritable record of whether this trail is really keyed, so
+   * the verifier refuses to guess.
    */
   @Test
   void a_key_given_with_no_anchor_reports_no_anchor_never_intact() {

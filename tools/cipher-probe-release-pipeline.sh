@@ -691,8 +691,6 @@ probe_pom_comment_still_calls_apache_the_licence_of_this_project() {
 #      was conventional (ASF SS5); FSL-1.1-ALv2 has no contribution clause at all, and this
 #      repository is about to be made public with a paid Pro edition beside it. Without a DCO
 #      or an explicit grant, a merged outside PR arrives with no licence to relicense it.
-#      It also points contributors at 15/specs and 14/AGENTS.md, paths that will not exist
-#      for anyone outside this machine.
 #      Weak while the file says nothing about the licence of a contribution.
 # ---------------------------------------------------------------------------
 probe_contributing_states_no_inbound_licence_terms() {

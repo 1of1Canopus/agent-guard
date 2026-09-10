@@ -441,7 +441,7 @@ jobs:
 
           kill "$app" || true
 
-          # AGENTS.md asks for under two minutes on a developer machine. A GitHub runner is
+          # The target is under two minutes on a developer machine. A GitHub runner is
           # slower and starts a PostgreSQL container from scratch, so the gate here is three
           # minutes; the number above is the one that goes in the release notes.
           if [ "$elapsed" -gt 180 ]; then

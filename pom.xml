@@ -240,8 +240,8 @@
                 package - get archived straight into the sources jar. The main jar never sees
                 this (maven-resources-plugin already finished copying declared <resources> into
                 target/classes at process-resources, long before this execution runs, and
-                QUESTIONS.md #26 deliberately keeps THIRD-PARTY-NOTICES.txt out of both jars for
-                now), but the sources jar does, and surefire reports are never byte-identical
+                THIRD-PARTY-NOTICES.txt is deliberately kept out of both jars for now,
+                deferred to a later release), but the sources jar does, and surefire reports are never byte-identical
                 run to run. scripts/verify-reproducible.sh always runs with -DskipTests, so its
                 two builds never see this - they matched (no surefire-reports/ dir to catch).
                 A real `clean deploy -Prelease` does run tests, so its sources jars differed
@@ -300,7 +300,7 @@
                   EPL-2.0       Jakarta APIs and Logback. Weak copyleft, file-level, and it does
                                 not reach our code because we only link against them.
                   Public Domain org.json and HdrHistogram's CC0 half. No obligations at all.
-                Everything else, GPL/LGPL/AGPL/MPL/CDDL/SSPL included, fails. See QUESTIONS.md #22.
+                Everything else, GPL/LGPL/AGPL/MPL/CDDL/SSPL included, fails the build.
               -->
               <force>true</force>
               <includedLicenses>Apache-2.0|MIT|BSD|EPL-2.0|Public Domain</includedLicenses>

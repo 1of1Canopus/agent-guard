@@ -1,6 +1,6 @@
 # SECURITY-NOTES.md — Agent Guard (module B), free core
 
-Skeleton for the adversarial pass required by `specs/RELEASE-PROCESS.md`. Each threat from the SPEC, what the code
+Skeleton for the adversarial security review required before every public release. Each threat from the module spec, what the code
 does about it, and what still needs a reviewer's eye.
 
 ## Threat 1 — Prompt-injected tool calls

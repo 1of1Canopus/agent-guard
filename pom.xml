@@ -229,6 +229,31 @@
             <configuration>
               <thirdPartyFilename>THIRD-PARTY-NOTICES.txt</thirdPartyFilename>
               <outputDirectory>${project.build.directory}</outputDirectory>
+              <!--
+                Reproducibility: addOutputDirectoryAsResourceDir defaults to true, which makes
+                this goal register outputDirectory (target/) as a project resource with
+                includes "**/*.txt" - live, at package phase, on the in-memory MavenProject.
+                maven-source-plugin's jar-no-fork execution is bound to the same phase and
+                reads project.getResources() at the moment IT runs, so whichever *.txt files
+                happen to exist under target/ at that instant - THIRD-PARTY-NOTICES.txt every
+                time, but also target/surefire-reports/*.txt whenever tests actually ran before
+                package - get archived straight into the sources jar. The main jar never sees
+                this (maven-resources-plugin already finished copying declared <resources> into
+                target/classes at process-resources, long before this execution runs, and
+                QUESTIONS.md #26 deliberately keeps THIRD-PARTY-NOTICES.txt out of both jars for
+                now), but the sources jar does, and surefire reports are never byte-identical
+                run to run. scripts/verify-reproducible.sh always runs with -DskipTests, so its
+                two builds never see this - they matched (no surefire-reports/ dir to catch).
+                A real `clean deploy -Prelease` does run tests, so its sources jars differed
+                from what the reproducibility check recorded and had checksummed:
+                agent-guard-core-0.1.0-sources.jar and
+                agent-guard-spring-boot-starter-0.1.0-sources.jar failed "Confirm the deployed
+                jars match the reproducibility check" (run 34419387032). Set to false: this
+                goal already writes THIRD-PARTY-NOTICES.txt to outputDirectory as a plain file
+                for check-third-party-licences.sh and the workflow artifact upload to read; it
+                does not also need to be, and must not be, an implicit project resource.
+              -->
+              <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
               <!-- Runtime scope only: compile + runtime. test/provided/system are not shipped. -->
               <excludedScopes>test,provided,system</excludedScopes>
               <!--

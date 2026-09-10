@@ -296,6 +296,48 @@ probe_verify_fails_on_a_clean_checkout() {
 }
 
 # ---------------------------------------------------------------------------
+# Post-release finding (2026-09-10, run 34419387032) - scripts/verify-reproducible.sh always
+# builds with -DskipTests, so its two builds never produce target/surefire-reports/. license-
+# maven-plugin's add-third-party execution (addOutputDirectoryAsResourceDir defaults to true,
+# includes "**/*.txt") registers outputDirectory (target/) as a live project resource at
+# package phase; maven-source-plugin's jar-no-fork execution, bound to the same phase, reads
+# project.getResources() at the moment IT runs and archives every target/*.txt it finds into
+# the sources jar - THIRD-PARTY-NOTICES.txt deterministically, but also
+# target/surefire-reports/*.txt whenever tests actually ran before package, which is never
+# byte-identical run to run. A real `clean deploy -Prelease` (what the release job runs) DOES
+# run tests, so its sources jars differed from what verify-reproducible.sh had already
+# checksummed for the same tree: agent-guard-core-0.1.0-sources.jar and
+# agent-guard-spring-boot-starter-0.1.0-sources.jar both failed "Confirm the deployed jars
+# match the reproducibility check", while the main jars, javadoc jars and POMs matched.
+#
+# Behavioural probe: clones HEAD, runs the real scripts/verify-reproducible.sh to get its
+# recorded sha256 for each sources jar, then runs a real `clean verify -Prelease
+# -Dgpg.skip=true` (tests running, same outputTimestamp) and compares the sources jars it
+# produces against those checksums. Weak while either sources jar differs.
+# ---------------------------------------------------------------------------
+probe_sources_jar_differs_from_a_build_that_actually_ran_tests() {
+  [ "${CIPHER_PROBE_MAVEN:-0}" = "1" ] || { echo "        (skipped: set CIPHER_PROBE_MAVEN=1)" >&2; return 0; }
+  local work rc
+  work=$(mktemp -d)
+  git clone -q --no-hardlinks . "$work/tree" || { rm -rf "$work"; return 1; }
+  (
+    cd "$work/tree" &&
+    ts="$(scripts/git-commit-timestamp.sh)" &&
+    REPRODUCIBLE_SHA_FILE="$PWD/repro-sha.txt" scripts/verify-reproducible.sh &&
+    ./mvnw -B -q clean verify -Prelease -Dgpg.skip=true -Dproject.build.outputTimestamp="$ts" &&
+    for jar in agent-guard-core/target/*-sources.jar agent-guard-spring-boot-starter/target/*-sources.jar; do
+      name="$(basename "$jar")" &&
+      actual="$(shasum -a 256 "$jar" | cut -d' ' -f1)" &&
+      expected="$(awk -v n="$name" '$2==n{print $1}' repro-sha.txt)" &&
+      [ -n "$expected" ] && [ "$actual" = "$expected" ] || exit 1
+    done
+  ) >/dev/null 2>&1
+  rc=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ]   # a mismatch, a missing jar, or a build failure: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
 # N4 - the L5 bundle assertion looks for the bundle in agent-guard-sample/target/. The
 #      plugin writes it to the TOP-LEVEL project's target/ (reproduced: a real
 #      `deploy -Prelease` on a 0.1.0 checkout produced ./target/central-publishing/
@@ -861,6 +903,7 @@ probe probe_denial_pass_misses_prose_licence_names           "N2 prose GPL/MPL n
 probe probe_denial_pass_coordinate_can_be_forged             "N3 the dependency <name> forges the coordinate"      probe_denial_pass_coordinate_can_be_forged_by_the_dependency_name
 probe probe_denial_pass_crashes_on_empty_licence_token       "N10 empty () token kills the scan under set -u"      probe_denial_pass_crashes_on_an_empty_licence_token
 probe probe_verify_fails_on_a_clean_checkout                 "N1 ./mvnw verify fails on a fresh clone"             probe_verify_fails_on_a_clean_checkout
+probe probe_sources_jar_differs_from_a_test_run               "post-release: sources jar not reproducible with tests running" probe_sources_jar_differs_from_a_build_that_actually_ran_tests
 probe probe_bundle_assertion_points_at_the_wrong_path        "N4 the L5 bundle path is not where it is written"    probe_bundle_assertion_points_at_the_wrong_path
 probe probe_tag_signature_check_is_optional_and_unbound      "N5 tag signature check is off by default"            probe_tag_signature_check_is_optional_and_unbound
 probe probe_debug_guard_misses_the_slf4j_log_level           "N6 --errors and slf4j debug walk past the guard"     probe_debug_guard_misses_the_slf4j_log_level

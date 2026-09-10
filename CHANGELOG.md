@@ -5,6 +5,36 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Fixed
+- **N15 (LOW)**: `scripts/verify-reproducible.sh` built both comparison builds with
+  `-DskipTests`, so it could never see a test-only byte reach a jar the way `clean deploy
+  -Prelease` (which runs tests) does - exactly what let run 34419387032 pass the check and
+  then fail the post-deploy comparison. Build 2 now runs the tests; build 1 stays the fast,
+  `-DskipTests` baseline whose checksums are recorded. Header rewritten to say the two
+  invocations differ on purpose. `scripts/verify-reproducible.sh` still reports 6/6 jars
+  `same`; `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` unchanged and
+  green (engineering, 2026-09-10).
+- **Post-release (release run 34419387032, tag `v0.1.0`)**: the "Confirm the deployed jars
+  match the reproducibility check" step failed on `agent-guard-core-0.1.0-sources.jar` and
+  `agent-guard-spring-boot-starter-0.1.0-sources.jar` (main jars, javadoc jars and POMs all
+  matched). Root cause: `license-maven-plugin`'s `add-third-party` execution defaults
+  `addOutputDirectoryAsResourceDir` to `true`, which registers `target/` as a live project
+  resource (`**/*.txt`) at the `package` phase; `maven-source-plugin`'s `jar-no-fork`
+  execution, bound to the same phase, reads the project's resources at the moment it runs and
+  archives every `target/*.txt` it finds into the sources jar - `THIRD-PARTY-NOTICES.txt`
+  every time, but also `target/surefire-reports/*.txt` whenever tests actually ran before
+  `package`, which is never byte-identical run to run. `scripts/verify-reproducible.sh`
+  always runs with `-DskipTests`, so its own two builds never saw this; a real
+  `clean deploy -Prelease` (what the release job runs) does run tests, so its sources jars
+  differed from what the reproducibility check had already checksummed. Fixed by setting
+  `<addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>` on that
+  execution: `THIRD-PARTY-NOTICES.txt` is still written to `target/` for
+  `check-third-party-licences.sh` and the workflow artifact upload, it is just no longer an
+  implicit project resource. Proved locally: `scripts/verify-reproducible.sh` followed by a
+  real `clean verify -Prelease -Dgpg.skip=true` (tests running) with the same
+  `outputTimestamp` now produce byte-identical sources jars, twice. New
+  `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` in
+  `tools/cipher-probe-release-pipeline.sh` (gated behind `CIPHER_PROBE_MAVEN=1`), WEAK
+  before this fix, FIXED after. Tag `v0.1.0` untouched (engineering, 2026-09-10).
 - **N14 (LOW)**: `_probe_suite_wired_unconditionally_in` still matched the `run:` line by
   substring, so a trailing comment after the command (`run: true # CIPHER_PROBE_MAVEN=1
   tools/cipher-probe-release-pipeline.sh`) ran `true` and the probe still reported the suite

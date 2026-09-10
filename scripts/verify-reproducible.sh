@@ -8,8 +8,17 @@
 # How it works. Both builds are run with -Dproject.build.outputTimestamp set to the
 # committer date of HEAD, so every zip entry carries that instant instead of "now".
 # The jars from the first build are copied aside, the tree is rebuilt from clean, and
-# the SHA-256 of each jar is compared. Tests are skipped: they do not contribute a byte
-# to the jar and they cost a minute.
+# the SHA-256 of each jar is compared.
+#
+# The two builds are invoked differently ON PURPOSE. Build 1 skips tests: it is the fast
+# baseline whose checksums get written to disk and later compared against what actually
+# got deployed. Build 2 runs the tests, because `clean deploy -Prelease` (the invocation
+# that publishes) runs the tests too, and a surefire report or any other test-only byte
+# landing in a jar is exactly the defect this script exists to catch (see run 34419387032
+# and N15 in docs/SECURITY-REVIEW-feat-release-pipeline.md: a `-DskipTests` vs `-DskipTests`
+# comparison agreed the sources jars were reproducible while the real, tests-running release
+# build produced a sources jar with surefire-reports/ baked in). A flaky test now fails this
+# script before anything is deployed, which is where this pipeline wants that failure.
 #
 # Checked (must match):
 #   agent-guard-core-<v>.jar
@@ -38,7 +47,9 @@ TS="$(scripts/git-commit-timestamp.sh)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-MVN_ARGS=(-B -q -DskipTests -Dproject.build.outputTimestamp="$TS" -Prelease -Dgpg.skip=true)
+MVN_ARGS_BASE=(-B -q -Dproject.build.outputTimestamp="$TS" -Prelease -Dgpg.skip=true)
+MVN_ARGS_BUILD1=("${MVN_ARGS_BASE[@]}" -DskipTests)
+MVN_ARGS_BUILD2=("${MVN_ARGS_BASE[@]}")
 
 echo "reproducibility check"
 echo "  timestamp: $TS"
@@ -53,12 +64,12 @@ collect() { # collect <dir>
   done
 }
 
-echo "  build 1 ..."
-./mvnw "${MVN_ARGS[@]}" clean package
+echo "  build 1 (fast baseline, tests skipped) ..."
+./mvnw "${MVN_ARGS_BUILD1[@]}" clean package
 collect "$WORK/one"
 
-echo "  build 2 ..."
-./mvnw "${MVN_ARGS[@]}" clean package
+echo "  build 2 (tests run, mirrors clean deploy -Prelease) ..."
+./mvnw "${MVN_ARGS_BUILD2[@]}" clean package
 collect "$WORK/two"
 
 status=0

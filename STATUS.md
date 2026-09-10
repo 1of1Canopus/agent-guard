@@ -1,5 +1,13 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**N15 (LOW, 2026-09-10, Isis, branch `fix/release-sources-reproducible`)**:
+`scripts/verify-reproducible.sh` ran both comparison builds with `-DskipTests`, so it could
+not see what a tests-running `clean deploy -Prelease` produces - the exact gap run
+34419387032 fell through. Build 2 now runs tests (build 1 stays the fast `-DskipTests`
+baseline); header rewritten to state the invocations differ on purpose. Script still reports
+6/6 jars `same`; `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` stays the
+regression test, green. Suite: `still weak: 0    fixed: 41`, exit 0.
+
 **Post-release: sources jars not reproducible (2026-09-10, Isis, branch
 `fix/release-sources-reproducible`)**: release run 34419387032 (tag `v0.1.0`, main `dfc353d`)
 uploaded successfully (deployment VALIDATED) then failed "Confirm the deployed jars match the

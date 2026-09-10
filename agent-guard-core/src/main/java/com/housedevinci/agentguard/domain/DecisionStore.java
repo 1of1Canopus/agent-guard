@@ -24,7 +24,7 @@ public interface DecisionStore {
   /**
    * All tenants. Prefer {@link #findByState(DecisionState, String, int)} for a tenant-scoped
    * caller: filtering after this applies {@code limit} can hide a tenant's own pending work behind
-   * a busier neighbour's (the security review C10).
+   * a busier neighbour's (C10).
    */
   default List<PendingDecision> findByState(DecisionState state, int limit) {
     return findByState(state, null, limit);

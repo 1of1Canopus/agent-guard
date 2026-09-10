@@ -92,8 +92,7 @@ approver's). A second approval returns the same stored result and runs nothing. 
 - Budgets and the argument-size cap are checked before the call runs; a guard failure (store, audit sink, notifier) denies the call rather than letting it through.
 - No secret or raw argument value reaches a log line, webhook or endpoint response beyond the redacted, length-capped preview; tool exception messages stay server-side by default.
 
-Full threat model, residual risks and the adversarial review history:
-[`SECURITY-NOTES.md`](./SECURITY-NOTES.md), [`docs/SECURITY-REVIEW-feat-agent-guard-core.md`](docs/SECURITY-REVIEW-feat-agent-guard-core.md).
+Full threat model and residual risks: [`SECURITY-NOTES.md`](./SECURITY-NOTES.md).
 
 ## Free core vs Pro
 

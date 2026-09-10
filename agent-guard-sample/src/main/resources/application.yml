@@ -26,7 +26,7 @@ agentguard:
     tenant-scoped: false # this sample has no TenantResolver / no tenant concept; a multi-tenant
                           # deployment leaves tenant-scoped=true (the default) and wires a
                           # TenantResolver, at which point an approver with no tenant is refused
-                          # (403) by default rather than seeing every tenant's work (the security review C9) —
+                          # (403) by default rather than seeing every tenant's work (C9) —
                           # set agentguard.endpoints.require-tenant=false only for a deliberate
                           # cross-tenant approver role
   approval:

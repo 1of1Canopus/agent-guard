@@ -13,7 +13,7 @@ name: Release
 # The version is derived, never read from the pom: main always carries 0.1.0-SNAPSHOT and
 # the workflow rewrites the poms in the runner's checkout only. Nothing is committed back.
 #
-# Full instructions, including the one-off setup: docs/RELEASING.md
+# Full instructions, including the one-off setup, are in the release runbook (maintained privately).
 
 on:
   workflow_dispatch:
@@ -61,7 +61,7 @@ jobs:
     # on a private repo: `environments` -> total_count 0 today, see L7). The line stays:
     # it becomes the actual gate the day the `release` environment is created with
     # the maintainer as a required reviewer, which is itself a precondition of the first
-    # release (docs/RELEASING.md Part 2 step 1). Do not remove it to make the workflow
+    # release (see the release runbook). Do not remove it to make the workflow
     # "work" before then.
     environment: release
     steps:
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${RELEASE_SIGNING_KEY_ID:-}" ]; then
-            echo "::error::RELEASE_SIGNING_KEY_ID is not set (Settings -> Secrets and variables -> Actions -> Variables). A release tag must be verifiable against a known key; see docs/RELEASING.md Part 1 step 6."
+            echo "::error::RELEASE_SIGNING_KEY_ID is not set (Settings -> Secrets and variables -> Actions -> Variables). A release tag must be verifiable against a known key; see the release runbook."
             exit 1
           fi
           if ! [[ "$RELEASE_SIGNING_KEY_ID" =~ ^[0-9A-Fa-f]{40}$ ]]; then
@@ -119,7 +119,7 @@ jobs:
           # F3: "VALIDSIG <fpr> ..." names the key that MADE the signature in its first field,
           # which is the SIGNING SUBKEY whenever the release key has one (git tag -s uses the
           # subkey even when -u names the primary). The PRIMARY key fingerprint - the value
-          # docs/RELEASING.md has the maintainer put in RELEASE_SIGNING_KEY_ID via `gpg --fingerprint`
+          # The release runbook has the maintainer put in RELEASE_SIGNING_KEY_ID via `gpg --fingerprint`
           # - is always the LAST field of the same status line, for both key shapes: a primary
           # with no signing subkey signs with itself, so its own fingerprint is both the first
           # and the last field. Matching the last field therefore binds the control to the
@@ -343,7 +343,7 @@ jobs:
             else
               case "$name" in
                 *-javadoc.jar)
-                  echo "::warning::$name differs from the reproducibility check (not enforced, see QUESTIONS #24)"
+                  echo "::warning::$name differs from the reproducibility check (not enforced: the javadoc jar is not diffed for reproducibility)"
                   printf '| %s | %s | %s |\n' "$name" "differs (not enforced)" "$actual" >>"$GITHUB_STEP_SUMMARY"
                   ;;
                 *)

@@ -31,3 +31,7 @@ clause, so we ask for two things from every pull request, both of them the light
    sign-off above is how it is recorded, there is nothing further to sign.
 
 No CLA bot, no separate form: the DCO trailer plus this paragraph is the whole agreement.
+
+## Planning and security records
+
+Project planning and review records are maintained privately; security reports go to security@housedevinci.com.

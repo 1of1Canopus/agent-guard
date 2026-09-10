@@ -343,6 +343,28 @@ probe_debug_guard_misses_the_slf4j_log_level() {
 }
 
 # ---------------------------------------------------------------------------
+# N6 (run 34389977548, tag v0.1.0): the first version of the guard matched the bare words
+#      `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the workflow's
+#      OWN job-level MAVEN_OPTS pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`) on
+#      every run, before anything was uploaded - the guard's synthetic env cases above
+#      never exercised the real job env, so this hole shipped past them. This probe reads
+#      the workflow's actual declared MAVEN_ARGS/MAVEN_OPTS out of its own "env:" block
+#      (not a hardcoded copy) and runs the real guard step body against exactly that env:
+#      weak if the guard refuses its own declared pin.
+# ---------------------------------------------------------------------------
+probe_debug_guard_refuses_its_own_maven_opts_pin() {
+  local guard maven_args maven_opts rc
+  guard=$(awk '/- name: Refuse Maven debug output in this job/{i=1} i&&/run: \|/{r=1;next} r&&/^      - name:/{exit} r{print}' "$WF")
+  [ -n "$guard" ] || return 0
+  maven_args=$(awk -F'"' '/^  MAVEN_ARGS:/{print $2; exit}' "$WF")
+  maven_opts=$(awk -F'"' '/^  MAVEN_OPTS:/{print $2; exit}' "$WF")
+  [ -n "$maven_opts" ] || return 0   # env pin vanished: cannot prove the fix, count as weak
+  MAVEN_ARGS="$maven_args" MAVEN_OPTS="$maven_opts" bash -c "$guard" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ]   # guard refused the workflow's own declared MAVEN_ARGS/MAVEN_OPTS: weak
+}
+
+# ---------------------------------------------------------------------------
 # N8 - the ancestry check is `if: github.event_name == 'push'`, so a workflow_dispatch run
 #      on any branch skips it entirely and releases whatever is on that ref. Same set of
 #      people can do either, so it is not a narrower privilege.
@@ -373,6 +395,149 @@ probe_releasing_scratch_keyring_trap_does_not_fire_on_failure() {
 # ---------------------------------------------------------------------------
 probe_gpg_arguments_comment_still_credits_the_wrong_actor() {
   grep -q 'required because there is no tty' pom.xml
+}
+
+# ---------------------------------------------------------------------------
+# N12 - the probe suite is not run by anything: `grep -rl 'cipher-probe' .github/` returns
+#       zero files. This is the mechanical reason N6 reached a tagged release. Returns 0
+#       (WEAK) unless some workflow under .github/workflows/ invokes this suite
+#       unconditionally - a `run:` line naming the script, on a step with no
+#       `continue-on-error: true` anywhere in that step.
+# ---------------------------------------------------------------------------
+probe_probe_suite_is_not_run_by_ci() {
+  local wf
+  for wf in .github/workflows/*.yml; do
+    [ -f "$wf" ] || continue
+    if _probe_suite_wired_unconditionally_in "$wf"; then
+      return 1   # a workflow runs the suite unconditionally: FIXED
+    fi
+  done
+  return 0   # no such job anywhere: WEAK
+}
+
+# N13: strip full-line comments first, same standard as the release guard's own static
+# check (.github/workflows/release.yml, `grep -vE '^\s*#'`) - a single `#` used to be enough
+# to disable the suite while the probe still reported it FIXED. Then split the file into
+# per-JOB blocks (not per-step), because GitHub counts a job skipped by a job-level `if:` as
+# satisfying a required status check: a step-scoped check alone cannot see that. A job block
+# is the fix only when it invokes the script in a `run:` line AND carries no `if:` and no
+# `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
+# value, since a skipped/soft-failed job is exactly as blind as a deleted one.
+#
+# N14: a substring/regex match on the `run:` line is still fooled by a trailing comment -
+# `run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` runs `true` and
+# reports the probe suite FIXED. Same belt as the MAVEN_OPTS guard elsewhere in this file:
+# stop pattern-matching, require the trimmed value of the `run:` line to be string-equal to
+# the exact command. No YAML parser - this is still line-oriented - but equality instead of
+# substring match refuses any decoration (comment, prefix, substitution) without needing one.
+_probe_suite_wired_unconditionally_in() {
+  local wf="$1"
+  local want='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh'
+  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' -v want="$want" '
+      {
+        n = split($0, lines, "\n")
+        matched = 0
+        guarded = 0
+        for (i = 1; i <= n; i++) {
+          line = lines[i]
+          if (match(line, /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*/)) {
+            val = substr(line, RLENGTH + 1)
+            gsub(/^[[:space:]]+/, "", val)
+            gsub(/[[:space:]]+$/, "", val)
+            if (val == want) { matched = 1 }
+          }
+          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
+        }
+        if (matched && !guarded) { found = 1 }
+      }
+      END { exit(found ? 0 : 1) }
+    '
+}
+
+# ---------------------------------------------------------------------------
+# N13 - the N12 probe above split ci.yml into per-STEP blocks and only refused
+#       `continue-on-error: true` in the same step as the `run:` line. It reported FIXED for
+#       a job-level `if: false`, a job-level `continue-on-error: true`, a step-level `if:
+#       false`, and the `run:` line commented out with a single `#` - four ways to disable
+#       the job while the probe that is supposed to guard it still passes. Applies each
+#       mutation to a scratch copy of ci.yml and asserts probe_probe_suite_is_not_run_by_ci
+#       reports WEAK (returns 0) for every one. WEAK before the fix above, FIXED after.
+# ---------------------------------------------------------------------------
+probe_suite_probe_accepts_a_disabled_probes_job() {
+  local base d rc overall
+  base="$(mktemp -d)"
+  mkdir -p "$base/.github/workflows"
+  cp .github/workflows/ci.yml "$base/.github/workflows/ci.yml"
+  overall=0
+
+  # a: job-level `if: false` on cipher-probes
+  d="$base/a"; mkdir -p "$d/.github/workflows"
+  sed 's/^  cipher-probes:$/  cipher-probes:\n    if: false/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # b: job-level `continue-on-error: true` on cipher-probes
+  d="$base/b"; mkdir -p "$d/.github/workflows"
+  sed 's/^  cipher-probes:$/  cipher-probes:\n    continue-on-error: true/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # c: step-level `if: false` on the step running the probe suite
+  d="$base/c"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1if: false\n&/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # d: the `run:` line commented out
+  d="$base/d"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1# run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  for d in a b c d; do
+    ( cd "$base/$d" && probe_probe_suite_is_not_run_by_ci )
+    rc=$?
+    # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
+    # fooled into believing the suite still runs unconditionally: the N13 weakness is present.
+    [ "$rc" -eq 0 ] || overall=1
+  done
+
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
+# N14 - the N13 fix still matched the `run:` line by substring, so a trailing comment after
+#       the command (`run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`)
+#       runs `true` and still reads as wired. Also cover the `run: |` multi-line form, where
+#       the command appears on a line of the block after another command has already run -
+#       that must be refused too, since the `run:` line itself is just `|`. Applies both
+#       mutations to a scratch copy of ci.yml and asserts probe_probe_suite_is_not_run_by_ci
+#       reports WEAK (returns 0) for both. WEAK before the fix above, FIXED after.
+# ---------------------------------------------------------------------------
+probe_suite_probe_accepts_a_trailing_comment_disable() {
+  local base d rc overall
+  base="$(mktemp -d)"
+  mkdir -p "$base/.github/workflows"
+  cp .github/workflows/ci.yml "$base/.github/workflows/ci.yml"
+  overall=0
+
+  # a: the command hidden after a trailing comment on a `run: true` line
+  d="$base/a"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1run: true # CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  # b: the command hidden inside a `run: |` multi-line block, after another command
+  d="$base/b"; mkdir -p "$d/.github/workflows"
+  sed 's/^\([[:space:]]*\)run: CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline\.sh$/\1run: |\n\1  true\n\1  CIPHER_PROBE_MAVEN=1 tools\/cipher-probe-release-pipeline.sh/' \
+    "$base/.github/workflows/ci.yml" > "$d/.github/workflows/ci.yml"
+
+  for d in a b; do
+    ( cd "$base/$d" && probe_probe_suite_is_not_run_by_ci )
+    rc=$?
+    # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
+    # fooled into believing the suite still runs unconditionally: the N14 weakness is present.
+    [ "$rc" -eq 0 ] || overall=1
+  done
+
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
 }
 
 
@@ -699,9 +864,13 @@ probe probe_verify_fails_on_a_clean_checkout                 "N1 ./mvnw verify f
 probe probe_bundle_assertion_points_at_the_wrong_path        "N4 the L5 bundle path is not where it is written"    probe_bundle_assertion_points_at_the_wrong_path
 probe probe_tag_signature_check_is_optional_and_unbound      "N5 tag signature check is off by default"            probe_tag_signature_check_is_optional_and_unbound
 probe probe_debug_guard_misses_the_slf4j_log_level           "N6 --errors and slf4j debug walk past the guard"     probe_debug_guard_misses_the_slf4j_log_level
+probe probe_debug_guard_refuses_its_own_maven_opts_pin       "N6 the guard refuses the workflow's own MAVEN_OPTS"  probe_debug_guard_refuses_its_own_maven_opts_pin
 probe probe_ancestry_check_skips_the_dispatch_path           "N8 workflow_dispatch skips the ancestry check"       probe_ancestry_check_skips_the_dispatch_path
 probe probe_releasing_trap_does_not_fire_on_failure          "N7 RELEASING.md trap only fires on shell exit"       probe_releasing_scratch_keyring_trap_does_not_fire_on_failure
 probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never closed"                             probe_gpg_arguments_comment_still_credits_the_wrong_actor
+probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
+probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
+probe probe_suite_probe_accepts_a_trailing_comment_disable      "N14 a trailing comment still hides a disabled job"   probe_suite_probe_accepts_a_trailing_comment_disable
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url

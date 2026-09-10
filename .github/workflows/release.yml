@@ -141,10 +141,20 @@ jobs:
       # MAVEN_ARGS/MAVEN_OPTS pin above, is the actual close; nothing today adds a debug
       # flag, and this step refuses to let a future "just add -X to see what's wrong" change
       # reach the Maven invocations in this job.
+      #
+      # N6 (run 34389977548, tag v0.1.0): the first version of this guard matched the bare
+      # words `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the
+      # workflow's own job-level pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`) on
+      # every run, before anything was uploaded. The pattern below only refuses the level
+      # actually being debug/trace (`defaultLogLevel=(debug|trace)`), which still catches
+      # the two real holes this guard exists for and no longer catches the info pin this
+      # same workflow declares for itself two steps up. The belt check right after this
+      # already proves MAVEN_OPTS is EXACTLY the info-level pin, so nothing is lost by no
+      # longer matching the bare property name.
       - name: Refuse Maven debug output in this job
         run: |
           set -euo pipefail
-          debug_pattern='(^|[[:space:]])(-X|--debug|-e|--errors)([[:space:]]|$)|simpleLogger|defaultLogLevel|maven\.debug'
+          debug_pattern='(^|[[:space:]])(-X|--debug|-e|--errors)([[:space:]]|$)|defaultLogLevel=(debug|trace)|maven\.debug'
           if printf '%s\n%s\n' "${MAVEN_ARGS:-}" "${MAVEN_OPTS:-}" | grep -Eiq "$debug_pattern"; then
             echo "::error::refusing to run Maven with a debug flag or debug log level: MAVEN_ARGS/MAVEN_OPTS carries one that prints secrets in clear (I4/N6)"
             exit 1

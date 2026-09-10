@@ -2602,3 +2602,16 @@ The fix Isis shipped is correct, minimal, in the right place, and proved by its 
 by my independent reproduction of the release failure. N15 is not a defect in that fix; it is
 the check that should have caught it, and it is one line and one paragraph away from being
 sound. Land N15 on this branch, then merge.
+
+## Final verdict (daa4be7): MERGE
+
+N15 is closed and no finding is open on this branch. Argument-level proof from a stubbed
+`mvnw`: build 1 is `-B -q -Dproject.build.outputTimestamp=<ts> -Prelease -Dgpg.skip=true
+-DskipTests clean package`, build 2 is the same line without `-DskipTests` — exactly the fix
+prescribed, and the rewritten header says why instead of repeating the invariant this incident
+falsified. Real run at `daa4be7`, Docker up: **6 of 6 jars `same`**, exit 0, with 29 surefire
+report files left by build 2, so the tests genuinely ran. Decisive control: the same fixed
+script run against the `dfc353d` tree exits **1** and names both sources jars `DIFFERS` — the
+release run that burned `v0.1.0` would now have stopped at the reproducibility step, before the
+upload, which was the whole point of the finding. Suite `still weak: 0    fixed: 41`, exit 0;
+CI run 34440381018 green on `Cipher probes`, `Build & test`, `DCO sign-off`.

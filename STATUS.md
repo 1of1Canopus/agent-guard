@@ -1,5 +1,37 @@
 # STATUS.md - Module B - Agent Guard, free core (run 16: Isis closes the clean-verdict pass findings)
 
+**N14 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: `_probe_suite_wired_unconditionally_in`
+still matched the `run:` line by substring, so a trailing comment (`run: true # CIPHER_PROBE_MAVEN=1
+tools/cipher-probe-release-pipeline.sh`) still reported the suite FIXED. Now requires the trimmed
+`run:` value to be string-equal to the exact command; new
+`probe_suite_probe_accepts_a_trailing_comment_disable` covers the trailing-comment mutation and a
+`run: |` multi-line block hiding the command, both WEAK before, FIXED after. Suite:
+`still weak: 0    fixed: 40`, exit 0.
+
+**N13 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: `probe_probe_suite_is_not_run_by_ci`
+missed a job-level `if: false`, a job-level `continue-on-error: true`, a step-level `if: false`,
+and the `run:` line commented out. Fixed to strip full-line comments first and check the
+enclosing job block, not just the step, for any `if:`/`continue-on-error:`; new
+`probe_suite_probe_accepts_a_disabled_probes_job` proves all four mutations are caught (WEAK
+before, FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0.
+
+**N12 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: nothing in `.github/` ran
+`tools/cipher-probe-release-pipeline.sh` — the mechanical reason N6 reached a tagged
+release. Added a `Cipher probes` job to `ci.yml` that runs
+`CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` on every push and pull
+request, no `continue-on-error`, no skippable `if:`, actions pinned by SHA,
+`permissions: contents: read`. Added `probe_probe_suite_is_not_run_by_ci` to the script
+(WEAK before this branch's `ci.yml`, FIXED after). Added `Cipher probes` to the required
+status checks of the `main` branch protection ruleset. Suite: `still weak: 0    fixed: 38`,
+exit 0.
+
+**N6 (2026-09-10, Isis, branch `fix/release-debug-guard`)**: the first real release run
+(34389977548, tag `v0.1.0`) failed at the `Refuse Maven debug output in this job` guard
+because it also matched the workflow's own `MAVEN_OPTS` info-level pin; fixed so
+`debug_pattern` only refuses `defaultLogLevel=debug|trace`, probe suite `37/37` FIXED,
+rehearsed the guard/version-set/verify/licence-check/reproducibility steps locally against
+the workflow's own env, all green. Tag `v0.1.0` untouched.
+
 Licensing (2026-09-08): free core switched from Apache-2.0 to FSL-1.1-ALv2 (Souhaile's decision); `LICENSE`/`NOTICE`/`pom.xml` updated, `./mvnw -B clean verify` and `-Prelease` re-confirmed green.
 
 Branch `feat/release-pipeline` in `modules/B-agent-guard/`, cut from `main` at `f120608`

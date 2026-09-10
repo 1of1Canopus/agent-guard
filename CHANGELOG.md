@@ -4,6 +4,49 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed
+- **N14 (LOW)**: `_probe_suite_wired_unconditionally_in` still matched the `run:` line by
+  substring, so a trailing comment after the command (`run: true # CIPHER_PROBE_MAVEN=1
+  tools/cipher-probe-release-pipeline.sh`) ran `true` and the probe still reported the suite
+  FIXED. It now requires the trimmed value of the `run:` line to be string-equal to the exact
+  command - the same exact-pin belt already used for the `MAVEN_OPTS` guard - which refuses
+  any decoration without a YAML parser. New
+  `probe_suite_probe_accepts_a_trailing_comment_disable` covers the trailing-comment mutation
+  and a `run: |` multi-line block hiding the command after another command; both WEAK before,
+  FIXED after. Suite: `still weak: 0    fixed: 40`, exit 0 (Isis, 2026-09-10).
+- **N13 (LOW)**: `probe_probe_suite_is_not_run_by_ci` reported FIXED for four ways of
+  disabling the `Cipher probes` job while nothing ran: a job-level `if: false`, a job-level
+  `continue-on-error: true`, a step-level `if: false`, and the `run:` line commented out. The
+  probe now strips full-line comments first (same standard as `release.yml`'s own static
+  check, `grep -vE '^\s*#'`), splits `ci.yml` into per-job blocks instead of per-step, and
+  refuses any `if:`/`continue-on-error:` anywhere in the job, not just `continue-on-error:
+  true` next to the `run:` line. New `probe_suite_probe_accepts_a_disabled_probes_job` applies
+  all four mutations to a scratch copy of `ci.yml` and asserts each is caught (WEAK before,
+  FIXED after). Suite: `still weak: 0    fixed: 39`, exit 0 (Isis, 2026-09-10).
+- **N12 (LOW)**: `tools/cipher-probe-release-pipeline.sh` was only ever invoked by hand -
+  `grep -rl 'cipher-probe' .github/` returned zero files - which is the mechanical reason
+  N6 reached a tagged release: the suite that would have caught it was never executed by CI
+  on the branch that broke it. `.github/workflows/ci.yml` gained a `Cipher probes` job
+  (`cipher-probes`) that runs `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
+  on every push and pull request, with no `continue-on-error` and no skippable `if:`,
+  `permissions: contents: read`, actions pinned by SHA like the rest of the workflow. The
+  new job name (`Cipher probes`) was added to the required status checks of the `main`
+  branch protection ruleset. The script gained
+  `probe_probe_suite_is_not_run_by_ci`, which greps every workflow under
+  `.github/workflows/` for a step whose `run:` line names the script without
+  `continue-on-error: true`; confirmed WEAK against the pre-fix `ci.yml`, FIXED against the
+  post-fix one. Suite: `still weak: 0    fixed: 38`, exit 0 (Isis, 2026-09-10).
+- **N6**: the release workflow's `Refuse Maven debug output in this job` guard matched the
+  bare words `simpleLogger` and `defaultLogLevel` unconditionally, so it refused the
+  workflow's own job-level `MAVEN_OPTS` pin (`-Dorg.slf4j.simpleLogger.defaultLogLevel=info`)
+  on every run, before anything was uploaded - confirmed on the first real release run
+  (34389977548, tag `v0.1.0`), which failed at this step. `debug_pattern` now only refuses
+  the level actually being `debug`/`trace`; the belt check right after it, unchanged, still
+  requires `MAVEN_OPTS` to be exactly the info-level pin. `tools/cipher-probe-release-pipeline.sh`
+  gained a probe that runs the guard against the workflow's own declared
+  `MAVEN_ARGS`/`MAVEN_OPTS`, parsed from the yml, and asserts it passes; the existing
+  `-X`/`--errors`/`defaultLogLevel=debug` negative cases still fail it (Isis, 2026-09-10).
+
 ## [0.1.0] - 2026-09-09
 
 ### Fixed (post-merge follow-up, QUESTIONS.md #33)

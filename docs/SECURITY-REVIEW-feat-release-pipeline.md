@@ -2255,3 +2255,240 @@ I do not merge and I do not undraft. PR #9 is ready for Souhaile.
    bundle to the Sonatype Central Portal.
 9. **Press Publish on the Sonatype Central Portal.** The bundle waits there. Nothing in the
    workflow can publish on its own, by design — this last step is a person, on purpose.
+
+---
+
+## Re-verification pass — 2026-09-10 — branch `fix/release-debug-guard` (PR #13, `39435f1`)
+
+Scope: the one-commit fix for N6's recurrence in the first real release run
+(34389977548, tag `v0.1.0`), which failed at `Refuse Maven debug output in this job`
+because `debug_pattern` matched the bare words `simpleLogger`/`defaultLogLevel` and the
+workflow pins `MAVEN_OPTS=-Dorg.slf4j.simpleLogger.defaultLogLevel=info` for itself.
+
+### Numbers
+
+| Run | Result |
+| --- | --- |
+| `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` | 37 fixed, 0 weak, exit 0 |
+| `tools/cipher-probe-release-pipeline.sh` (no Maven) | 35 fixed, 2 **skipped and counted weak**, exit 1 |
+| Guard body run against the workflow's own declared env | exit 0 |
+| Guard body, 15 adversarial env cases | 15/15 refused |
+
+The two probes that need `CIPHER_PROBE_MAVEN=1` are reported WEAK when skipped and the
+suite exits 1. That is the correct behaviour: a skipped probe is not a passing probe.
+Isis's "37/37 exit 0" is only true with `CIPHER_PROBE_MAVEN=1` set.
+
+### N6 confirmed closed
+
+`debug_pattern` is now
+`(^|[[:space:]])(-X|--debug|-e|--errors)([[:space:]]|$)|defaultLogLevel=(debug|trace)|maven\.debug`.
+I extracted the step body from the yml and ran it directly, not through the probe:
+
+- `MAVEN_ARGS=-B`, `MAVEN_OPTS=-Dorg.slf4j.simpleLogger.defaultLogLevel=info` (the workflow's
+  own declared values, parsed from lines 52-53) → **exit 0**. The production failure is gone.
+- Refused, exit 1, all of: `-X`, `--debug`, `-e`, `--errors` in `MAVEN_ARGS`;
+  `defaultLogLevel=DEBUG`, `=trace`, `=TrAcE` (the `grep -Ei` covers case);
+  `-Dmaven.debug=true`.
+- Refused by the exact-pin belt, exit 1, all of: the pin with a **trailing space**; the pin
+  with a second flag **appended**; a flag **prepended** to the pin; `MAVEN_OPTS` empty;
+  `MAVEN_OPTS` set to whitespace; the pin plus an unrelated per-logger property.
+
+The belt (`MAVEN_OPTS` must be string-equal to the pin) is what makes the narrowed pattern
+safe: every `MAVEN_OPTS` mutation is caught by equality even when the pattern does not
+match it. `MAVEN_ARGS` has no equivalent pin and is covered by the pattern only.
+
+No residue of the old pattern anywhere: every remaining `simpleLogger`/`defaultLogLevel`
+occurrence in `.github/`, `tools/` and `docs/` is either the pin itself, the exact-pin belt
+comparison, or prose in a comment. The guard's static check over the two named `run:` blocks
+uses the same narrowed variable and passes against the current file.
+
+### N12 — LOW — the probe suite is not run by anything
+
+`grep -rl 'cipher-probe' .github/` returns **zero files**. `tools/cipher-probe-release-pipeline.sh`
+is invoked only by hand. This is the mechanical reason N6 reached a tagged release: the suite
+that would have caught it was never executed by CI on the branch that broke it, and the fix
+for that is a workflow job, not a habit.
+
+QUESTIONS.md #34 states the right rule — every guard probe must include the workflow's own
+declared env — but a rule whose only enforcement is that the next agent remembers it is not
+a control. It has already failed once here, in exactly this file.
+
+Repro: `cd modules/B-agent-guard && grep -rn 'cipher-probe' .github/ ; echo "exit=$?"` → no
+output, exit 1.
+
+Fix (Isis): add a job to `.github/workflows/ci.yml` that runs
+`CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` on every push and pull request,
+with no `continue-on-error` and no `if:` that can skip it. The script already exits 1 when any
+probe is weak, so no change to the script is needed. Add
+`probe_probe_suite_is_not_run_by_ci` asserting that some workflow under `.github/workflows/`
+invokes the suite unconditionally.
+
+### Reproduction attempts that closed with no code change
+
+- **Per-logger slf4j level walks past the pattern.** `MAVEN_ARGS="-B
+  -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.MavenCli=debug"` and
+  `...log.org.apache.maven=trace` both pass the guard (exit 0). I then tried to demonstrate
+  the leak this guard exists to prevent and could not: on Apache Maven 3.9.16 (this repo's
+  wrapper), with a canary environment variable set, **`-X` itself does not print the process
+  environment** — 0 canary hits across 185 lines with `help:evaluate` and 232 lines with a
+  real `validate`, with and without the `MAVEN_OPTS` pin. Since the baseline leak is not
+  reproducible on the pinned Maven, a bypass of the guard that would enable it is
+  **suspected, not a finding**. Not a code change. Re-open if the wrapper moves to a Maven
+  version whose `-X` does dump `env.*`.
+- **Maven invocations outside the guard's static check.** The `Reproducibility check` step
+  (its own `MAVEN_OPTS`), `scripts/verify-reproducible.sh`, and the `mvnw` call at line 415
+  are not covered by the two-step static check. Not a finding: line 415 is in the separate
+  `sample-smoke` job and the guard is job-scoped by design and says so, and the only step in
+  `publish` that holds `CENTRAL_USERNAME`/`CENTRAL_TOKEN`/`MAVEN_GPG_PASSPHRASE` is
+  `Verify, licence check, sign, upload`, which the static check does cover. Debug output in a
+  step with no secret in its environment leaks no secret.
+- **Same-shape defect elsewhere.** Quick scan of `release.yml` and `ci.yml` for checks that
+  could refuse the workflow's own declared values: no second instance today. One latent
+  fragility worth knowing, not a finding on current code: the static check greps the two
+  `run:` blocks with a pattern containing `-e` bounded by whitespace, so a future bare
+  `set -e` (rather than today's `set -euo pipefail`) added to either step would make the
+  guard refuse the workflow's own source — the N6 shape again, one edit away.
+
+### Verdict
+
+**MERGE WITH FIXES** — one LOW (N12: wire `tools/cipher-probe-release-pipeline.sh` into
+`ci.yml`). The N6 fix itself is correct, minimal, and verified against the real job env; it
+is the pattern change the failed release needed and it gives up nothing, because the exact-pin
+belt already covers everything the removed bare-word matches covered. No HIGH, no MEDIUM.
+Tag `v0.1.0` is untouched and can be re-run once N12 is in.
+
+### N12 re-verification — 2026-09-10 — `aad8091`
+
+Confirmed closed at the workflow level. `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
+locally: **38 fixed, 0 weak, exit 0**, with `probe_probe_suite_is_not_run_by_ci` FIXED. The
+`cipher-probes` job in `ci.yml` has no `if:`, no `continue-on-error`, actions pinned by SHA,
+`permissions: contents: read`; `ci.yml` has no `paths:` filter, so it cannot be dodged by
+touching only `release.yml`. Ruleset 22670337 is `active` on `refs/heads/main` with
+**zero bypass actors**, `strict_required_status_checks_policy: true`, and requires
+`Build & test`, `DCO sign-off`, `Cipher probes`. Run 34413322220 green on all three at
+`aad8091`.
+
+### N13 — LOW — `probe_probe_suite_is_not_run_by_ci` accepts four disabled forms
+
+The job is correct today; the probe that is supposed to keep it correct is not. It splits the
+file on step boundaries and looks for a `run:` line naming the script with no
+`continue-on-error: true` in the same step. It therefore reports FIXED for all of:
+
+| Mutation of `ci.yml` | Probe says |
+| --- | --- |
+| job-level `if: false` on `cipher-probes` | FIXED |
+| job-level `continue-on-error: true` | FIXED |
+| step-level `if: false` | FIXED |
+| the `run:` line commented out with `#` | FIXED |
+| step-level `continue-on-error: true` | WEAK (caught) |
+| the `run:` line deleted | WEAK (caught) |
+
+The commented-out case is the same defect the release guard's own static check already avoids
+one file away, where it pipes through `grep -vE '^\s*#'` before matching. Here a single `#`
+disables the suite and the suite still passes itself. The job-level `if:` case matters most in
+combination with the ruleset: GitHub counts a **skipped** job as satisfying a required status
+check, so `if: false` would leave `Cipher probes` green on the branch-protection page while
+nothing ran.
+
+Repro (no repo files touched): copy `ci.yml` into a scratch `.github/workflows/`, apply each
+mutation above, source `probe_probe_suite_is_not_run_by_ci` and call it — it returns 1 (FIXED)
+for four of the six.
+
+Fix (Isis): strip full-line comments before matching; require the invoking step to carry no
+`if:` and no `continue-on-error:` at all (not just `continue-on-error: true`); and check the
+enclosing **job** block for `if:` / `continue-on-error:` as well as the step. Add
+`probe_suite_probe_accepts_a_disabled_probes_job`, which builds each of the four mutations
+above in a temporary directory and asserts `probe_probe_suite_is_not_run_by_ci` reports WEAK
+for every one — WEAK on current code, FIXED after.
+
+**Verdict on `aad8091`: MERGE WITH FIXES** — one LOW (N13). N12 itself is closed: the job, the
+triggers and the ruleset are all correct and fail-closed. What is missing is only the
+regression guard on that job, and it is a change to one awk block in a file CI already runs.
+
+## Verdict (`7baf844`): MERGE WITH FIXES — one LOW (N14)
+
+N13 is closed. Suite: **39 fixed, 0 weak, exit 0**. CI run 34416162458 green on
+`Build & test`, `DCO sign-off`, `Cipher probes`. `_probe_suite_wired_unconditionally_in`
+now strips full-line comments, splits per job, and refuses any `if:` or
+`continue-on-error:` on the job or the step. Re-ran my four mutations — job-level
+`if: false`, job-level `continue-on-error: true`, step-level `if: false`, `run:` line
+commented out — all four now WEAK (refused). Two of my own choosing also refused:
+`continue-on-error: ${{ expr }}` (no literal `true`) and `if: ${{ expr }}` at job level,
+so the fix keys on the presence of the key, not on its value. Deleting the whole job:
+refused. Baseline unmodified file: accepted, as it must be.
+
+### N14 — LOW — a trailing comment still hides a disabled probes job
+
+Comment stripping is anchored at `^[[:space:]]*#`, so only whole-line comments go. The
+`run:` regex then still matches the script name when it appears **after** a `#` on a line
+that runs something else:
+
+```yaml
+        run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
+```
+
+`probe_probe_suite_is_not_run_by_ci` reports FIXED for this. CI would be green, the
+required `Cipher probes` check satisfied, and no probe would have run. This is the same
+defect as N13's whole-line-comment case, one variant further out.
+
+Repro: copy `ci.yml` to a scratch `.github/workflows/`, apply the line above, source
+`_probe_suite_wired_unconditionally_in` and `probe_probe_suite_is_not_run_by_ci`, call it —
+returns 1 (FIXED).
+
+Fix (Isis), using the pattern this repository already trusts twice: stop pattern-matching
+and assert the **exact** command. Require the `cipher-probes` job to contain a `run:` line
+whose value is string-equal to `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
+— the same exact-pin belt that makes the `MAVEN_OPTS` guard sound. Any decoration, comment
+or substitution then fails equality without needing a YAML parser. Add
+`probe_suite_probe_accepts_a_trailing_comment_disable`: WEAK on current code, FIXED after.
+
+### Re-tag not performed — preconditions are not met
+
+I was asked to delete and re-create `v0.1.0` if the verdict was MERGE. It is not, and three
+independent reasons say do not do it yet:
+
+1. **There is no new main commit to tag.** `origin/main` is `a01f03a`, which is exactly what
+   `v0.1.0` already points at. PR #13 is still `OPEN`; `git merge-base --is-ancestor 39435f1
+   origin/main` returns false. Re-tagging today would either re-create the identical tag or
+   put a release tag on an unmerged branch — the very thing the N8 ancestry check exists to
+   refuse.
+2. **I must not sign it.** The release key (`1EFC858B76B00ABB6BF5A147CA5E8EFD2C575ACF`,
+   Souhaile) is in this machine's keyring, so the command would succeed. Signing a release
+   tag as the key holder from an agent session defeats control F3 and the human gate it
+   exists to enforce. The tag is Souhaile's signature or it is worthless. Refused.
+3. **The next run would fail anyway.** `gh variable list` is empty: `RELEASE_SIGNING_KEY_ID`
+   is not set, so `Verify the tag signature` will exit 1 at step 6 of the checklist. Correct
+   fail-closed behaviour, but it must be set before any re-run.
+
+Order: land N14, merge PR #13 into `main` (Souhaile), set `RELEASE_SIGNING_KEY_ID`, then
+Souhaile deletes `v0.1.0` local and remote and re-creates it signed on the new `main`.
+
+## Final verdict (`c94db7a`): MERGE
+
+N14 is closed and no finding is open. `_probe_suite_wired_unconditionally_in` now requires the
+trimmed `run:` value to be string-equal to `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`,
+which is the exact-command belt this workflow already uses for `MAVEN_OPTS`. Suite: **40 fixed,
+0 weak, exit 0**; CI run 34418019491 green on `Build & test`, `DCO sign-off`, `Cipher probes`
+at `c94db7a`. Mutations re-run against the committed probe: the N14 trailing comment
+(`run: true # <cmd>`) refused, the command commented out inside a multi-line block refused,
+and two of my own — `|| true` appended (which would swallow the suite's exit 1) and
+`CIPHER_PROBE_MAVEN=0` (which would silently skip the two Maven probes) — both refused, neither
+of which the earlier regex would have caught. Baseline unmodified file still accepted.
+
+Strictness now errs toward WEAK: harmless reformatting of that one line (extra inner
+whitespace, a trailing `#x`) also refuses. That is the correct direction and the opposite of
+N6 — it turns CI red and asks for the exact string back, rather than failing a release after
+the upload. Not a finding.
+
+**Correction to my previous pass, item 8.** I wrote that `RELEASE_SIGNING_KEY_ID` was unset on
+the evidence of an empty `gh variable list`. That command lists repository variables only. The
+variable is set on the **`release` environment**, which is what the publish job declares
+(`environment: release`, line 66) and reads through `vars.`. Verified via
+`gh api repos/1of1Canopus/agent-guard/environments/release/variables`: present, exactly 40 hex
+characters, and equal to the primary fingerprint of the release key
+`1EFC858B76B00ABB6BF5A147CA5E8EFD2C575ACF`, so the `Verify the tag signature` step will match a
+tag signed by that key. Isis is right, my item 8 was wrong, and it is withdrawn.
+
+Remaining before a release run, none of it a security finding and none of it mine to do:
+merge PR #13 into `main`, then Souhaile deletes `v0.1.0` local and remote — never published,
+the run failed before upload — and re-creates it signed on the new `main`. I did not tag.

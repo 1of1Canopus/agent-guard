@@ -5,6 +5,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Fixed
+- **N15 (LOW)**: `scripts/verify-reproducible.sh` built both comparison builds with
+  `-DskipTests`, so it could never see a test-only byte reach a jar the way `clean deploy
+  -Prelease` (which runs tests) does - exactly what let run 34419387032 pass the check and
+  then fail the post-deploy comparison. Build 2 now runs the tests; build 1 stays the fast,
+  `-DskipTests` baseline whose checksums are recorded. Header rewritten to say the two
+  invocations differ on purpose. `scripts/verify-reproducible.sh` still reports 6/6 jars
+  `same`; `probe_sources_jar_differs_from_a_build_that_actually_ran_tests` unchanged and
+  green (engineering, 2026-09-10).
 - **Post-release (release run 34419387032, tag `v0.1.0`)**: the "Confirm the deployed jars
   match the reproducibility check" step failed on `agent-guard-core-0.1.0-sources.jar` and
   `agent-guard-spring-boot-starter-0.1.0-sources.jar` (main jars, javadoc jars and POMs all

@@ -35,9 +35,10 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
 /**
- * the security review final-pass probes: (1) Spring AI's real ToolCallingAutoConfiguration (put on the test
- * classpath with -Dmaven.test.additionalClasspath=...spring-ai-autoconfigure-model-tool-2.0.1.jar)
- * applies spring.ai.tools.limits.* with the guard on; (2) RunAsAuthentication forgeability.
+ * the security review final-pass probes: (1) Spring AI's real ToolCallingAutoConfiguration (put on
+ * the test classpath with
+ * -Dmaven.test.additionalClasspath=...spring-ai-autoconfigure-model-tool-2.0.1.jar) applies
+ * spring.ai.tools.limits.* with the guard on; (2) RunAsAuthentication forgeability.
  */
 class CipherProbeFinalSpringAiTest {
 

@@ -28,8 +28,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * the security review security probes for the approval gate. H1, M1, M3, M4, M5 are flipped (they now assert the
- * fixed behaviour); the LOW probes (L1–L4) still document open items.
+ * the security review security probes for the approval gate. H1, M1, M3, M4, M5 are flipped (they
+ * now assert the fixed behaviour); the LOW probes (L1–L4) still document open items.
  */
 class CipherProbeApprovalGateTest {
 

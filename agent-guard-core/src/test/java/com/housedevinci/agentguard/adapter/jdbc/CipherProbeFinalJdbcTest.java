@@ -22,7 +22,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-/** the security review final-pass probe: anchor seeding when several instances start (and append) at once. */
+/**
+ * the security review final-pass probe: anchor seeding when several instances start (and append) at
+ * once.
+ */
 @Testcontainers
 class CipherProbeFinalJdbcTest {
 

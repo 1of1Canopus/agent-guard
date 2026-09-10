@@ -6,8 +6,8 @@ import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 /**
- * the security review probe (M2), flipped: the canonical form is length-prefixed, so moving a boundary between
- * two fields changes the hash.
+ * the security review probe (M2), flipped: the canonical form is length-prefixed, so moving a
+ * boundary between two fields changes the hash.
  */
 class CipherProbeAuditChainTest {
 

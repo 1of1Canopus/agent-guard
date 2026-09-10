@@ -33,7 +33,10 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
-/** the security review re-verification probes for the ToolCallingManager chokepoint and the run-as resume. */
+/**
+ * the security review re-verification probes for the ToolCallingManager chokepoint and the run-as
+ * resume.
+ */
 class CipherProbeReverifySpringAiTest {
 
   static final AtomicInteger REFUNDS = new AtomicInteger();

@@ -21,7 +21,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 
-/** the security review probe (M7), flipped: with no filter chain the endpoints refuse an anonymous approver. */
+/**
+ * the security review probe (M7), flipped: with no filter chain the endpoints refuse an anonymous
+ * approver.
+ */
 @SpringBootTest(
     properties = {
       "agentguard.enabled=true",

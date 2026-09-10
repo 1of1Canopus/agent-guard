@@ -24,7 +24,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-/** the security review verification pass on 722e9a5 (keyed-from-birth). Attack probes, not regression cover. */
+/**
+ * the security review verification pass on 722e9a5 (keyed-from-birth). Attack probes, not
+ * regression cover.
+ */
 @Testcontainers
 class CipherProbeKeyedBirthJdbcTest {
 

@@ -12,8 +12,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * the security review verification pass on 722e9a5: {@link InMemoryAuditSink} parity with {@code JdbcAuditSink}
- * on the keyed-from-birth refusals.
+ * the security review verification pass on 722e9a5: {@link InMemoryAuditSink} parity with {@code
+ * JdbcAuditSink} on the keyed-from-birth refusals.
  */
 class CipherProbeMemoryParityTest {
 

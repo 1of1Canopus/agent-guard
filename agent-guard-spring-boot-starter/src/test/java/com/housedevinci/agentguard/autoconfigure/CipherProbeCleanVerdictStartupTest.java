@@ -15,7 +15,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-/** the security review clean-verdict pass on f27c45e: startup-check ordering and message hygiene. Temporary. */
+/**
+ * the security review clean-verdict pass on f27c45e: startup-check ordering and message hygiene.
+ * Temporary.
+ */
 @Testcontainers
 class CipherProbeCleanVerdictStartupTest {
 

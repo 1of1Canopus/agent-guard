@@ -4,7 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
 
-/** the security review fuzz of {@link ArgumentRedactor}, flipped (L5): the redactor walks parsed JSON. */
+/**
+ * the security review fuzz of {@link ArgumentRedactor}, flipped (L5): the redactor walks parsed
+ * JSON.
+ */
 class CipherProbeRedactorTest {
 
   private final ArgumentRedactor r = ArgumentRedactor.defaults();

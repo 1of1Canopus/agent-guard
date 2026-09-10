@@ -15,8 +15,8 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
- * the security review re-verification of H3: the starter's factory (pre-filled pool, default size 8) under 200
- * virtual threads on a cold start, in-process with the default scheduler.
+ * the security review re-verification of H3: the starter's factory (pre-filled pool, default size
+ * 8) under 200 virtual threads on a cold start, in-process with the default scheduler.
  */
 @Testcontainers
 class CipherProbeJedisFactoryTest {

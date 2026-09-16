@@ -18,15 +18,18 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 /**
  * Two users: the agent that calls tools, the approver who decides. HTTP Basic keeps it short.
  *
- * <p>#18: CSRF protects a session-carrying (cookie) client from a forged cross-site request. A
- * Basic-authenticated request with no session cannot be forged that way - there is no ambient
- * credential for a malicious page to replay, and no CSRF token endpoint this sample exposes for it
- * to fetch one from - so holding {@code /agentguard/**} to CSRF for that one shape of client only
- * ever returns a bare 401 it cannot comply with. That carve-out is scoped as narrowly as the sample
- * can make it: unsafe method, {@code /agentguard/**}, a session-less request, an {@code
- * Authorization: Basic} header. Anything else - including a browser session against these same
- * endpoints - is still held to the token, and a missing or invalid one comes back as a 403 that
- * names the reason instead of falling through to the generic handler.
+ * <p>#18: {@code /agentguard/**} exempts CSRF for a session-less {@code Authorization: Basic}
+ * request. Cached HTTP Basic credentials are themselves ambient - a browser re-attaches them on
+ * every request to the origin, the same way it re-attaches a cookie - and this sample never issues
+ * a session cookie anyway, so "no session" holds for every real client here, not just a curl one;
+ * "session-less" alone is not what makes the carve-out safe. What makes it safe is that approving
+ * needs two things a forged cross-origin request cannot obtain: the decision id, an unguessable
+ * UUID handed only to the request that parked the call, and {@code argsHash}, the SHA-256 of the
+ * arguments the approver actually reviewed. Neither is readable cross-origin, so neither can be
+ * forged blind the way a CSRF attack forges a same-origin cookie-authenticated POST. Copy this
+ * pattern only onto an endpoint that requires an equivalent unguessable, unreadable-cross-origin
+ * parameter on every state-changing call - without one, exempting CSRF here would be a real hole,
+ * not a narrowed one.
  */
 @Configuration
 class SecurityConfig {

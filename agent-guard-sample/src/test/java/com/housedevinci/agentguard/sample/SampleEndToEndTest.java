@@ -11,6 +11,10 @@ import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.spec.McpSchema;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -254,5 +258,97 @@ class SampleEndToEndTest {
     org.assertj.core.api.Assertions.assertThatThrownBy(client::initialize)
         .isInstanceOf(RuntimeException.class);
     assertThat(List.of()).isEmpty();
+  }
+
+  /**
+   * #18: the README's documented approval flow, run exactly as a reader would run it - real HTTP,
+   * HTTP Basic, no session - through the endpoints this sample exposes: tools/call parks the write,
+   * GET .../arguments returns 200, and POST .../approve with the same credentials and no CSRF token
+   * also returns 200. Before the fix, that last call came back a bare 401.
+   */
+  @Test
+  void documented_approve_flow_works_for_a_stateless_basic_client() throws Exception {
+    CLOCK.advance(Duration.ofMinutes(5)); // a fresh budget window, independent of test order
+    String decisionId;
+    try (var agent = clientAs("agent", "agent")) {
+      var parked =
+          agent.callTool(new McpSchema.CallToolRequest("refund_order", Map.of("orderId", "43")));
+      assertThat(parked.isError()).isTrue();
+      var body = text(parked);
+      assertThat(body).contains("AWAITING_APPROVAL").contains("decisionId");
+      decisionId = body.replaceAll(".*\"decisionId\":\"([0-9a-f-]{36})\".*", "$1");
+    }
+
+    var http = HttpClient.newHttpClient();
+    var base = "http://localhost:" + port;
+    var basicAlice =
+        "Basic "
+            + Base64.getEncoder().encodeToString("alice:alice".getBytes(StandardCharsets.UTF_8));
+
+    var argsResponse =
+        http.send(
+            HttpRequest.newBuilder(
+                    URI.create(base + "/agentguard/decisions/" + decisionId + "/arguments"))
+                .header("Authorization", basicAlice)
+                .GET()
+                .build(),
+            HttpResponse.BodyHandlers.ofString());
+    assertThat(argsResponse.statusCode()).isEqualTo(200);
+    var argsHash = argsResponse.body().replaceAll(".*\"argsHash\":\"([0-9a-f]{64})\".*", "$1");
+
+    var approveResponse =
+        http.send(
+            HttpRequest.newBuilder(
+                    URI.create(
+                        base
+                            + "/agentguard/decisions/"
+                            + decisionId
+                            + "/approve?argsHash="
+                            + argsHash))
+                .header("Authorization", basicAlice)
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build(),
+            HttpResponse.BodyHandlers.ofString());
+    assertThat(approveResponse.statusCode()).isEqualTo(200);
+    assertThat(approveResponse.body()).contains("\"state\":\"APPROVED\"");
+  }
+
+  /**
+   * #18's carve-out is scoped to session-less Basic clients only: a client that does carry a
+   * session (a browser that authenticated once and kept the cookie) is still held to the CSRF token
+   * on the very same endpoints, and the denial names the reason instead of a bare 401 or a generic
+   * 403. This is the sample's equivalent of "the library default still protects" - there is no CSRF
+   * configuration in agent-guard-core/starter to weaken; the whole control lives here, and this
+   * proves the fix narrows it rather than removing it.
+   */
+  @Test
+  void session_carrying_client_still_needs_a_csrf_token_on_the_same_endpoints() throws Exception {
+    CLOCK.advance(Duration.ofMinutes(10)); // a fresh budget window, independent of test order
+    String decisionId;
+    try (var agent = clientAs("agent", "agent")) {
+      var parked =
+          agent.callTool(new McpSchema.CallToolRequest("refund_order", Map.of("orderId", "44")));
+      assertThat(parked.isError()).isTrue();
+      decisionId = text(parked).replaceAll(".*\"decisionId\":\"([0-9a-f-]{36})\".*", "$1");
+    }
+
+    // a real HttpSession attached to the request - not the csrf() post-processor, which injects a
+    // valid token directly and would never exercise the filter's actual rejection path
+    var session = new org.springframework.mock.web.MockHttpSession();
+    var alice = SecurityMockMvcRequestPostProcessors.httpBasic("alice", "alice");
+    mvc.perform(get("/agentguard/decisions").with(alice).session(session))
+        .andExpect(status().isOk());
+
+    var response =
+        mvc.perform(
+                post("/agentguard/decisions/" + decisionId + "/approve")
+                    .param("argsHash", "f".repeat(64))
+                    .with(alice)
+                    .session(session))
+            .andExpect(status().isForbidden())
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+    assertThat(response).contains("CSRF");
   }
 }

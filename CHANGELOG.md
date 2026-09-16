@@ -15,6 +15,18 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   a public repository; both findings were already verified fixed before retirement.
 
 ### Fixed
+- **#18 (MEDIUM)**: the sample's documented `POST /agentguard/decisions/{id}/approve` with HTTP
+  Basic and no session returned a bare 401 - CSRF stayed on for `/agentguard/**` and a
+  session-less Basic client has no cookie to forge and nowhere to fetch a token from. The
+  sample's `SecurityConfig` now exempts CSRF for that one shape of request (unsafe method,
+  `/agentguard/**`, no session, `Authorization: Basic`) only; every other request, including a
+  session-carrying client on the same endpoints, still needs the token, and a missing or invalid
+  one now comes back as a 403 naming the reason instead of a bare 401 or the generic handler.
+  Library default unaffected: there is no CSRF configuration in
+  `agent-guard-spring-boot-starter` to weaken, and a new test proves the sample's own carve-out
+  does not extend to a session-carrying client. One word (LOW): the try-it block's "the
+  redacted arguments" became "the recorded arguments" - the sample masks nothing for
+  `refund_order`'s `orderId`.
 - **N15 (LOW)**: `scripts/verify-reproducible.sh` built both comparison builds with
   `-DskipTests`, so it could never see a test-only byte reach a jar the way `clean deploy
   -Prelease` (which runs tests) does - exactly what let run 34419387032 pass the check and

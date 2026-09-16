@@ -37,7 +37,7 @@ docker compose up -d                      # PostgreSQL on :5432
 ```
 
 Once an agent has called `refund_order` through an MCP client and got back
-`{"status":"AWAITING_APPROVAL","decisionId":"..."}`, an approver reads the redacted
+`{"status":"AWAITING_APPROVAL","decisionId":"..."}`, an approver reads the recorded
 arguments before deciding:
 
 ```bash

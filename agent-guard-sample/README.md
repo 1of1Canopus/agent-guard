@@ -20,8 +20,12 @@ What happens:
 | `GET /agentguard/audit` as `alice` | the hash-chained trail (`prevHash` / `hash` on every row) |
 
 Demo only: the `{noop}` passwords and HTTP Basic are there to keep the sample to 60 lines; put real
-authentication (OIDC, an API gateway) in front of a production deployment. CSRF stays on for the approval
-endpoints (`csrf.ignoringRequestMatchers("/mcp/**")` exempts only the MCP transport).
+authentication (OIDC, an API gateway) in front of a production deployment. CSRF still protects the
+approval endpoints for any client that carries a session; a session-less HTTP Basic client (a plain
+`curl`, as documented above) has no cookie to forge and no token endpoint to fetch one from, so
+`/agentguard/**` exempts that one shape of request specifically (`csrf.ignoringRequestMatchers`
+still exempts `/mcp/**` outright, unchanged) - see `SecurityConfig` (issue #18). Any other request
+that is missing or has an invalid CSRF token now gets a 403 that names the reason, not a bare 401.
 
 `SampleEndToEndTest` drives all of that through a real MCP streamable-HTTP client and MockMvc
 against a Testcontainers PostgreSQL.

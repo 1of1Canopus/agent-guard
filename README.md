@@ -28,6 +28,24 @@ Full reference (all properties, all error codes, the FAQ): [`docs/index.md`](doc
 </dependency>
 ```
 
+## Try it in two minutes
+
+```bash
+cd agent-guard-sample
+docker compose up -d                      # PostgreSQL on :5432
+../mvnw spring-boot:run                   # MCP server on http://localhost:8080/mcp
+```
+
+Once an agent has called `refund_order` through an MCP client and got back
+`{"status":"AWAITING_APPROVAL","decisionId":"..."}`, an approver reads the redacted
+arguments before deciding:
+
+```bash
+curl -u alice:alice http://localhost:8080/agentguard/decisions/<decisionId>/arguments
+```
+
+Full walkthrough, including the approval call itself and the audit trail: [`agent-guard-sample/README.md`](agent-guard-sample/README.md).
+
 ```java
 @Component
 public class OrderTools {

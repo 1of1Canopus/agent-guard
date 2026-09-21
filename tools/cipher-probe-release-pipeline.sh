@@ -941,12 +941,6 @@ step_body() { # step_body <workflow> <step name>
   ' "$1"
 }
 
-# ===========================================================================
-# Keyless CVE gate (backported from stripe-einvoice ebbbd33): probes for the OSV-Scanner
-# gate in ci.yml and the optional, loudly-skipping OWASP Dependency-Check in
-# security-scan.yml. Same rule as every block above.
-# ===========================================================================
-
 # ---------------------------------------------------------------------------
 # S5 - nothing stops a pull request that adds a dependency with a known HIGH or CRITICAL
 #      vulnerability. Runs the REAL severity step from ci.yml against a synthetic report

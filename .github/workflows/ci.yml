@@ -131,7 +131,7 @@ jobs:
           cache: maven
       # ubuntu-latest ships Docker; CIPHER_PROBE_MAVEN=1 runs the two probes that shell out
       # to the pinned Maven wrapper.
-      - name: Run the the security review probe suite
+      - name: Run the security review probe suite
         run: CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
 
   # Keyless CVE gate, pull-request half. OSV-Scanner reads the real, transitively resolved

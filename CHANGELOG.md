@@ -9,9 +9,18 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   manages. 11.0.24 carries three CRITICAL advisories: GHSA-9xv2-5v5q-p794 (DIGEST authenticator,
   authentication bypass by capture-replay), GHSA-h3x4-894j-xpx5 (FORM authentication, incorrect
   authorization), GHSA-gcx9-497g-6cp6 (improper access control). Found by the repository's new
-  OSV-Scanner CVE gate on its first real run.
+  OSV-Scanner CVE gate on its first real run. No published 0.1.0 artifact was exposed:
+  `agent-guard-spring-boot-starter` reaches `tomcat-embed-core` only through its optional
+  `spring-boot-starter-webmvc` dependency, which Maven never propagates to a consumer's
+  classpath, and the sample application that would exercise it is never published. The pin
+  covers this repository's own build, test and sample classpath.
 
 ### Changed
+- The release bundle is not yet scanned for known vulnerabilities before signing: the
+  2026-09-16 keyless CVE gate decision has three legs (Dependabot, OSV-Scanner as a required
+  PR check, Grype on the release bundle before signing), and only the first two ship here.
+  `release.yml` signs and publishes without a Grype pass. Wiring that in is a design stop
+  (a new gate on the signing path, out of scope for a corrections pass); tracked as CI-02.
 - Internal working documents (`SPEC.md`, `STATUS.md`, `QUESTIONS.md`, the security review
   write-ups, design plans, and the release runbook) moved out of this repository to a
   private location; they named an internal review process that has no reason to be public.

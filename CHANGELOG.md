@@ -4,6 +4,13 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed
+- **CRITICAL**: pinned `tomcat-embed-core` to 11.0.25, overriding the 11.0.24 Spring Boot 4.1.1
+  manages. 11.0.24 carries three CRITICAL advisories: GHSA-9xv2-5v5q-p794 (DIGEST authenticator,
+  authentication bypass by capture-replay), GHSA-h3x4-894j-xpx5 (FORM authentication, incorrect
+  authorization), GHSA-gcx9-497g-6cp6 (improper access control). Found by the repository's new
+  OSV-Scanner CVE gate on its first real run.
+
 ### Changed
 - Internal working documents (`SPEC.md`, `STATUS.md`, `QUESTIONS.md`, the security review
   write-ups, design plans, and the release runbook) moved out of this repository to a

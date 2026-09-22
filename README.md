@@ -122,14 +122,16 @@ Full threat model and residual risks: [`SECURITY-NOTES.md`](./SECURITY-NOTES.md)
 | Budgets per principal / tenant / conversation, JDBC + Redis | yes | + cost-based, monthly caps with alerts, per-API-key, admin overrides |
 | Policy as YAML with hot reload and dry-run | – | yes |
 | Multi-tenant isolation (Tenantify), SSO | – | yes |
-| Conformance suite (replay recorded tool calls) | – | yes |
+| Replay suite (replay recorded tool calls) | – | yes |
 
 Pro edition: coming, contact **oss@housedevinci.com**.
 
 ## Licence
 
 Agent Guard is fair source, under the [Functional Source License, Version 1.1, ALv2 Future
-License](./LICENSE) (FSL-1.1-ALv2): free to use, but not as a base for a competing product.
+License](./LICENSE) (FSL-1.1-ALv2): free to use for any purpose except a Competing Use -
+offering a commercial product or service that substitutes for this one, substitutes for
+anything we offer using it, or has the same or substantially similar functionality.
 Each version becomes Apache-2.0 two years after its release. See [`NOTICE`](./NOTICE) for
 the full statement.
 

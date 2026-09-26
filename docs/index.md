@@ -144,21 +144,27 @@ reject timestamps older than a few minutes. The URL must be https unless the hos
 ### Database roles
 `agentguard.jdbc.initialize-schema=true` runs DDL with the application's credentials. For production use two roles:
 an owner/migration role that runs the schema once, and a runtime role with `SELECT, INSERT` on `agentguard_audit`,
-`SELECT, INSERT, UPDATE` on `agentguard_decision`, `agentguard_budget` and `agentguard_audit_anchor`, and no DDL
-(so it cannot disable the append-only triggers). `agentguard_audit.seq` is a `bigserial`, the only identity column
-across the four tables (`agentguard_decision.id` is a `uuid` set by the application, `agentguard_audit_anchor.id`
-is a fixed `smallint`, `agentguard_budget.key` is application-supplied `text`), so the runtime role also needs
-`USAGE` on its backing sequence, `agentguard_audit_seq_seq`:
+`SELECT, INSERT, UPDATE` on `agentguard_decision` and `agentguard_audit_anchor`, and no DDL (so it cannot disable
+the append-only triggers). `agentguard_audit.seq` is a `bigserial`, the only identity column across the four
+tables (`agentguard_decision.id` is a `uuid` set by the application, `agentguard_audit_anchor.id` is a fixed
+`smallint`, `agentguard_budget.key` is application-supplied `text`), so the runtime role also needs `USAGE` on its
+backing sequence, `agentguard_audit_seq_seq`. `agentguard_budget` is the one exception to "no DDL beyond
+INSERT/SELECT/UPDATE": `JdbcBudgetStore.incrementAndGet` purges its own expired counters inline, every 1000th
+call, with a `DELETE`, so the runtime role also needs `DELETE` there; it grants no new capability over the
+`UPDATE` already listed (a role that can `UPDATE used` to zero can already neutralise a counter), and the audit
+and anchor tables keep no `DELETE` at all:
 
 ```sql
 GRANT SELECT, INSERT ON agentguard_audit TO agentguard_runtime;
 GRANT USAGE ON SEQUENCE agentguard_audit_seq_seq TO agentguard_runtime;
-GRANT SELECT, INSERT, UPDATE ON agentguard_decision, agentguard_budget, agentguard_audit_anchor TO agentguard_runtime;
+GRANT SELECT, INSERT, UPDATE ON agentguard_decision, agentguard_audit_anchor TO agentguard_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON agentguard_budget TO agentguard_runtime;
 ```
 
 Without the `USAGE` grant on the sequence, the role's first guarded call fails the audit insert with
-`permission denied for sequence agentguard_audit_seq_seq`, even though every table grant above is in place. Then
-set `initialize-schema=false`. The chain verifier reports
+`permission denied for sequence agentguard_audit_seq_seq`, even though every table grant above is in place.
+Without `DELETE` on `agentguard_budget`, the 1000th budget-consuming guarded call fails the same way with
+`permission denied for table agentguard_budget`. Then set `initialize-schema=false`. The chain verifier reports
 `ANCHOR_MISMATCH` if the tail is trimmed or the table truncated by a role that could. `agentguard_audit_anchor`
 itself refuses `DELETE`/`TRUNCATE` the same way `agentguard_audit` does; losing the anchor row is what makes the
 verifier report `NO_ANCHOR` instead of guessing — unconditionally, keyed or unkeyed, whether or not a key was

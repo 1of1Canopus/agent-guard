@@ -4,7 +4,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+- docs: "Database roles" now includes `USAGE` on `agentguard_audit_seq_seq`, the sequence
+  behind `agentguard_audit.seq` (`bigserial`), in the runtime role's grant block. The
+  documented grants (table privileges only) let a fresh installation's schema step succeed
+  but failed its first guarded call with `permission denied for sequence
+  agentguard_audit_seq_seq`; the other three tables use a `uuid`, a fixed `smallint` and an
+  application-supplied `text` key, so no other sequence grant was missing. Found by a
+  security review, reproduced against a throwaway PostgreSQL instance.
 
 ## [0.1.1] - 2026-09-22
 

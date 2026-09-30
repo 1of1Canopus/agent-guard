@@ -5,11 +5,14 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Security
-- Pinned `tools.jackson.core:jackson-databind` to 3.1.6, overriding the 3.1.5 the Spring Boot
-  4.1.1 Jackson 3 BOM manages. 3.1.5 carries GHSA-q4xh-88c3-wmh7 (HIGH, CVSS 7.5, denial of
-  service via deeply nested or oversized input), fixed in 3.1.6. Pulled in transitively
-  through `spring-ai-model` (`agent-guard-spring-boot-starter`, `agent-guard-sample`). Found
-  by the repository's OSV-Scanner CVE gate on this branch's first run.
+- Pinned `tools.jackson.core:jackson-databind` to 3.1.7, overriding the 3.1.5 the Spring Boot
+  4.1.1 Jackson 3 BOM manages. 3.1.5 and the previously-pinned 3.1.6 carry three HIGH
+  advisories, all fixed in 3.1.7: GHSA-q4xh-88c3-wmh7 (CVSS 7.5, denial of service via deeply
+  nested or oversized input), GHSA-cxp5-3px4-pw24 (quadratic-time forward-reference
+  completion), and GHSA-wv8q-qhhj-9h54 (retains every unknown raw type ID, unbounded memory
+  growth). Pulled in transitively through `spring-ai-model`
+  (`agent-guard-spring-boot-starter`, `agent-guard-sample`). Found by the repository's
+  OSV-Scanner CVE gate on this branch's first run.
 
 ### Fixed
 - docs: "Database roles" now includes `USAGE` on `agentguard_audit_seq_seq`, the sequence

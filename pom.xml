@@ -97,12 +97,15 @@
     <tomcat.version>11.0.25</tomcat.version>
     <!--
       Overrides the Jackson 3 BOM version Spring Boot 4.1.1 manages (3.1.5), which carries
-      GHSA-q4xh-88c3-wmh7 (HIGH, CVSS 7.5, denial of service via deeply nested/large input) in
-      tools.jackson.core:jackson-databind, fixed in 3.1.6. Pulled in transitively through
-      spring-ai-model (agent-guard-spring-boot-starter, agent-guard-sample). Found by this
-      branch's own vulnerability gate. Remove this line when the managed version passes it.
+      three HIGH advisories in tools.jackson.core:jackson-databind, fixed in 3.1.7:
+        - GHSA-q4xh-88c3-wmh7 (CVSS 7.5, denial of service via deeply nested/large input)
+        - GHSA-cxp5-3px4-pw24 (quadratic-time forward-reference completion)
+        - GHSA-wv8q-qhhj-9h54 (retains every unknown raw type ID, unbounded memory growth)
+      Pulled in transitively through spring-ai-model (agent-guard-spring-boot-starter,
+      agent-guard-sample). Found by this branch's own vulnerability gate. Remove this line
+      when the managed version passes it.
     -->
-    <jackson-bom.version>3.1.6</jackson-bom.version>
+    <jackson-bom.version>3.1.7</jackson-bom.version>
     <spring-ai.version>2.0.1</spring-ai.version>
     <jedis.version>7.5.3</jedis.version>
     <archunit.version>1.5.0</archunit.version>

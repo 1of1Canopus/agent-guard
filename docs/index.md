@@ -14,7 +14,7 @@ after each release. Pro edition under a separate commercial licence.
 <dependency>
   <groupId>com.housedevinci</groupId>
   <artifactId>agent-guard-spring-boot-starter</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 

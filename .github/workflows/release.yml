@@ -278,6 +278,13 @@ jobs:
             -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
             -Dproject.build.outputTimestamp="${{ steps.v.outputs.timestamp }}"
 
+      # Reference guard, jar half: every jar the release just built (main, sources, javadoc)
+      # is scanned by the same script and pattern as the tree scan in ci.yml. The deployment
+      # waits for a human on the Portal, so a red step here means: do not press Publish.
+      - name: Refuse a moved-private document reference or a machine-local path inside a published jar
+        if: success()
+        run: tools/check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter
+
       # L5: agent-guard-sample is the last module in the reactor, so it is the module that
       # assembles and uploads the aggregate bundle. <excludeArtifacts> in the release
       # profile is the only mechanism keeping the sample's own coordinates out of it; a

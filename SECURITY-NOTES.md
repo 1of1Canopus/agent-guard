@@ -158,6 +158,32 @@ does about it, and what still needs a reviewer's eye.
   denial. `ToolGuard.rejectIfTooLarge` also checks the canonicalised length once the raw check has already bounded
   the parse cost, so that payload is refused as oversized on the canonical check too, not silently allowed through.
 
+## Advisory: audit trail guards on 0.1.0 and 0.1.1
+In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five trigger guards inside a condition that
+names no relation. A trigger with the same name on any other relation in the database suppresses the real guard, and the
+schema step still reports success. On an affected installation the application's runtime role can `UPDATE` and `DELETE`
+audit rows, and the anchor has no monotonic guard. Append-only is therefore **not guaranteed on 0.1.x**. Fixed in 0.2.0.
+Repairing the schema protects rows from the moment of repair; rows written while the guards were missing are not
+protected afterwards.
+
+What still holds on a keyed trail: a party without the HMAC key cannot edit, insert or reorder a row without the
+verifier reporting `BROKEN`.
+
+To check an installation, run as the table owner:
+
+```sql
+SELECT n.nspname, t.tgname, t.tgrelid::regclass AS on_relation, t.tgenabled
+  FROM pg_catalog.pg_trigger t
+  JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+ WHERE NOT t.tgisinternal
+   AND t.tgname LIKE 'agentguard%'
+ ORDER BY 1, 2;
+```
+
+Expect five rows whose `nspname` is the schema your application uses. Fewer than five, or any of the five names under
+another schema, means you are affected.
+
 ## Operational hazards
 - **Redis + virtual threads on JDK 21–23 (H3).** The pin is not in Jedis itself but in commons-pool2's growth
   path: `GenericObjectPool.create()` holds a monitor (`makeObjectCountLock`) around the Jedis handshake I/O. A virtual

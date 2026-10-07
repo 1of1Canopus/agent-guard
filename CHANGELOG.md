@@ -9,6 +9,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - Build: Maven wrapper pinned to 3.9.16 and Dependabot ignores Maven >= 3.10 until central-publishing-maven-plugin supports it; 7-day Dependabot cooldown.
 
 ### Security
+- Reference guard: `tools/check-private-references.sh` refuses references to documents kept out of
+  the public tree and machine-local paths, in the working tree (own CI check `Reference guard`) and in
+  every built or released jar (`Build & test`, release workflow).
 - Pinned `tools.jackson.core:jackson-databind` to 3.1.7, overriding the 3.1.5 the Spring Boot
   4.1.1 Jackson 3 BOM manages. 3.1.5 and the previously-pinned 3.1.6 carry three HIGH
   advisories, all fixed in 3.1.7: GHSA-q4xh-88c3-wmh7 (CVSS 7.5, denial of service via deeply

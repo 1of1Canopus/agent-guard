@@ -1116,6 +1116,101 @@ probe probe_w1_accepts_unparsed_plugin_version "C-30-1 an unparsed or pre-releas
 probe probe_w1_reads_version_from_url_suffix "C-30-2 the W1 version is read from the URL suffix, not the downloaded path" probe_w1_reads_version_from_url_suffix_not_path
 
 
+
+# ---------------------------------------------------------------------------
+# The reference guard (internal-name and machine-path leak check, checklist item 10), copied
+# from the reference implementation. Each probe is weak while the property is missing.
+# ---------------------------------------------------------------------------
+RG=tools/check-private-references.sh
+
+probe_reference_guard_is_not_its_own_job() {
+  grep -q '^  reference-guard:$' "$CI" || return 0
+  local job
+  job="$(awk 'f && /^  [a-z][a-z-]*:$/ {exit} /^  reference-guard:$/ {f=1} f' "$CI")"
+  grep -q 'name: Reference guard$' <<<"$job" || return 0
+  grep -q 'check-private-references.sh --tree' <<<"$job" || return 0
+  grep -q 'check-private-references.sh --self-test' <<<"$job" || return 0
+  return 1
+}
+
+probe_reference_guard_pattern_is_not_defined_exactly_once() {
+  [ -f "$RG" ] || return 0
+  [ "$(grep -c '^pattern=' "$RG")" -eq 1 ] || return 0
+  # no second copy of the pattern in any workflow
+  grep -rqE "docs\[/\]plans" .github/ 2>/dev/null && return 0
+  return 1
+}
+
+probe_reference_guard_pattern_matches_its_own_source() {
+  [ -f "$RG" ] || return 0
+  local pat
+  pat="$(sed -n "s/^pattern='\(.*\)'\$/\1/p" "$RG")"
+  [ -n "$pat" ] || return 0
+  grep -qE "$pat" "$RG" && return 0
+  return 1
+}
+
+probe_reference_guard_tree_scan_is_not_text_forced() {
+  [ -f "$RG" ] || return 0
+  grep -q 'git grep -n --text -E' "$RG" || return 0
+  return 1
+}
+
+probe_reference_guard_has_a_path_or_marker_exemption() {
+  [ -f "$RG" ] || return 0
+  grep -qE ':\(exclude\)|:![a-zA-Z./*]|--exclude|grep -v ' "$RG" && return 0
+  return 1
+}
+
+probe_reference_guard_misses_a_machine_path_family() {
+  [ -f "$RG" ] || return 0
+  local pat
+  pat="$(sed -n "s/^pattern='\(.*\)'\$/\1/p" "$RG")"
+  [ -n "$pat" ] || return 0
+  local s
+  for s in "/User""s/x/y" "/hom""e/runner/x" "/roo""t/x" 'C:\User''s\x'; do
+    printf '%s\n' "$s" | grep -qE "$pat" || return 0
+  done
+  return 1
+}
+
+probe_reference_guard_calls_a_scanner_error_clean() {
+  [ -f "$RG" ] || return 0
+  local work out1 out2 rc1=0 rc2=0
+  work="$(mktemp -d)"
+  mkdir -p "$work/nongit" "$work/mod/target"
+  printf 'x\n' > "$work/mod/target/broken.jar"
+  CHECK_PRIVATE_REFERENCES_ROOT="$work/nongit" bash "$RG" --tree >/dev/null 2>&1 || rc1=$?
+  ( cd "$work" && bash "$OLDPWD/$RG" --jars mod >/dev/null 2>&1 ) || rc2=$?
+  rm -rf "$work"
+  [ "$rc1" -eq 1 ] && [ "$rc2" -eq 1 ] && return 1
+  return 0
+}
+
+probe_reference_guard_self_test_is_red() {
+  [ -f "$RG" ] || return 0
+  bash "$RG" --self-test >/dev/null 2>&1 && return 1
+  return 0
+}
+
+probe_jar_guard_is_not_run_on_the_jars() {
+  [ -f "$RG" ] || return 0
+  grep -q 'for jar in "\$module"/target/\*\.jar' "$RG" || return 0
+  grep -q 'check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter' "$CI" || return 0
+  grep -q 'check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter' "$WF" || return 0
+  return 1
+}
+
+probe probe_reference_guard_is_not_its_own_job             "the guard is not a check of its own"                 probe_reference_guard_is_not_its_own_job
+probe probe_reference_guard_pattern_defined_wrongly       "the guard pattern is not defined exactly once"       probe_reference_guard_pattern_is_not_defined_exactly_once
+probe probe_reference_guard_pattern_matches_own_source    "the guard pattern matches its own source"            probe_reference_guard_pattern_matches_its_own_source
+probe probe_reference_guard_tree_scan_not_text            "the tree scan is not git grep --text"                probe_reference_guard_tree_scan_is_not_text_forced
+probe probe_reference_guard_has_an_exemption              "the guard has a path or marker exemption"            probe_reference_guard_has_a_path_or_marker_exemption
+probe probe_reference_guard_misses_a_path_family          "the guard misses /Users/ /home/ /root/ or C:\\Users"  probe_reference_guard_misses_a_machine_path_family
+probe probe_reference_guard_calls_a_scanner_error_clean   "a scanner error is read as clean"                    probe_reference_guard_calls_a_scanner_error_clean
+probe probe_reference_guard_self_test_is_red              "the guard's own self-test is not green"              probe_reference_guard_self_test_is_red
+probe probe_jar_guard_not_run_on_the_jars                 "the jar scan is not run on built and released jars"  probe_jar_guard_is_not_run_on_the_jars
+
 echo
 echo "still weak: $pass    fixed: $flipped"
 [ "$pass" -eq 0 ]

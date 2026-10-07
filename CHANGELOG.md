@@ -4,6 +4,32 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Security
+- Audit trail guards (security advisory "schema trigger guards", affects 0.1.0 and 0.1.1): the bundled
+  `schema-postgresql.sql` looked each of its five guard triggers up by name across the whole database, so a trigger
+  of the same name on any other relation, including the archived copy the `AG-AUDIT-002` remedy produces, suppressed
+  the real guard with no error and the trail ran with no append-only, no-truncate, anchor-monotonic or anchor
+  no-delete guard. The check is now scoped to the relation and `pg_catalog`-qualified, and five `ALTER TABLE ...
+  ENABLE ALWAYS TRIGGER` statements follow the conditional blocks, so re-applying the script repairs an affected
+  database. The three guard-function bodies are unchanged.
+- New startup refusal `AG-SCHEMA-003` when the audit trail's guards do not hold in the schema the application uses
+  (exact trigger set on the four tables, `ENABLE ALWAYS`, no `WHEN` clause or column list, bundled functions and
+  bodies, no rule, row level security, policy or inheritance edge), on every boot path that uses a JDBC store,
+  `initialize-schema` `true` or `false`. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+  Checked at startup only: a role that owns the tables can still disable a trigger afterwards.
+- `initialize-schema=true` with a role that does not own the schema is refused with `AG-SCHEMA-006` (SQLState
+  only) instead of surfacing the driver's raw permission error; it never booted in 0.1.x either.
+- Upgrade: every 0.1.x installation must re-apply the 0.1.2 `schema-postgresql.sql` once as the owning role before
+  the 0.1.2 application starts, because 0.1.x left the guards at `ENABLE` (origin) and 0.1.2 requires `ENABLE
+  ALWAYS`. See `docs/upgrading-0.1.2.md`, which also covers an installation that followed the archive remedy.
+
+### Added
+- `JdbcSupport.verifyGuards(DataSource)` and `JdbcSupport.initializeSchemaAndVerifyGuards(DataSource)` for
+  applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`.
+
+### Changed
+- The `AG-AUDIT-002` message and "Starting a new trail" now end with the check an operator runs after archiving.
+
 ### Fixed
 
 - Build: Maven wrapper pinned to 3.9.16 and Dependabot ignores Maven >= 3.10 until central-publishing-maven-plugin supports it; 7-day Dependabot cooldown.

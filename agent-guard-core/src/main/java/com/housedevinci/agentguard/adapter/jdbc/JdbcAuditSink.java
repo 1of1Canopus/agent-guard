@@ -92,7 +92,9 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
               + " than guessed: either a restore lost the anchor row, or a role that can disable"
               + " triggers removed it. Remedy: start a new trail (archive agentguard_audit and"
               + " agentguard_audit_anchor — rename or drop them — and re-run the schema step so it"
-              + " re-seeds an empty pair).");
+              + " re-seeds an empty pair). Then check, by schema name, that the fresh pair carries"
+              + " its five agentguard_* guard triggers, all ENABLE ALWAYS (docs, \"Starting a new"
+              + " trail\"); this application refuses to start with AG-SCHEMA-003 until it does.");
     }
     if (state.anchored() && state.keyed() != chain.isKeyed()) {
       throw new AgentGuardException(

@@ -87,7 +87,7 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.enabled` | `false` | Master switch. |
 | `agentguard.store` | `JDBC` | `JDBC` (PostgreSQL, needs a `DataSource`) or `MEMORY` (dev only). |
 | `agentguard.strict` | `true` | Fail startup on unguarded `@ToolPolicy` tools; deny calls whose budget scope has no subject. |
-| `agentguard.jdbc.initialize-schema` | `true` | Run the bundled idempotent schema (`agentguard_decision`, `agentguard_audit`, `agentguard_budget`). |
+| `agentguard.jdbc.initialize-schema` | `true` | Run the bundled idempotent schema (`agentguard_decision`, `agentguard_audit`, `agentguard_audit_anchor`, `agentguard_budget`) with the application's role at startup. Needs a role that owns the schema; any other role is refused with `AG-SCHEMA-006`. Either way the startup guard check runs (see "Database roles"). |
 | `agentguard.policy.unregistered-tools` | `DENY` | `DENY`, `ALLOW` (treat as READ) or `REQUIRE_APPROVAL` for tools without a policy. |
 | `agentguard.policy.approval-required-for` | `WRITE, DESTRUCTIVE` | Side effects that park the call. |
 | `agentguard.approval.ttl` | `1h` | Parked calls expire after this. |
@@ -164,7 +164,22 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON agentguard_budget TO agentguard_runtime;
 Without the `USAGE` grant on the sequence, the role's first guarded call fails the audit insert with
 `permission denied for sequence agentguard_audit_seq_seq`, even though every table grant above is in place.
 Without `DELETE` on `agentguard_budget`, the 1000th budget-consuming guarded call fails the same way with
-`permission denied for table agentguard_budget`. Then set `initialize-schema=false`. The chain verifier reports
+`permission denied for table agentguard_budget`. Then set `initialize-schema=false`.
+
+**Startup guard check.** Whenever a JDBC store is in use, with `initialize-schema` `true` or `false`, the starter
+checks the audit trail's guards before it creates any store, and refuses to start with `AG-SCHEMA-003` unless, in the
+schema the application uses: the five guard triggers exist on their own tables (two on `agentguard_audit`, three on
+`agentguard_audit_anchor`), each `ENABLE ALWAYS`, with no `WHEN` clause and no column list, pointing at the bundled
+guard functions whose bodies equal the bundled script's; no other trigger exists on any of the four tables; and none
+of the four has a rule, row level security, a policy or an inheritance child. The message lists every finding and the
+remedy: apply the bundled `schema-postgresql.sql` once as the owning role (it recreates a missing guard and sets all
+five to `ENABLE ALWAYS`; it changes no row of the trail or the anchor), drop any extra object it names, restart. No
+property downgrades the refusal. A check that cannot complete (a catalogue the role cannot read, no current schema) is
+`AG-SCHEMA-005`, never a pass. Upgrading from 0.1.0 or 0.1.1: see [upgrading to 0.1.2](upgrading-0.1.2.md).
+
+The check runs at startup only. A role that owns the tables can still disable a trigger after startup, which is one
+more reason to run the application as the non-owner role above. Applications that use the core without Spring call
+`JdbcSupport.verifyGuards(dataSource)` at startup, before constructing a JDBC store. The chain verifier reports
 `ANCHOR_MISMATCH` if the tail is trimmed or the table truncated by a role that could. `agentguard_audit_anchor`
 itself refuses `DELETE`/`TRUNCATE` the same way `agentguard_audit` does; losing the anchor row is what makes the
 verifier report `NO_ANCHOR` instead of guessing — unconditionally, keyed or unkeyed, whether or not a key was
@@ -200,7 +215,22 @@ signing with a different id, which the keyring covers.
 **Starting a new trail.** Changing a trail's keyed/unkeyed mode, or recovering from a lost anchor row on a
 non-empty trail, is an owner-run procedure, not something an application instance does for itself: archive
 `agentguard_audit` and `agentguard_audit_anchor` (rename or drop them) and re-run the schema step so it creates a
-fresh, empty pair; the chain restarts at GENESIS. This is deliberately not automated — the two situations that
+fresh, empty pair; the chain restarts at GENESIS. Then check, by schema name, that the fresh pair carries its own five guards, all
+`ENABLE ALWAYS` (`A`):
+
+```sql
+SELECT n.nspname, t.tgname, t.tgenabled
+  FROM pg_catalog.pg_trigger t
+  JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+ WHERE NOT t.tgisinternal AND t.tgname LIKE 'agentguard%'
+ ORDER BY 1, 2;
+```
+
+Expect five rows whose `nspname` is the schema the application uses (archived copies show up as five more rows under
+their own schema, which is fine). Read `nspname`, never the bare relation name. Under 0.1.0 and 0.1.1 this procedure
+left the fresh pair with no guards at all; if you followed it on those versions, see
+[upgrading to 0.1.2](upgrading-0.1.2.md#the-installation-that-followed-the-archive-remedy). This is deliberately not automated — the two situations that
 reach it (a real audit-mode change, or a lost anchor) both warrant a human decision, not a silent recovery.
 
 Residual: a database role that owns the tables can disable the append-only and anchor triggers and rewrite
@@ -244,6 +274,9 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-GUARD-001` | the guard's own infrastructure failed; the call was not run |
 | `AG-AUDIT-001` | this instance's audit key state (keyed/unkeyed) does not match the trail's; append refused |
 | `AG-AUDIT-002` | the trail has rows but no anchor row; append refused rather than re-anchored by a guess |
+| `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance) |
+| `AG-SCHEMA-005` | startup refused: the guard check could not complete; unverifiable is never treated as clean |
+| `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |
 
 ## Free vs Pro
 

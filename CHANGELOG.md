@@ -4,6 +4,10 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed
+
+- Build: Maven wrapper pinned to 3.9.16 and Dependabot ignores Maven >= 3.10 until central-publishing-maven-plugin supports it; 7-day Dependabot cooldown.
+
 ### Security
 - Pinned `tools.jackson.core:jackson-databind` to 3.1.7, overriding the 3.1.5 the Spring Boot
   4.1.1 Jackson 3 BOM manages. 3.1.5 and the previously-pinned 3.1.6 carry three HIGH

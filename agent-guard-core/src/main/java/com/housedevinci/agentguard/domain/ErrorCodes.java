@@ -81,4 +81,27 @@ public final class ErrorCodes {
    * empty. Refused rather than guessed, on both startup and every append.
    */
   public static final String AUDIT_ANCHOR_MISSING = "AG-AUDIT-002";
+
+  /**
+   * The audit trail's guards do not hold in the schema the application uses: one of the five
+   * bundled triggers is missing, extra, disabled, not {@code ENABLE ALWAYS}, carries a {@code WHEN}
+   * clause or a column list, or points at the wrong function; a guard body differs from the bundled
+   * script; or a rule, row level security, a policy or an inheritance edge exists on one of the
+   * four tables. Refused at startup; no property downgrades it. Codes 001, 002, 004 and 007 of this
+   * area are reserved for the schema verification of 0.2.0.
+   */
+  public static final String SCHEMA_UNGUARDED = "AG-SCHEMA-003";
+
+  /**
+   * The guard check could not complete: a catalogue read was refused, the connection failed, no
+   * current schema resolved, the {@code search_path} pin did not take, or the bundled script did
+   * not yield its three guard functions. Unverifiable is refused, never treated as clean.
+   */
+  public static final String SCHEMA_UNVERIFIABLE = "AG-SCHEMA-005";
+
+  /**
+   * {@code agentguard.jdbc.initialize-schema=true} and the bundled script failed, most commonly
+   * because the application's role does not own the schema. Carries the SQLState only.
+   */
+  public static final String SCHEMA_CREATION_FAILED = "AG-SCHEMA-006";
 }

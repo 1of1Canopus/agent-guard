@@ -1206,7 +1206,7 @@ probe probe_reference_guard_pattern_defined_wrongly       "the guard pattern is 
 probe probe_reference_guard_pattern_matches_own_source    "the guard pattern matches its own source"            probe_reference_guard_pattern_matches_its_own_source
 probe probe_reference_guard_tree_scan_not_text            "the tree scan is not git grep --text"                probe_reference_guard_tree_scan_is_not_text_forced
 probe probe_reference_guard_has_an_exemption              "the guard has a path or marker exemption"            probe_reference_guard_has_a_path_or_marker_exemption
-probe probe_reference_guard_misses_a_path_family          "the guard misses /Users/ /home/ /root/ or C:\\Users"  probe_reference_guard_misses_a_machine_path_family
+probe probe_reference_guard_misses_a_path_family          "the guard misses one of the four machine path families"  probe_reference_guard_misses_a_machine_path_family
 probe probe_reference_guard_calls_a_scanner_error_clean   "a scanner error is read as clean"                    probe_reference_guard_calls_a_scanner_error_clean
 probe probe_reference_guard_self_test_is_red              "the guard's own self-test is not green"              probe_reference_guard_self_test_is_red
 probe probe_jar_guard_not_run_on_the_jars                 "the jar scan is not run on built and released jars"  probe_jar_guard_is_not_run_on_the_jars

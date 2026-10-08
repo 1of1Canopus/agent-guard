@@ -4,6 +4,18 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Changed
+
+- Release pipeline (CI-02): the release workflow now scans what it is about to sign with the
+  pinned Grype before anything is signed or uploaded. The scan set is the published jars plus
+  the resolved runtime dependency jars of the two published modules, bound to the checksum record
+  of the reproducibility check; HIGH and CRITICAL findings fail the release, MEDIUM and below are
+  listed for a decision in the release notes. The post-upload step now compares the entries of
+  `central-bundle.zip` itself (jars and poms) against that record and requires every
+  non-javadoc jar in the bundle to be one that was scanned, by digest. A published pom with a
+  version range, `SNAPSHOT`, `LATEST` or `RELEASE` dependency version is refused. The
+  reproducibility record now includes the poms.
+
 ### Fixed
 
 - Build: Maven wrapper pinned to 3.9.16 and Dependabot ignores Maven >= 3.10 until central-publishing-maven-plugin supports it; 7-day Dependabot cooldown.

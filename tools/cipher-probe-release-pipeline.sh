@@ -29,13 +29,42 @@ cd "$(dirname "$0")/.."
 WF=.github/workflows/release.yml
 pass=0; flipped=0
 
+# A probe that shells out to an inner build, a script or any external command writes that
+# command's output HERE - `>>"$PROBE_CAPTURE" 2>&1` - and the reporter below prints the last
+# 30 lines of it whenever the probe reads WEAK, so a transient runner failure inside an inner
+# Maven build is distinguishable from the weakness the probe is looking for.
+#
+# A probe that cannot run at all (no `zip`, CIPHER_PROBE_MAVEN unset, scanner not installable)
+# sets PROBE_SKIP_REASON and returns 0: unverifiable counts as WEAK, and says why on the same
+# line.
+PROBE_CAPTURE=""
+PROBE_SKIP_REASON=""
+export PROBE_CAPTURE PROBE_SKIP_REASON
+
 probe() { # probe <name> <"still weak" message>; body returns 0 when the weakness is present
   local name="$1" msg="$2"; shift 2
+  # CIPHER_PROBE_ONLY=<regex> runs only the matching probes (development aid; unset in CI).
+  if [ -n "${CIPHER_PROBE_ONLY:-}" ] && ! [[ "$name" =~ $CIPHER_PROBE_ONLY ]]; then return 0; fi
+  PROBE_CAPTURE="$(mktemp)"
+  PROBE_SKIP_REASON=""
   if "$@"; then
     printf 'WEAK    %-52s %s\n' "$name" "$msg"; pass=$((pass + 1))
+    if [ -n "$PROBE_SKIP_REASON" ]; then
+      printf '        unverifiable: %s\n' "$PROBE_SKIP_REASON"
+    fi
+    if [ -s "$PROBE_CAPTURE" ]; then
+      printf '        --- last 30 lines of this probe%s inner command output ---\n' "'s"
+      tail -n 30 "$PROBE_CAPTURE" | sed 's/^/        | /'
+      printf '        --- end of inner command output ---\n'
+    elif [ -z "$PROBE_SKIP_REASON" ]; then
+      printf '        (no inner command output was captured for this probe)\n'
+    fi
   else
     printf 'FIXED   %-52s\n' "$name"; flipped=$((flipped + 1))
   fi
+  [ -z "${CIPHER_PROBE_KEEP:-}" ] || cp "$PROBE_CAPTURE" "$CIPHER_PROBE_KEEP.$name" 2>/dev/null || true
+  rm -f "$PROBE_CAPTURE"
+  PROBE_CAPTURE=""
 }
 
 # ---------------------------------------------------------------------------
@@ -937,7 +966,9 @@ step_body() { # step_body <workflow> <step name>
     # body ran on into the next job and failed for a reason that has nothing to do with the
     # step under test.
     inrun && /^  [a-z][a-z0-9-]*:/ { exit }
-    inrun { print }
+    # the runner hands bash the script with the block indentation removed. A python heredoc body
+    # is indentation-sensitive, so the ten spaces of a run block are stripped here too
+    inrun { sub(/^ {10}/, ""); print }
   ' "$1"
 }
 
@@ -1115,6 +1146,606 @@ probe_w1_reads_version_from_url_suffix_not_path() {
 probe probe_w1_accepts_unparsed_plugin_version "C-30-1 an unparsed or pre-release plugin version passes the W1 check" probe_w1_accepts_unparsed_plugin_version
 probe probe_w1_reads_version_from_url_suffix "C-30-2 the W1 version is read from the URL suffix, not the downloaded path" probe_w1_reads_version_from_url_suffix_not_path
 
+
+# ===========================================================================
+# PR 3 block: the vulnerability scan of the release artifacts before anything is signed
+# (design: bundle-scan-before-signing, ruling 2026-09-23, F-1 .. F-9; copied from the
+# stripe-einvoice module where the same gate is live, probes included).
+#
+# Every probe that touches a scanner runs the REAL pinned Grype (tools/install-scanner.sh),
+# never a stub: a stub writes the report shape the gate expects, so the one thing that can be
+# wrong - the gate and the scanner disagreeing about the document - is the one thing the probe
+# cannot see (release run 36048639931 on the sibling module).
+# ===========================================================================
+
+SCAN_STEP='Scan the artifacts this release is about to sign'
+INSTALL_STEP='Install the pinned Grype and verify its checksum'
+SELFTEST_STEP='Self-test the severity gate before it is trusted'
+SIGN_STEP='Verify, licence check, sign, upload'
+CMP_STEP='Confirm the uploaded bundle matches the reproducibility check'
+
+# The text of one step of the workflow: from its own "- name:" line to the line before the next.
+# Matches the name EXACTLY, so a rename or a trailing "(disabled)" is a missing step.
+_step_block() { # _step_block <step name>
+  awk -v want="      - name: $1" '
+    $0 == want { instep=1; print; next }
+    instep && /^      - name:/ { exit }
+    instep && /^  [a-z][a-z0-9-]*:/ { exit }
+    instep { print }
+  ' "$WF"
+}
+_line_of_step() { grep -nxF "      - name: $1" "$WF" | head -1 | cut -d: -f1; }
+_uncommented() { grep -vE '^[[:space:]]*#' ; }
+
+# ---------------------------------------------------------------------------
+# B-CI-02 / probe 1. The release signs and uploads without anyone having looked for known
+#      vulnerabilities in what is being signed. Position is a property of the file and is read
+#      there: the scanner is installed before the signing key is imported by setup-java, the
+#      gate's self-test and the scan sit after the reproducibility check and before the step
+#      that signs, and no secret is named by any of them. The decision the scan feeds is
+#      probed by running the gate, below.
+#      Weak while any of that is missing.
+# ---------------------------------------------------------------------------
+probe_release_signs_without_a_vulnerability_scan() {
+  local install selftest scan sign repro setup
+  install="$(_line_of_step "$INSTALL_STEP")"
+  selftest="$(_line_of_step "$SELFTEST_STEP")"
+  scan="$(_line_of_step "$SCAN_STEP")"
+  sign="$(_line_of_step "$SIGN_STEP")"
+  repro="$(_line_of_step 'Reproducibility check (two clean builds, identical jars)')"
+  setup="$(grep -n 'uses: actions/setup-java' "$WF" | head -1 | cut -d: -f1)"
+  [ -n "$install" ] && [ -n "$selftest" ] && [ -n "$scan" ] && [ -n "$sign" ] && [ -n "$repro" ] && [ -n "$setup" ] || return 0
+  [ "$install" -lt "$setup" ] || return 0        # F-3: installability proved before the key is imported
+  [ "$repro" -lt "$selftest" ] && [ "$selftest" -lt "$scan" ] && [ "$scan" -lt "$sign" ] || return 0
+  # the self-test is the step IMMEDIATELY before the scan (F-3: "immediately before the gate")
+  [ "$(awk -v s="$scan" 'NR < s && /^      - name:/ { l=NR } END { print l }' "$WF")" = "$selftest" ] || return 0
+  _step_block "$SCAN_STEP" | grep -q 'secrets\.' && return 0     # checklist 8: no secret reaches the scan
+  _step_block "$INSTALL_STEP" | grep -q 'secrets\.' && return 0
+  _step_block "$SCAN_STEP" | _uncommented | grep -q -- '--fail-on high' || return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# probe 2. The scan, its installer, its self-test and the bundle comparison are not
+#      skippable: no `if:` (the comparison may carry exactly `if: success()`), no
+#      continue-on-error, not renamed away, not commented out, no `|| true` on the gate.
+#      Weak while any of the four can be skipped.
+# ---------------------------------------------------------------------------
+probe_scan_step_is_skippable() {
+  local name block cmd
+  for name in "$INSTALL_STEP|tools/install-scanner.sh grype" \
+              "$SELFTEST_STEP|check-vulnerability-report.py --self-test" \
+              "$SCAN_STEP|check-vulnerability-report.py" \
+              "$CMP_STEP|unzip"; do
+    cmd="${name#*|}"; name="${name%%|*}"
+    block="$(_step_block "$name")"
+    [ -n "$block" ] || return 0                                   # missing or renamed: weak
+    _uncommented <<<"$block" | grep -q -- "$cmd" || return 0      # command only in a comment: weak
+    _uncommented <<<"$block" | grep -qE '^\s+continue-on-error:' && return 0
+    if [ "$name" = "$CMP_STEP" ]; then
+      _uncommented <<<"$block" | grep -E '^\s+if:' | grep -vqE '^\s+if: success\(\)\s*$' && return 0
+    else
+      _uncommented <<<"$block" | grep -qE '^\s+if:' && return 0
+    fi
+    _uncommented <<<"$block" | grep -qE '\|\|\s*true' && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# A synthetic RELEASE reactor, built exactly the way the signing job builds it: versions:set
+# to a version no repository has, an empty local Maven repository, and the real
+# scripts/verify-reproducible.sh run over it so that the checksum record the scan step binds to
+# is the genuine article. The working tree is copied (not cloned) so that a probe run before
+# the commit sees the change it is probing. The local repository holds nothing of our own
+# group afterwards, because those builds only `package` - precisely the condition under which
+# a bare `dependency:copy-dependencies` fails (F-5; run 35922939487 on the sibling module).
+# Tests are skipped in the fixture build (MAVEN_ARGS): they change no jar byte, and the fixture
+# is built twice.
+#   $1 = clean | vulnerable (core gains org.apache.commons:commons-text:1.9, CVE-2022-42889)
+# ---------------------------------------------------------------------------
+# The fixtures live on disk under one root so that they survive the command substitutions the
+# probes call them through; each is built at most once per suite run.
+FIXTURE_ROOT="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+_scan_fixture_base() { # _scan_fixture_base <clean|vulnerable>; echoes the base dir, building it once
+  local kind="$1" base="$FIXTURE_ROOT/$1"
+  if [ -f "$base/.built" ]; then printf '%s' "$base"; return 0; fi
+  rm -rf "$base"; mkdir -p "$base/tree"
+  if ! { git ls-files -z -co --exclude-standard | tar --null -T - -cf - | tar -xf - -C "$base/tree"; } >>"$PROBE_CAPTURE" 2>&1; then
+    rm -rf "$base"; return 1
+  fi
+  if [ "$kind" = vulnerable ] && [ -d "$FIXTURE_ROOT/clean/m2" ]; then
+    cp -a "$FIXTURE_ROOT/clean/m2" "$base/m2"      # warm repository, still nothing of our group
+  fi
+  if ! ( cd "$base/tree" &&
+         git init -q . && git -c user.name=probe -c user.email=probe@example.invalid add -A &&
+         git -c user.name=probe -c user.email=probe@example.invalid commit -q -m fixture &&
+         if [ "$kind" = vulnerable ]; then
+           python3 - agent-guard-core/pom.xml <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+dep = ("<dependency><groupId>org.apache.commons</groupId><artifactId>commons-text</artifactId>"
+       "<version>1.9</version></dependency>")
+assert "<dependencies>" in s
+open(p, "w").write(s.replace("<dependencies>", "<dependencies>" + dep, 1))
+PY
+           git -c user.name=probe -c user.email=probe@example.invalid commit -q -am vulnerable
+         fi &&
+         export MAVEN_OPTS="-Dmaven.repo.local=$base/m2" MAVEN_ARGS="-B -DskipTests" &&
+         ./mvnw -B -q org.codehaus.mojo:versions-maven-plugin:2.21.0:set \
+           -Dmaven.repo.local="$base/m2" -DnewVersion=99.99.99-probe \
+           -DprocessAllModules=true -DgenerateBackupPoms=false &&
+         REPRODUCIBLE_SHA_FILE="$base/record.txt" scripts/verify-reproducible.sh
+       ) >>"$PROBE_CAPTURE" 2>&1; then
+    rm -rf "$base"; return 1
+  fi
+  if [ -d "$base/m2/com/housedevinci" ]; then rm -rf "$base"; return 1; fi
+  touch "$base/.built"
+  printf '%s' "$base"
+}
+
+_scan_step_fixture() { # _scan_step_fixture <clean|vulnerable>; echoes a private work dir (tree/, t/ = runner temp)
+  local kind="${1:-clean}" base work
+  base="$(_scan_fixture_base "$kind")" || return 1
+  work="$(mktemp -d)"
+  cp -a "$base/tree" "$work/tree"
+  mkdir -p "$work/t"
+  cp -a "$base/m2" "$work/t/m2repo"
+  cp "$base/record.txt" "$work/t/reproducible-sha256.txt"
+  # The REAL pinned scanner, installed once into the shared fixture and copied per probe.
+  if [ ! -x "$base/realbin/grype" ]; then
+    tools/install-scanner.sh grype "$base/realbin" >>"$PROBE_CAPTURE" 2>&1 || { rm -rf "$work"; return 1; }
+  fi
+  mkdir -p "$work/t/bin"
+  cp "$base/realbin/grype" "$work/t/bin/grype"
+  printf '%s' "$work"
+}
+
+# Runs the real scan step body in a fixture copy and echoes its exit code. The runner
+# substitutes ${{ ... }} before bash ever sees it; bash would read ${{ as a bad substitution.
+_scan_step_exit() { # _scan_step_exit <work dir>
+  local work="$1" body rc ts
+  body="$(step_body "$WF" "$SCAN_STEP")"
+  [ -n "$body" ] || { echo 127; return; }
+  ts="$(cd "$work/tree" && scripts/git-commit-timestamp.sh)"
+  body="${body//\$\{\{ runner.temp \}\}/\$RUNNER_TEMP}"
+  body="${body//\$\{\{ steps.v.outputs.timestamp \}\}/\$PROBE_RELEASE_TIMESTAMP}"
+  ( cd "$work/tree" && RUNNER_TEMP="$work/t" PROBE_RELEASE_TIMESTAMP="$ts" \
+      GITHUB_STEP_SUMMARY="$work/summary.md" bash -c "$body" ) >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  echo "$rc"
+}
+
+_needs_maven() {
+  [ "${CIPHER_PROBE_MAVEN:-0}" = "1" ] && return 1
+  PROBE_SKIP_REASON="this probe builds a synthetic release reactor and runs the real pinned grype; set CIPHER_PROBE_MAVEN=1 to run it"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# probe 3 (with F-5 and D-SCAN-01/02). The whole scan step body, executed against a synthetic
+# release reactor with an EMPTY local repository and the real pinned Grype. Weak while the body
+# exits non-zero (it cannot resolve the starter's sibling core module from a reactor that has
+# not packaged it, or the scanner cannot run), or while the scan set it produced lacks either
+# published jar or any resolved runtime dependency, or while the scanner cataloged fewer
+# packages than jars were staged.
+# ---------------------------------------------------------------------------
+probe_scan_does_not_cover_the_published_jars() {
+  _needs_maven && return 0
+  local work rc sbom staged covered
+  work="$(_scan_step_fixture clean)" || { PROBE_SKIP_REASON="the synthetic release reactor, or the pinned grype, could not be prepared, so the step body was never exercised"; return 0; }
+  rc="$(_scan_step_exit "$work")"
+  if [ "$rc" -ne 0 ]; then rm -rf "$work"; return 0; fi
+  sbom="$(cat "$work/t/grype-sbom.json" 2>/dev/null || true)"
+  [ -s "$work/t/scanned-sha256.txt" ] || { rm -rf "$work"; return 0; }
+  grep -q 'agent-guard-core-99.99.99-probe.jar' "$work/t/scanned-sha256.txt" || { rm -rf "$work"; return 0; }
+  grep -q 'agent-guard-core-99.99.99-probe-sources.jar' "$work/t/scanned-sha256.txt" || { rm -rf "$work"; return 0; }
+  grep -q 'agent-guard-spring-boot-starter-99.99.99-probe.jar' "$work/t/scanned-sha256.txt" || { rm -rf "$work"; return 0; }
+  grep -q 'slf4j-api' "$work/t/scanned-sha256.txt" || { rm -rf "$work"; return 0; }   # a resolved runtime dependency
+  grep -q 'javadoc' "$work/t/scanned-sha256.txt" && { rm -rf "$work"; return 0; }       # F-2: javadoc is not in the scan set
+  grep -q 'agent-guard-sample' "$work/t/scanned-sha256.txt" && { rm -rf "$work"; return 0; }
+  grep -q 'agent-guard-core-99.99.99-probe.jar' <<<"$sbom" || { rm -rf "$work"; return 0; }
+  staged="$(grep -oE 'scanning [0-9]+ jar' "$PROBE_CAPTURE" | tail -1 | grep -oE '[0-9]+')"
+  covered="$(grep -oE '[0-9]+ package\(s\) were scanned' "$PROBE_CAPTURE" | tail -1 | grep -oE '^[0-9]+')"
+  rm -rf "$work"
+  printf '        real pinned scanner: %s package(s) cataloged for %s staged jar(s)\n' "${covered:-none}" "${staged:-none}"
+  [ -n "$staged" ] && [ -n "$covered" ] || return 0
+  [ "$covered" -ge "$staged" ] || return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# probe 3, planted-vulnerability half. A resolved runtime dependency with a published CRITICAL
+# advisory (commons-text 1.9, CVE-2022-42889) in the published module's graph must turn the
+# step red, and the gate must NAME the coordinate. Same step body, same real scanner, a
+# fixture that differs from the clean one by one dependency.
+# Weak while the step exits 0, or while it fails without naming commons-text.
+# ---------------------------------------------------------------------------
+probe_scan_passes_a_planted_vulnerable_dependency() {
+  _needs_maven && return 0
+  local work rc
+  work="$(_scan_step_fixture vulnerable)" || { PROBE_SKIP_REASON="the vulnerable synthetic reactor, or the pinned grype, could not be prepared"; return 0; }
+  rc="$(_scan_step_exit "$work")"
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -ne 127 ] || return 0                                   # no step: weak
+  grep -q 'commons-text' "$PROBE_CAPTURE" || return 0             # red for some other reason: weak
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# D-SCAN-03. The real pinned grype and the real gate over a scan set holding one jar that
+# declares a coordinate with a published CRITICAL advisory. No download: a jar carrying only
+# META-INF/maven/.../pom.properties, which is what syft reads. Weak unless the gate names the
+# coordinate and refuses. The mutation is inside the probe: the same scanner and gate over an
+# EMPTY directory must refuse too (exit 2), so a scan of nothing can never read as clean.
+# ---------------------------------------------------------------------------
+probe_the_real_scanner_and_gate_miss_a_known_critical() {
+  local work bin rc out
+  work="$(mktemp -d)"
+  if ! tools/install-scanner.sh grype "$work/bin" >>"$PROBE_CAPTURE" 2>&1; then
+    rm -rf "$work"; PROBE_SKIP_REASON="the pinned grype could not be installed, so the real scanner was never run"; return 0
+  fi
+  bin="$work/bin/grype"
+  mkdir -p "$work/build/META-INF/maven/org.apache.commons/commons-text" "$work/scan" "$work/empty"
+  printf 'groupId=org.apache.commons\nartifactId=commons-text\nversion=1.9\n' \
+    > "$work/build/META-INF/maven/org.apache.commons/commons-text/pom.properties"
+  ( cd "$work/build" && jar cf "$work/scan/commons-text-1.9.jar" META-INF ) >>"$PROBE_CAPTURE" 2>&1 \
+    || { rm -rf "$work"; PROBE_SKIP_REASON="no jar tool to build the vulnerable fixture"; return 0; }
+  find "$work/scan" -name '*.jar' -print0 | xargs -0 shasum -a 256 > "$work/staged.sha256"
+  if ! "$bin" "dir:$work/scan" -o json="$work/grype.json" -o cyclonedx-json="$work/sbom.json" >>"$PROBE_CAPTURE" 2>&1; then
+    rm -rf "$work"; PROBE_SKIP_REASON="the pinned grype could not complete a scan (no vulnerability database?)"; return 0
+  fi
+  out="$(tools/check-vulnerability-report.py --format grype --report "$work/grype.json" \
+          --sbom "$work/sbom.json" --min-artifacts 1 --expect-digests "$work/staged.sha256" \
+          --fail-on high 2>&1)"
+  rc=$?
+  printf '%s\n' "$out" >>"$PROBE_CAPTURE"
+  if [ "$rc" -ne 1 ]; then rm -rf "$work"; return 0; fi
+  grep -q 'commons-text@1.9' <<<"$out" || { rm -rf "$work"; return 0; }
+  "$bin" "dir:$work/empty" -o json="$work/empty-grype.json" -o cyclonedx-json="$work/empty-sbom.json" >>"$PROBE_CAPTURE" 2>&1
+  : > "$work/empty.sha256"
+  tools/check-vulnerability-report.py --format grype --report "$work/empty-grype.json" \
+    --sbom "$work/empty-sbom.json" --min-artifacts 1 --expect-digests "$work/empty.sha256" \
+    --fail-on high >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  rm -rf "$work"
+  [ "$rc" -eq 2 ] || return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# probe 4. A report that does not prove a scan happened is refused with exit 2: `{}`, an empty
+# file, and a well-formed report whose coverage document lists nothing. Also a report handed
+# over with no coverage document at all. Weak while any of them is accepted or answers
+# with something other than 2.
+# ---------------------------------------------------------------------------
+probe_empty_report_passes_the_gate() {
+  local work weak=1 rc
+  work="$(mktemp -d)"
+  printf '{}' > "$work/braces.json"
+  : > "$work/empty.json"
+  printf '{"matches":[],"source":{"type":"directory","target":"/nonexistent"}}' > "$work/nothing.json"
+  printf '{"components":[]}' > "$work/nothing-sbom.json"
+  printf '{"components":[]}' > "$work/braces-sbom.json"
+  : > "$work/none.sha256"
+  local f
+  for f in braces empty nothing; do
+    tools/check-vulnerability-report.py --format grype --report "$work/$f.json" \
+      --sbom "$work/$f-sbom.json" --min-artifacts 1 --expect-digests "$work/none.sha256" \
+      --fail-on high >>"$PROBE_CAPTURE" 2>&1
+    rc=$?
+    if [ "$rc" -ne 2 ]; then echo "$f.json: exit $rc, not 2" >>"$PROBE_CAPTURE"; weak=0; fi
+  done
+  tools/check-vulnerability-report.py --format grype --report "$work/nothing.json" --fail-on high >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  if [ "$rc" -ne 2 ]; then echo "no coverage document: exit $rc, not 2" >>"$PROBE_CAPTURE"; weak=0; fi
+  # The coverage floor: one package cataloged while two jars were staged is a scan that covered
+  # less than what is about to be signed. The gate must refuse (exit 2).
+  cat >"$work/floor-report.json" <<'J'
+{"matches":[],"source":{"type":"directory","target":"/probe/scan"},"descriptor":{"name":"grype","version":"0.118.0"}}
+J
+  cat >"$work/floor-sbom.json" <<'J'
+{"metadata":{"component":{"type":"file","name":"/probe/scan"},"tools":{"components":[{"name":"grype","version":"0.118.0"}]}},
+ "components":[{"type":"library","name":"a","version":"1","purl":"pkg:maven/x/a@1"},
+               {"type":"file","name":"/probe/scan/a-1.jar","hashes":[{"alg":"SHA-256","content":"aa"}]}]}
+J
+  printf 'aa  a-1.jar\n' > "$work/floor.sha256"
+  tools/check-vulnerability-report.py --format grype --report "$work/floor-report.json" \
+    --sbom "$work/floor-sbom.json" --min-artifacts 2 --expect-digests "$work/floor.sha256" \
+    --fail-on high >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  if [ "$rc" -ne 2 ]; then echo "fewer packages cataloged than jars staged: exit $rc, not 2" >>"$PROBE_CAPTURE"; weak=0; fi
+  rm -rf "$work"
+  [ "$weak" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# A MEDIUM finding does not fail the release (by decision) but must be written down, so the
+# release notes can carry a decision for it. Weak while a MEDIUM leaves no line in the summary
+# file, or fails the run.
+# ---------------------------------------------------------------------------
+probe_a_medium_finding_is_never_written_down() {
+  local work rc
+  work="$(mktemp -d)"
+  cat >"$work/grype.json" <<'REPORT'
+{"matches":[{"vulnerability":{"id":"CVE-synthetic-medium","severity":"Medium"},
+             "artifact":{"name":"vulnerable","version":"1.0","type":"java-archive"}}],
+ "source":{"type":"directory","target":"/probe/scan"},
+ "descriptor":{"name":"grype","version":"0.118.0"}}
+REPORT
+  cat >"$work/sbom.json" <<'SBOM'
+{"metadata":{"component":{"type":"file","name":"/probe/scan"},
+             "tools":{"components":[{"name":"grype","version":"0.118.0"}]}},
+ "components":[{"type":"library","name":"vulnerable","version":"1.0",
+                "purl":"pkg:maven/org.example/vulnerable@1.0"},
+               {"type":"file","name":"/probe/scan/vulnerable-1.0.jar",
+                "hashes":[{"alg":"SHA-256","content":"aa"}]}]}
+SBOM
+  printf 'aa  vulnerable-1.0.jar\n' > "$work/staged.sha256"
+  tools/check-vulnerability-report.py --format grype --report "$work/grype.json" \
+    --sbom "$work/sbom.json" --min-artifacts 1 --expect-digests "$work/staged.sha256" \
+    --fail-on high --summary-file "$work/below.txt" >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then rm -rf "$work"; return 0; fi
+  if [ -s "$work/below.txt" ]; then rm -rf "$work"; return 1; fi
+  rm -rf "$work"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# D15-01/02 and D15-03. The scan set is bound to the checksum record the reproducibility check
+# wrote, not to target/ (a directory the step's own inner build writes to). A published jar
+# that is not the recorded build, or a recorded jar absent from the scan set, must be refused.
+# Executed against the fixture; weak unless the step body refuses.
+# ---------------------------------------------------------------------------
+probe_pre_sign_scan_accepts_a_jar_that_is_not_the_recorded_build() {
+  _needs_maven && return 0
+  local work rc jar
+  work="$(_scan_step_fixture clean)" || { PROBE_SKIP_REASON="the synthetic release reactor could not be built"; return 0; }
+  jar="$work/tree/agent-guard-core/target/agent-guard-core-99.99.99-probe.jar"
+  if [ ! -f "$jar" ]; then rm -rf "$work"; PROBE_SKIP_REASON="the fixture produced no core jar to tamper with"; return 0; fi
+  printf 'not the recorded build' >> "$jar"
+  rc="$(_scan_step_exit "$work")"
+  rm -rf "$work"
+  [ "$rc" -eq 0 ]
+}
+
+probe_pre_sign_scan_accepts_a_published_jar_missing_from_the_scan_set() {
+  _needs_maven && return 0
+  local work rc
+  work="$(_scan_step_fixture clean)" || { PROBE_SKIP_REASON="the synthetic release reactor could not be built"; return 0; }
+  printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" \
+    "agent-guard-core-99.99.99-probe-shaded.jar" >> "$work/t/reproducible-sha256.txt"
+  rc="$(_scan_step_exit "$work")"
+  rm -rf "$work"
+  [ "$rc" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# F-4. The scanned graph must be the consumer's graph. A published pom whose dependency version
+# is a range, LATEST, RELEASE or a SNAPSHOT (also through a property of the same pom) lets a
+# consumer resolve an artifact that was never scanned. The step refuses before it builds
+# anything. Executed against the fixture with each shape planted in the starter's pom; weak
+# when any shape is accepted, or refused for a reason other than the pom check.
+# ---------------------------------------------------------------------------
+probe_a_version_range_in_a_published_pom_is_accepted() {
+  _needs_maven && return 0
+  local work rc v weak=1 shape
+  work="$(_scan_step_fixture clean)" || { PROBE_SKIP_REASON="the synthetic release reactor could not be built"; return 0; }
+  # control: the unmodified fixture passes the pom check, so a refusal below is the pom check's
+  for shape in '[1.0,2.0)' '(,3.0]' 'LATEST' 'RELEASE' '1.2.3-SNAPSHOT' '${probe.range}'; do
+    rm -rf "$work/tree/.probe-pom"; mkdir -p "$work/tree/.probe-pom"
+    cp "$work/tree/agent-guard-spring-boot-starter/pom.xml" "$work/tree/.probe-pom/pom.xml.orig"
+    python3 - "$work/tree/agent-guard-spring-boot-starter/pom.xml" "$shape" <<'PY'
+import sys
+p, v = sys.argv[1], sys.argv[2]
+s = open(p).read()
+dep = ("<dependency><groupId>org.example</groupId><artifactId>probe-dep</artifactId>"
+       "<version>%s</version></dependency>" % v)
+s = s.replace("<dependencies>", "<dependencies>" + dep, 1)
+if "${probe.range}" in v:
+    s = s.replace("<properties>", "<properties><probe.range>[1.0,2.0)</probe.range>", 1) if "<properties>" in s \
+        else s.replace("<dependencies>", "<properties><probe.range>[1.0,2.0)</probe.range></properties><dependencies>", 1)
+open(p, "w").write(s)
+PY
+    : > "$PROBE_CAPTURE"
+    rc="$(_scan_step_exit "$work")"
+    cp "$work/tree/.probe-pom/pom.xml.orig" "$work/tree/agent-guard-spring-boot-starter/pom.xml"
+    if [ "$rc" -eq 0 ] || ! grep -q 'floating, unpinned version' "$PROBE_CAPTURE"; then
+      echo "shape '$shape': exit $rc, not refused by the pom check" >&2
+      weak=0
+    fi
+  done
+  rm -rf "$work"
+  [ "$weak" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# F-9 aside, RP-5/RP-6. The uploaded bundle is compared entry by entry against the record, poms
+# included, and the record itself must contain the poms.
+# ---------------------------------------------------------------------------
+probe_reproducibility_check_never_records_poms() {
+  grep -q '\*\.pom' scripts/verify-reproducible.sh || return 0
+  return 1
+}
+
+# F-1. The comparison must read the bundle, not the build directory (a sibling of the bundle).
+probe_the_comparison_reads_the_build_directory_not_the_bundle() {
+  local body
+  body="$(step_body "$WF" "$CMP_STEP")"
+  [ -n "$body" ] || return 0
+  grep -q 'central-bundle.zip' <<<"$body" || return 0
+  grep -q 'unzip' <<<"$body" || return 0
+  grep -qE '^\s*for jar in agent-guard-core/target' <<<"$body" && return 0
+  grep -q 'MISSING FROM BUNDLE' <<<"$body" || return 0
+  grep -qE "find \"\\\$work\" .*'\\*\\.pom'" <<<"$body" || return 0
+  return 1
+}
+
+# Runs the real comparison step body against a synthetic bundle, record and scanned-digest file.
+_bundle_comparison_run() { # _bundle_comparison_run <project dir> <output file>
+  local body project_dir="$1" out="$2"
+  body="$(step_body "$WF" "$CMP_STEP")"
+  [ -n "$body" ] || { echo 127 > "$out.rc"; return; }
+  body="$(printf '%s' "$body" | sed 's/\${{ runner\.temp }}/$RUNNER_TEMP/g')"
+  mkdir -p "$project_dir/.runner-temp"
+  cp "$project_dir/reproducible-sha256.txt" "$project_dir/.runner-temp/reproducible-sha256.txt"
+  [ -f "$project_dir/scanned-sha256.txt" ] && cp "$project_dir/scanned-sha256.txt" "$project_dir/.runner-temp/scanned-sha256.txt"
+  : > "$project_dir/.runner-temp/summary.md"
+  ( cd "$project_dir" &&
+    RUNNER_TEMP="$project_dir/.runner-temp" GITHUB_STEP_SUMMARY="$project_dir/.runner-temp/summary.md" \
+    bash -c "$body" ) >"$out" 2>&1
+  echo $? > "$out.rc"
+  cat "$project_dir/.runner-temp/summary.md" >> "$out" 2>/dev/null || true
+}
+
+# _bundle_case <work dir> <spec>... ; spec = name:recorded:scanned
+#   recorded = ok (true digest) | wrong (a different digest) | none (no record line)
+#   scanned  = yes | no   (is the digest in scanned-sha256.txt)
+_bundle_case() {
+  local work="$1" spec name rec sc sha dir; shift
+  dir="$work/bundle-src/com/housedevinci/agent-guard-core/0.1.0"
+  mkdir -p "$dir" "$work/target/central-publishing"
+  : > "$work/reproducible-sha256.txt"; : > "$work/scanned-sha256.txt"
+  for spec in "$@"; do
+    name="${spec%%:*}"; rec="${spec#*:}"; sc="${rec#*:}"; rec="${rec%%:*}"
+    printf 'bytes of %s\n' "$name" > "$dir/$name"
+    sha="$(shasum -a 256 "$dir/$name" | cut -d' ' -f1)"
+    case "$rec" in
+      ok) printf '%s  %s\n' "$sha" "$name" >> "$work/reproducible-sha256.txt" ;;
+      wrong) printf '%s  %s\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" "$name" >> "$work/reproducible-sha256.txt" ;;
+    esac
+    [ "$sc" = yes ] && printf '%s  /scan/%s\n' "$sha" "$name" >> "$work/scanned-sha256.txt"
+  done
+  ( cd "$work/bundle-src" && zip -q -r "$work/target/central-publishing/central-bundle.zip" . )
+}
+
+# ---------------------------------------------------------------------------
+# probe 5. A jar in the uploaded bundle whose digest is not in scanned-sha256.txt is a jar that
+# was signed without having been scanned. Control: a bundle whose every non-javadoc jar was
+# scanned (and whose pom, which jar digests do not cover, was recorded) must pass, or the step is
+# simply broken. Weak when the control fails or when the unscanned sources jar passes.
+# ---------------------------------------------------------------------------
+probe_bundle_may_contain_an_unscanned_jar() {
+  command -v zip >>"$PROBE_CAPTURE" 2>&1 || { PROBE_SKIP_REASON="zip is not installed"; return 0; }
+  local work out rc weak=1
+  work="$(mktemp -d)"
+  _bundle_case "$work" 'agent-guard-core-0.1.0.jar:ok:yes' 'agent-guard-core-0.1.0.pom:ok:no'
+  _bundle_comparison_run "$work" "$work/control.out"; rc="$(cat "$work/control.out.rc")"
+  if [ "$rc" -ne 0 ]; then echo "control bundle refused (exit $rc)" >>"$PROBE_CAPTURE"; cat "$work/control.out" >>"$PROBE_CAPTURE"; rm -rf "$work"; return 0; fi
+  rm -rf "$work"; work="$(mktemp -d)"
+  _bundle_case "$work" 'agent-guard-core-0.1.0.jar:ok:yes' 'agent-guard-core-0.1.0-sources.jar:ok:no' 'agent-guard-core-0.1.0.pom:ok:no'
+  _bundle_comparison_run "$work" "$work/out"; rc="$(cat "$work/out.rc")"
+  cat "$work/out" >>"$PROBE_CAPTURE"
+  [ "$rc" -eq 0 ] && weak=0
+  rm -rf "$work"
+  [ "$weak" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# probe 6 (F-2). The javadoc exemption is by exact suffix `-javadoc.jar` and nothing else is
+# exempt, in both directions: a javadoc jar that differs from the record and was never scanned
+# passes (named residue), and `...-javadocX.jar` with a good record but no scan does not.
+# Weak when either direction is wrong.
+# ---------------------------------------------------------------------------
+probe_a_javadoc_jar_fails_the_digest_assertion() {
+  command -v zip >>"$PROBE_CAPTURE" 2>&1 || { PROBE_SKIP_REASON="zip is not installed"; return 0; }
+  local work rc weak=1
+  work="$(mktemp -d)"
+  _bundle_case "$work" 'agent-guard-core-0.1.0.jar:ok:yes' 'agent-guard-core-0.1.0-javadoc.jar:wrong:no' 'agent-guard-core-0.1.0.pom:ok:no'
+  _bundle_comparison_run "$work" "$work/out"; rc="$(cat "$work/out.rc")"
+  if [ "$rc" -ne 0 ]; then echo "javadoc jar refused (exit $rc): the named residue is not honoured" >>"$PROBE_CAPTURE"; cat "$work/out" >>"$PROBE_CAPTURE"; rm -rf "$work"; return 0; fi
+  rm -rf "$work"; work="$(mktemp -d)"
+  _bundle_case "$work" 'agent-guard-core-0.1.0.jar:ok:yes' 'agent-guard-core-0.1.0-javadocX.jar:ok:no' 'agent-guard-core-0.1.0.pom:ok:no'
+  _bundle_comparison_run "$work" "$work/out"; rc="$(cat "$work/out.rc")"
+  cat "$work/out" >>"$PROBE_CAPTURE"
+  [ "$rc" -eq 0 ] && weak=0
+  rm -rf "$work"
+  [ "$weak" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# F-8 / RP-6. An entry with no recorded checksum must report NO RECORD and let the loop reach the
+# entries after it. Weak if the step dies without a NO RECORD line or never reaches the later
+# entry (here deliberately mismatching).
+# ---------------------------------------------------------------------------
+probe_bundle_comparison_dies_on_an_unrecorded_entry() {
+  command -v zip >>"$PROBE_CAPTURE" 2>&1 || { PROBE_SKIP_REASON="zip is not installed"; return 0; }
+  local work weak=1
+  work="$(mktemp -d)"
+  _bundle_case "$work" 'agent-guard-core-0.1.0.pom:none:no' 'agent-guard-core-0.1.0.jar:wrong:yes'
+  _bundle_comparison_run "$work" "$work/out"
+  cat "$work/out" >>"$PROBE_CAPTURE"
+  if grep -q 'NO RECORD' "$work/out" && grep -q 'MISMATCH' "$work/out"; then weak=0; fi
+  rm -rf "$work"
+  [ "$weak" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# F-3. The gate's own soundness check (--self-test) runs in a release, in the publish job, as
+# the step immediately before the scan. Weak while it does not (probe 1 asserts the adjacency;
+# this asserts the command is really executed and exits 0 on the tree as it is).
+# ---------------------------------------------------------------------------
+probe_the_gate_self_test_never_runs_in_a_release() {
+  local body
+  body="$(step_body "$WF" "$SELFTEST_STEP")"
+  [ -n "$body" ] || return 0
+  grep -q 'check-vulnerability-report.py --self-test' <<<"$body" || return 0
+  ( bash -c "$body" ) >>"$PROBE_CAPTURE" 2>&1 || return 0
+  return 1
+}
+
+# The job summary must not kill a step the gate already passed (D18-03 on the sibling module).
+probe_summary_block_dies_on_a_missing_coverage_line() {
+  local line snippet work rc reached
+  line="$(grep -nE "were scanned\|matched by digest" "$WF" | head -1 | cut -d: -f1)"
+  [ -n "$line" ] || return 0
+  snippet="$(sed -n "${line}p" "$WF")"
+  work="$(mktemp -d)"
+  printf 'vulnerability gate (grype report, threshold HIGH): 0 finding(s)\n' > "$work/vulnscan-gate.txt"
+  RUNNER_TEMP="$work" bash -c "set -euo pipefail
+    { echo START; $snippet; echo TAIL-REACHED; } >> \"$work/summary.txt\"" >>"$PROBE_CAPTURE" 2>&1
+  rc=$?
+  grep -q TAIL-REACHED "$work/summary.txt" 2>/dev/null; reached=$?
+  rm -rf "$work"
+  [ "$rc" -ne 0 ] && [ "$reached" -ne 0 ]
+}
+
+# F-7. The evidence uploads carry the report, the below-threshold list and the binding file.
+probe_evidence_uploads_omit_the_scan_files() {
+  local ok success failure
+  success="$(_step_block 'Upload the release evidence')"
+  failure="$(_step_block 'Upload failure diagnostics')"
+  for f in grype.json vulnerabilities-below-threshold.txt scanned-sha256.txt; do
+    grep -q "$f" <<<"$success" || return 0
+    grep -q "$f" <<<"$failure" || return 0
+  done
+  return 1
+}
+
+probe probe_release_signs_without_a_vulnerability_scan       "B-CI-02 nothing scans what the release signs"         probe_release_signs_without_a_vulnerability_scan
+probe probe_scan_step_is_skippable                           "B-CI-02 the scan or the comparison can be skipped"    probe_scan_step_is_skippable
+probe probe_scan_does_not_cover_the_published_jars           "B-CI-02/F-5 the step body does not run or cover the jars" probe_scan_does_not_cover_the_published_jars
+probe probe_scan_passes_a_planted_vulnerable_dependency      "B-CI-02 a planted CRITICAL dependency does not fail the step" probe_scan_passes_a_planted_vulnerable_dependency
+probe probe_real_scanner_and_gate_miss_a_known_critical      "D-SCAN-03 a known CRITICAL in a scanned jar is not caught" probe_the_real_scanner_and_gate_miss_a_known_critical
+probe probe_empty_report_passes_the_gate                     "an empty or coverage-less Grype report reads as clean" probe_empty_report_passes_the_gate
+probe probe_medium_finding_is_never_written_down             "S8 a MEDIUM finding leaves no record"                 probe_a_medium_finding_is_never_written_down
+probe probe_pre_sign_scan_accepts_an_unrecorded_jar          "D15-01/02 the scan set is not bound to the recorded build" probe_pre_sign_scan_accepts_a_jar_that_is_not_the_recorded_build
+probe probe_pre_sign_scan_accepts_a_missing_published_jar    "D15-03 a recorded jar absent from the scan set passes" probe_pre_sign_scan_accepts_a_published_jar_missing_from_the_scan_set
+probe probe_version_range_in_a_published_pom_is_accepted     "F-4 a floating dependency version in a published pom passes" probe_a_version_range_in_a_published_pom_is_accepted
+probe probe_reproducibility_check_never_records_poms         "RP-5 the reproducibility record has no poms"          probe_reproducibility_check_never_records_poms
+probe probe_comparison_reads_build_dir_not_the_bundle        "F-1 the comparison reads target/, not the bundle"      probe_the_comparison_reads_the_build_directory_not_the_bundle
+probe probe_bundle_may_contain_an_unscanned_jar              "B-CI-02 a bundle jar absent from scanned-sha256.txt passes" probe_bundle_may_contain_an_unscanned_jar
+probe probe_javadoc_exemption_is_not_exact                   "F-2 the javadoc exemption is wrong in one direction"   probe_a_javadoc_jar_fails_the_digest_assertion
+probe probe_bundle_comparison_dies_on_an_unrecorded_entry    "F-8 an unrecorded entry kills the comparison silently" probe_bundle_comparison_dies_on_an_unrecorded_entry
+probe probe_gate_self_test_never_runs_in_a_release           "F-3 the gate self-test does not run in a release"      probe_the_gate_self_test_never_runs_in_a_release
+probe probe_summary_block_dies_on_a_missing_coverage_line    "D18-03 the job summary can kill a step the gate passed" probe_summary_block_dies_on_a_missing_coverage_line
+probe probe_evidence_uploads_omit_the_scan_files             "F-7 the evidence uploads omit the scan files"          probe_evidence_uploads_omit_the_scan_files
+
+# --- end of the PR 3 block -----------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

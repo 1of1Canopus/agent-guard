@@ -1,5 +1,5 @@
 #!/bin/sh
-# commit-msg hook: enforces the portfolio commit convention (see SHARED-CONVENTIONS.md).
+# commit-msg hook: enforces the project's commit convention, see CONTRIBUTING.md.
 msg_file="$1"
 subject=$(sed -n '1p' "$msg_file")
 case "$subject" in

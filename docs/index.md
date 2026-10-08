@@ -171,10 +171,16 @@ checks the audit trail's guards before it creates any store, and refuses to star
 schema the application uses: the five guard triggers exist on their own tables (two on `agentguard_audit`, three on
 `agentguard_audit_anchor`), each `ENABLE ALWAYS`, with no `WHEN` clause and no column list, pointing at the bundled
 guard functions whose bodies equal the bundled script's; no other trigger exists on any of the four tables; and none
-of the four has a rule, row level security, a policy or an inheritance child. The message lists every finding and the
+of the four has a rule, row level security, a policy or an inheritance child; and each of the four is an ordinary,
+logged table (not `UNLOGGED`, which crash recovery empties with no trigger firing, not a view, not partitioned). The
+message lists every finding and the
 remedy: apply the bundled `schema-postgresql.sql` once as the owning role (it recreates a missing guard and sets all
-five to `ENABLE ALWAYS`; it changes no row of the trail or the anchor), drop any extra object it names, restart. No
-property downgrades the refusal. A check that cannot complete (a catalogue the role cannot read, no current schema) is
+five to `ENABLE ALWAYS`; it changes no row of the trail or the anchor), drop any extra object it names, run `ALTER
+TABLE ... SET LOGGED` on a table it names `UNLOGGED`, restart. No property downgrades the refusal. The check runs on
+every boot whose properties name a JDBC store (`agentguard.store=JDBC` or `agentguard.budgets.store=JDBC`), also when
+the application supplies its own `DecisionStore`, `AuditSink` or `BudgetStore` beans. An application that builds a
+JDBC adapter itself with `agentguard.store=MEMORY` set, or without Spring, must call
+`JdbcSupport.verifyGuards(dataSource)` before it constructs the adapter. A check that cannot complete (a catalogue the role cannot read, no current schema) is
 `AG-SCHEMA-005`, never a pass. Upgrading from 0.1.0 or 0.1.1: see [upgrading to 0.1.2](upgrading-0.1.2.md).
 
 The check runs at startup only. A role that owns the tables can still disable a trigger after startup, which is one
@@ -274,7 +280,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-GUARD-001` | the guard's own infrastructure failed; the call was not run |
 | `AG-AUDIT-001` | this instance's audit key state (keyed/unkeyed) does not match the trail's; append refused |
 | `AG-AUDIT-002` | the trail has rows but no anchor row; append refused rather than re-anchored by a guess |
-| `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance) |
+| `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance, `UNLOGGED` or not an ordinary table) |
 | `AG-SCHEMA-005` | startup refused: the guard check could not complete; unverifiable is never treated as clean |
 | `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |
 
@@ -292,7 +298,8 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 
 ## Threat notes
 See `SECURITY-NOTES.md`: policy on the actual call, args hash bound to the decision, single-use decisions, redacted
-previews, per-call evaluation plus per-conversation budgets, append-only chained audit.
+previews, per-call evaluation plus per-conversation budgets, chained audit, append-only from 0.1.2 (checked at startup;
+see the [advisory](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011) in SECURITY-NOTES.md).
 
 ## FAQ
 **Does it work without Spring AI?** The core has no Spring dependency; the starter activates the Spring AI and MCP

@@ -1,7 +1,7 @@
 # Upgrading to 0.1.2
 
-0.1.2 fixes the defect described in the security advisory "the bundled schema step can install an audit trail with
-no append-only guards" (affects 0.1.0 and 0.1.1). It changes two things an operator sees:
+0.1.2 fixes the defect described in the security advisory "audit trail guards on 0.1.0 and 0.1.1" (affects 0.1.0 and 0.1.1; see
+[the advisory](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)). It changes two things an operator sees:
 
 1. The bundled `schema-postgresql.sql` creates each of its five guard triggers whenever that trigger is missing **on
    its own table** (0.1.x looked the name up across the whole database), and then sets all five to `ENABLE ALWAYS`.
@@ -69,7 +69,7 @@ remedy:
 
 | Code | Means | Do |
 |---|---|---|
-| `AG-SCHEMA-003` | a guard is missing, extra, disabled, at `O`/`R`/`D`, has a `WHEN` clause or a column list, points at another function or body; or a rule, row level security, a policy or an inheritance child sits on one of the four tables | step 3 for the triggers; drop the extra objects it names; restart |
+| `AG-SCHEMA-003` | a guard is missing, extra, disabled, at `O`/`R`/`D`, has a `WHEN` clause or a column list, points at another function or body; or a rule, row level security, a policy or an inheritance child sits on one of the four tables; or one of the four is `UNLOGGED` or not an ordinary table | step 3 for the triggers; drop the extra objects it names; `ALTER TABLE ... SET LOGGED` on a table named `UNLOGGED`; restart |
 | `AG-SCHEMA-005` | the check could not complete (a catalogue the role cannot read, no current schema, a damaged jar) | fix what it names; it is never treated as a pass |
 | `AG-SCHEMA-006` | `initialize-schema=true` and the script failed as the application's role | set `initialize-schema=false`, apply the script as the owner |
 

@@ -5,7 +5,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Security
-- Audit trail guards (security advisory "schema trigger guards", affects 0.1.0 and 0.1.1): the bundled
+- Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)): the bundled
   `schema-postgresql.sql` looked each of its five guard triggers up by name across the whole database, so a trigger
   of the same name on any other relation, including the archived copy the `AG-AUDIT-002` remedy produces, suppressed
   the real guard with no error and the trail ran with no append-only, no-truncate, anchor-monotonic or anchor
@@ -14,8 +14,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   database. The three guard-function bodies are unchanged.
 - New startup refusal `AG-SCHEMA-003` when the audit trail's guards do not hold in the schema the application uses
   (exact trigger set on the four tables, `ENABLE ALWAYS`, no `WHEN` clause or column list, bundled functions and
-  bodies, no rule, row level security, policy or inheritance edge), on every boot path that uses a JDBC store,
-  `initialize-schema` `true` or `false`. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+  bodies, no rule, row level security, policy or inheritance edge, each of the four an ordinary logged table, not
+  `UNLOGGED`), on every boot path whose properties name a JDBC store, `initialize-schema` `true` or `false`, also
+  when the application supplies its own store beans. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
   Checked at startup only: a role that owns the tables can still disable a trigger afterwards.
 - `initialize-schema=true` with a role that does not own the schema is refused with `AG-SCHEMA-006` (SQLState
   only) instead of surfacing the driver's raw permission error; it never booted in 0.1.x either.

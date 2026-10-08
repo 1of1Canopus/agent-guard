@@ -92,13 +92,16 @@ does about it, and what still needs a reviewer's eye.
   `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the head hash
   periodically. The anchor's `agentguard_audit_anchor_no_delete`/`_no_truncate` triggers (F3(a)) mean that
   role cannot lose the anchor row even by accident.
-- **Startup guard check (0.1.2, security advisory "schema trigger guards").** 0.1.0 and 0.1.1 created each guard
+- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011)).** 0.1.0 and 0.1.1 created each guard
   trigger only when no trigger of that name existed anywhere in the database, so an archived copy of the trail (the
   `AG-AUDIT-002` remedy) or any same-named trigger on another relation left the live trail with no guard, silently.
   From 0.1.2 the script scopes each check to its relation, arms all five guards `ENABLE ALWAYS` (they then also fire
   for a replication apply worker, a replica-mode session and `pg_restore --disable-triggers`), and the starter refuses
   to start (`AG-SCHEMA-003`) unless the guard set, its functions and bodies are exactly the bundled ones and no rule,
-  row level security, policy or inheritance edge sits on the four tables. The check's own catalogue reads are
+  row level security, policy or inheritance edge sits on the four tables, and each of the four is an ordinary, logged
+  table: an `UNLOGGED` trail and anchor are both emptied by crash recovery with no trigger firing, so the anchor
+  cannot tell. The check runs on every boot whose properties name a JDBC store, also when the application supplies its
+  own store beans; names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
   `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
   same-named functions of its own.
 - **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a

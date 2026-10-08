@@ -1,7 +1,10 @@
 package com.housedevinci.agentguard.autoconfigure;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.housedevinci.agentguard.adapter.jdbc.JdbcAuditSink;
+import com.housedevinci.agentguard.adapter.jdbc.JdbcDecisionStore;
 import com.housedevinci.agentguard.adapter.jdbc.JdbcSupport;
 import com.housedevinci.agentguard.domain.AgentGuardException;
 import com.housedevinci.agentguard.domain.AuditSink;
@@ -274,6 +277,27 @@ class SchemaGuardBootPathTest {
         .run(ctx -> assertThat(rootRefusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
   }
 
+  /** CP34-1: the application's own JDBC stores remove no edge to the check, lazy or not. */
+  @Test
+  void user_supplied_stores_under_lazy_initialization_are_still_checked() throws Exception {
+    String db = freshDatabase();
+    archiveRemedyState(db);
+    DataSource ds = runtime(db);
+    runner(
+            ds,
+            "agentguard.store=JDBC",
+            "agentguard.budgets.store=MEMORY",
+            "agentguard.jdbc.initialize-schema=false",
+            "spring.main.lazy-initialization=true")
+        .withBean(DecisionStore.class, () -> new JdbcDecisionStore(ds))
+        .withBean(AuditSink.class, () -> new JdbcAuditSink(ds))
+        .withInitializer(
+            c ->
+                c.addBeanFactoryPostProcessor(
+                    new org.springframework.boot.LazyInitializationBeanFactoryPostProcessor()))
+        .run(ctx -> assertThat(rootRefusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
+  }
+
   @Test
   void budget_only_jdbc_configuration_is_checked_too() throws Exception {
     String db = freshDatabase();
@@ -297,7 +321,9 @@ class SchemaGuardBootPathTest {
               assertThat(ctx).hasNotFailed();
               assertThat(ctx.getBean(DecisionStore.class)).isNotNull();
               assertThat(ctx.getBean(AuditSink.class)).isNotNull();
-              assertThat(ctx.getBeanFactory().getSingleton("agentGuardSchemaGate")).isNull();
+              assertThat(ctx.getBean(AgentGuardSchemaGate.class).verifiedDataSource()).isEmpty();
+              assertThatThrownBy(() -> ctx.getBean(AgentGuardSchemaGate.class).dataSource())
+                  .isInstanceOf(AgentGuardConfigurationException.class);
             });
   }
 

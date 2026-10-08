@@ -1,17 +1,21 @@
 package com.housedevinci.agentguard.autoconfigure;
 
 import com.housedevinci.agentguard.adapter.jdbc.JdbcSupport;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 
 /**
- * The one place the starter hands a {@link DataSource} to the JDBC stores. Built, once per context,
- * the first time a JDBC-backed decision store, audit sink or budget store is created, and never in
- * a context that uses none. On every boot path it refuses to hand the {@code DataSource} out unless
- * the audit trail's guards hold:
+ * The one place the starter hands a {@link DataSource} to the JDBC stores, and the startup check of
+ * the audit trail's guards. Always registered and never lazy, so the check runs whether the stores
+ * are the starter's beans or the application's own (CP34-1). Whether JDBC is in use is decided from
+ * the properties alone: {@code agentguard.store=JDBC}, or {@code agentguard.budgets.store=JDBC}. If
+ * it is not, the gate holds no {@code DataSource}, needs none, and {@link #dataSource()} refuses.
+ * If it is, the gate refuses to start the context unless the audit trail's guards hold:
  *
  * <ul>
  *   <li>{@code agentguard.jdbc.initialize-schema=true}: the bundled script and the guard check run
@@ -31,10 +35,31 @@ public final class AgentGuardSchemaGate {
   /** DataSources whose schema script already ran in this JVM (L10: once, not per bean). */
   private static final Set<Integer> SCRIPT_DONE = ConcurrentHashMap.newKeySet();
 
-  private final DataSource dataSource;
+  private final Optional<DataSource> dataSource;
 
-  AgentGuardSchemaGate(AgentGuardProperties props, DataSource dataSource) {
-    this.dataSource = dataSource;
+  AgentGuardSchemaGate(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+    if (!jdbcInUse(props)) {
+      this.dataSource = Optional.empty();
+      return;
+    }
+    DataSource ds = dataSources.getIfAvailable();
+    if (ds == null) {
+      throw new AgentGuardConfigurationException(
+          "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true, but no"
+              + " DataSource found (add spring-boot-starter-jdbc + spring.datasource.*). For a local"
+              + " trial set agentguard.store=memory - not for production.");
+    }
+    verify(props, ds);
+    this.dataSource = Optional.of(ds);
+  }
+
+  /** JDBC is in use when the decision/audit store or the budget store is configured as JDBC. */
+  static boolean jdbcInUse(AgentGuardProperties props) {
+    return props.getStore() == AgentGuardProperties.StoreType.JDBC
+        || props.getBudgets().getStore() == AgentGuardProperties.BudgetStoreType.JDBC;
+  }
+
+  private static void verify(AgentGuardProperties props, DataSource dataSource) {
     Integer id = System.identityHashCode(dataSource);
     if (props.getJdbc().isInitializeSchema() && !SCRIPT_DONE.contains(id)) {
       JdbcSupport.initializeSchemaAndVerifyGuards(dataSource);
@@ -63,8 +88,23 @@ public final class AgentGuardSchemaGate {
     }
   }
 
-  /** The verified {@code DataSource}. */
+  /**
+   * The verified {@code DataSource}.
+   *
+   * @throws AgentGuardConfigurationException when the properties configure no JDBC store, so no
+   *     check ran and no {@code DataSource} was verified
+   */
   public DataSource dataSource() {
+    return dataSource.orElseThrow(
+        () ->
+            new AgentGuardConfigurationException(
+                "agentguard: a JDBC store was requested but neither agentguard.store nor"
+                    + " agentguard.budgets.store is JDBC, so the audit trail guards were not"
+                    + " checked; set the store property to JDBC"));
+  }
+
+  /** The verified {@code DataSource}, empty when no JDBC store is configured. */
+  Optional<DataSource> verifiedDataSource() {
     return dataSource;
   }
 }

@@ -52,7 +52,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 
 /**
  * Wires the free core. Active only with {@code agentguard.enabled=true}. Every port has a
@@ -282,33 +281,26 @@ public class AgentGuardAutoConfiguration {
   }
 
   /**
-   * Built only when a JDBC-backed store asks for it ({@code @Lazy}), after any database initializer
-   * of the same context ({@code @DependsOnDatabaseInitialization}). Not replaceable: it is the
-   * startup check of the audit trail's guards.
+   * Always registered and never lazy (CP34-1): the guard check must run on every boot path, also
+   * when the application supplies its own stores. Ordered after any database initializer of the
+   * same context ({@code @DependsOnDatabaseInitialization}). Not replaceable: it is the startup
+   * check of the audit trail's guards.
    */
   @Bean
-  @Lazy
   @DependsOnDatabaseInitialization
   AgentGuardSchemaGate agentGuardSchemaGate(
       AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
-    DataSource ds = dataSources.getIfAvailable();
-    if (ds == null) {
-      throw new AgentGuardConfigurationException(
-          "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true, but no"
-              + " DataSource found (add spring-boot-starter-jdbc + spring.datasource.*). For a local"
-              + " trial set agentguard.store=memory - not for production.");
-    }
-    return new AgentGuardSchemaGate(props, ds);
+    return new AgentGuardSchemaGate(props, dataSources);
   }
 
   /**
-   * The stores stay eager under {@code spring.main.lazy-initialization=true}, so the guard check
-   * runs at startup rather than at the first guarded call.
+   * The guard check and the stores stay eager under {@code spring.main.lazy-initialization=true},
+   * so the check runs at startup rather than at the first guarded call.
    */
   @Bean
   static LazyInitializationExcludeFilter agentGuardStoresAreEager() {
     return LazyInitializationExcludeFilter.forBeanTypes(
-        DecisionStore.class, AuditSink.class, BudgetStore.class);
+        AgentGuardSchemaGate.class, DecisionStore.class, AuditSink.class, BudgetStore.class);
   }
 
   // ---- notifiers ----------------------------------------------------------------------------

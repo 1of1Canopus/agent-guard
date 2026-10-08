@@ -180,6 +180,17 @@ jobs:
             fi
           done
 
+      # Keyless CVE gate, release half (B-CI-02). The pinned scanner is fetched and its checksum
+      # verified HERE, before the version is derived and before setup-java imports the signing
+      # key: a scanner that cannot be installed means "no release", never "release unscanned".
+      # F-3: this is NOT "before the key is in scope" - the job declares `environment: release`,
+      # so its environment secrets are bound to the job from the moment it is scheduled. It is
+      # before the key is imported into a keyring, and no step from here to the gate names a
+      # secret. This repository has no secret-free `preflight` job yet (QUESTIONS, separate
+      # mechanism); when it lands, this step and the self-test below move into it.
+      - name: Install the pinned Grype and verify its checksum
+        run: tools/install-scanner.sh grype "${RUNNER_TEMP}/bin"
+
       - name: Derive the release version
         id: v
         shell: bash
@@ -261,6 +272,223 @@ jobs:
           REPRODUCIBLE_SHA_FILE: ${{ runner.temp }}/reproducible-sha256.txt
         run: scripts/verify-reproducible.sh
 
+      # The release half of the keyless CVE gate (2026-09-16). It runs HERE - after the
+      # reproducibility check, which leaves the built jars in each module's target/, and BEFORE
+      # the step that signs and uploads anything. A scan after the signature would be a report
+      # about bytes that are already on their way to the Central Portal. The bundle itself cannot
+      # be the input: central-publishing assembles central-bundle.zip during `deploy`, i.e. after
+      # signing. The property "what is signed was scanned" is held instead by DIGEST BINDING: this
+      # step writes scanned-sha256.txt, and the comparison step after the upload requires every
+      # published jar entry in central-bundle.zip (javadoc excepted, below) to appear in it.
+      #
+      # Detection, not prevention (F-6): the binding is checked on a bundle that is already on the
+      # Portal. A red comparison means the deployment is DROPPED on the Portal and never published;
+      # the release runbook says so.
+      #
+      # SCANNED SET: the main jar and the sources jar of each published module, plus every jar of
+      # the RESOLVED RUNTIME dependency set of those two modules (thin jars, not shaded ones -
+      # scanning only our own two would scan almost nothing). Deliberately NOT in the set:
+      #   * the sample (never published; a release held by an advisory in a demo dependency is how
+      #     a gate gets switched off - the per-pull-request scan of the tree covers it);
+      #   * `provided` and `optional` dependencies (the host supplies them: the starter's Spring
+      #     dependencies are NOT scanned here);
+      #   * the javadoc jars (F-2: they carry no runtime code and are not reproducible; the
+      #     comparison step reports them and does not enforce them - a named, accepted residue).
+      # POMS are not covered by jar digests: they are bound through the reproducibility record,
+      # and the version check below refuses a published pom whose dependency versions could resolve
+      # to something that was not scanned (F-4).
+      #
+      # Threshold and failure semantics are the pull-request job's, to the letter: the same
+      # tools/check-vulnerability-report.py, --fail-on high, exit 2 on an unreadable report. MEDIUM
+      # and below do not fail the release; they are written to the step summary and to
+      # vulnerabilities-below-threshold.txt, and the release notes carry a decision for each
+      # (the maintainer's documented duty, not something a script decides).
+      - name: Self-test the severity gate before it is trusted
+        run: |
+          set -euo pipefail
+          tools/check-vulnerability-report.py --self-test
+
+      - name: Scan the artifacts this release is about to sign
+        id: vulnscan
+        env:
+          MAVEN_OPTS: -Dmaven.repo.local=${{ runner.temp }}/m2repo -Dorg.slf4j.simpleLogger.defaultLogLevel=info
+        run: |
+          set -euo pipefail
+          scan="${RUNNER_TEMP}/release-scan"
+
+          # F-4: the scanned graph must be the consumer's graph. A consumer resolves from the
+          # PUBLISHED pom; this step resolves on the runner. They diverge if a published pom
+          # carries a version range, a SNAPSHOT, LATEST or RELEASE (Maven's two meta-versions,
+          # matched as whole values: "1.0.RELEASE" is an ordinary pinned version), whether written
+          # directly or through a property of the same pom. Refuse before building anything.
+          python3 - pom.xml agent-guard-core/pom.xml agent-guard-spring-boot-starter/pom.xml <<'PY'
+          import re, sys
+          import xml.etree.ElementTree as ET
+
+          floating = re.compile(r"[\[\]()]|-SNAPSHOT")
+          bad = 0
+          for path in sys.argv[1:]:
+              root = ET.parse(path).getroot()
+              for el in root.iter():
+                  el.tag = el.tag.split("}", 1)[-1]
+              props_el = root.find("properties")
+              props = {} if props_el is None else {c.tag: (c.text or "").strip() for c in props_el}
+
+              def resolve(v):
+                  for _ in range(10):
+                      m = re.search(r"\$\{([^}]+)\}", v)
+                      if m is None or m.group(1) not in props:
+                          break
+                      v = v.replace(m.group(0), props[m.group(1)])
+                  return v
+
+              for el in root.iter():
+                  if el.tag not in ("dependency", "parent"):
+                      continue
+                  ver = el.find("version")
+                  if ver is None or ver.text is None:
+                      continue
+                  raw = ver.text.strip()
+                  v = resolve(raw)
+                  if floating.search(v) or v in ("LATEST", "RELEASE"):
+                      gid = (el.findtext("groupId") or "?").strip()
+                      aid = (el.findtext("artifactId") or "?").strip()
+                      print(f"::error::{path}: {el.tag} {gid}:{aid} has a floating, unpinned version '{raw}' (resolves to '{v}'): a consumer could resolve an artifact this release never scanned (version range, SNAPSHOT, LATEST or RELEASE)")
+                      bad = 1
+          sys.exit(bad)
+          PY
+
+          # D15-02: the reference for "the bytes this release signs" is the record the
+          # reproducibility check wrote, NOT whatever is in target/ at this moment - target/ is
+          # a directory this step's own inner build writes to, so a jar compared against it is
+          # only ever compared against itself. That record is also what the post-deploy step
+          # compares the uploaded bundle against, so binding the scan to it binds the scan, the
+          # proved build and the upload to one set of bytes.
+          record="${RUNNER_TEMP}/reproducible-sha256.txt"
+          rm -rf "$scan"; mkdir -p "$scan"
+          [ -f "$record" ] || { echo "::error::no checksum record from the reproducibility check; a scan that cannot be bound to the artifacts being signed is not evidence"; exit 1; }
+          # The published jars, exactly as the reproducibility check just built them. Javadoc
+          # jars are not scanned (F-2).
+          for module in agent-guard-core agent-guard-spring-boot-starter; do
+            found=0
+            for jar in "$module"/target/*.jar; do
+              [ -f "$jar" ] || continue
+              case "$jar" in *-javadoc.jar) continue ;; esac
+              cp "$jar" "$scan/"; found=1
+            done
+            [ "$found" -eq 1 ] || { echo "::error::no jar in $module/target to scan"; exit 1; }
+          done
+
+          # D15-01, D15-03: every jar of ours in the scan set must be, byte for byte, an artifact
+          # the reproducibility check recorded - checked over BOTH published modules and over
+          # every recorded jar, with an absent jar a refusal rather than a skipped iteration.
+          # Called twice: once on what was staged above, and once after copy-dependencies, which
+          # writes our own coordinates into the same directory and is the path a
+          # repository-fetched same-version artifact would arrive by.
+          assert_scan_set_is_the_recorded_build() { # <when>
+            local when="$1" name expected actual rc=0 f
+            while read -r expected name _; do
+              [ -n "${name:-}" ] || continue
+              case "$name" in *.jar) ;; *) continue ;; esac
+              case "$name" in *-javadoc.jar) continue ;; esac
+              if [ ! -f "$scan/$name" ]; then
+                echo "::error::$name was built and recorded for this release but is not in the scan set ($when): the scan does not cover what is about to be signed"
+                rc=1; continue
+              fi
+              actual="$(shasum -a 256 "$scan/$name" | cut -d' ' -f1)"
+              [ "$expected" = "$actual" ] && continue
+              echo "::error::$name in the scan set ($when) is not the artifact the reproducibility check recorded: $expected vs $actual. Either target/ was rewritten after the check, or this coordinate was resolved from a repository instead of from the reactor"
+              rc=1
+            done < "$record"
+            # And the other direction, for our group only: a jar of ours in the scan set that the
+            # reproducibility check never recorded is an artifact nobody proved.
+            for f in "$scan"/agent-guard-*.jar; do
+              [ -e "$f" ] || continue
+              name="$(basename "$f")"
+              if ! awk -v n=" $name" 'index($0, n) { found=1 } END { exit !found }' "$record"; then
+                echo "::error::$name is in the scan set ($when) but was never recorded by the reproducibility check"
+                rc=1
+              fi
+            done
+            return "$rc"
+          }
+          assert_scan_set_is_the_recorded_build "staged from target/"
+
+          # Every jar a host actually gets at runtime, for the two PUBLISHED modules only.
+          #
+          # `package` runs in the SAME invocation as copy-dependencies on purpose (F-5; release run
+          # 35922939487 on the sibling module): the starter depends on com.housedevinci:agent-guard-core
+          # at the release version, which at this point exists nowhere but this reactor - not in the
+          # job's empty local repository and not on Central. A bare `dependency:copy-dependencies`
+          # would ask Central for it and fail the release. Packaging the selected modules first inside
+          # one session makes Maven resolve the sibling from the reactor's own target/ jar. -am pulls
+          # in the parent pom project for the same reason.
+          #
+          # Same profile, same timestamp and same test setting as the reproducibility check's
+          # builds (D15-02): an inner build with the pom's default timestamp would rewrite
+          # target/ with bytes nobody proved, and the assertion below would then - correctly -
+          # refuse the release.
+          ./mvnw -B -q -Prelease -Dgpg.skip=true -DskipTests \
+            -Dproject.build.outputTimestamp="${{ steps.v.outputs.timestamp }}" \
+            package dependency:copy-dependencies \
+            -pl agent-guard-core,agent-guard-spring-boot-starter -am \
+            -Dmaven.repo.local="${{ runner.temp }}/m2repo" \
+            -DincludeScope=runtime -DoutputDirectory="$scan"
+          assert_scan_set_is_the_recorded_build "after the dependency copy"
+          count="$(find "$scan" -name '*.jar' | wc -l | tr -d ' ')"
+          echo "scanning $count jar(s)"
+          [ "$count" -gt 0 ] || { echo "::error::nothing to scan; refusing to call that clean"; exit 1; }
+          # The digest of every scanned jar: the gate requires the scanner to have walked each one
+          # (--expect-digests), and the comparison step after the upload requires every published
+          # jar entry in the bundle to be in this file (the binding between scanned and signed
+          # bytes). "98 jars were staged" and "98 jars were opened by the scanner" are different
+          # statements, and only the second one is a scan.
+          find "$scan" -name '*.jar' -print0 | xargs -0 shasum -a 256 > "${RUNNER_TEMP}/scanned-sha256.txt"
+          set +e
+          # TWO documents out of ONE invocation (release run 36048639931 on the sibling module).
+          # grype's JSON report has four top-level keys - matches, source, distro, descriptor -
+          # and lists what it scanned in none of them; "artifacts" is syft's key. The CycloneDX
+          # document of the same run carries the catalog: one library component per package and one
+          # file component, with a SHA-256, per file walked.
+          "${RUNNER_TEMP}/bin/grype" "dir:$scan" \
+            -o json="${RUNNER_TEMP}/grype.json" \
+            -o cyclonedx-json="${RUNNER_TEMP}/grype-sbom.json"
+          rc=$?
+          set -e
+          # grype exits 0 when it completed; with no --fail-on it does not use the exit code
+          # to report findings, so anything non-zero here is a scanner failure.
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::grype exited $rc: the scan did not complete, so this release cannot claim its artifacts were scanned"
+            exit 1
+          fi
+          # --min-artifacts and --expect-digests are the coverage half of the gate: fewer
+          # packages than jars staged, or one staged jar the scanner never opened, is exit 2.
+          tools/check-vulnerability-report.py \
+            --format grype --report "${RUNNER_TEMP}/grype.json" \
+            --sbom "${RUNNER_TEMP}/grype-sbom.json" \
+            --min-artifacts "$count" \
+            --expect-digests "${RUNNER_TEMP}/scanned-sha256.txt" \
+            --fail-on high \
+            --summary-file "${RUNNER_TEMP}/vulnerabilities-below-threshold.txt" \
+            | tee "${RUNNER_TEMP}/vulnscan-gate.txt"
+          {
+            echo "### Vulnerability scan of the artifacts about to be signed"
+            echo
+            echo "$count jar(s) staged; coverage reported by the gate:"
+            echo
+            { grep -E 'were scanned|matched by digest' "${RUNNER_TEMP}/vulnscan-gate.txt" || echo "the gate printed no coverage line"; } | sed 's/^/- /'
+            echo
+            echo "#### Vulnerabilities below the release threshold"
+            echo
+            if [ -s "${RUNNER_TEMP}/vulnerabilities-below-threshold.txt" ]; then
+              cat "${RUNNER_TEMP}/vulnerabilities-below-threshold.txt"
+              echo
+              echo "Each line needs a decision in the release notes before Publish is pressed."
+            else
+              echo "None."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # One Maven invocation runs the whole release lifecycle in order:
       #   test -> spotless -> jacoco gate -> licence allowlist + THIRD-PARTY-NOTICES.txt
       #        -> sources + javadoc jars -> GPG signatures -> Central Portal upload.
@@ -312,49 +540,134 @@ jobs:
             fi
           done
 
-      # L1: the jars that were just signed and uploaded come from this third build, which
-      # was never itself compared against the two builds verify-reproducible.sh proved
-      # identical. Recompute SHA-256 of every published jar and fail if it does not match
-      # the checksum recorded from build 1, so the human about to press Publish is looking
-      # at a build that was actually proved reproducible, not just a sibling of one.
-      - name: Confirm the deployed jars match the reproducibility check
+      # L1, as amended: compare the bytes that were UPLOADED, entry by entry, against the
+      # checksums the reproducibility check recorded - not the jars left lying in each
+      # module's target/. Those files are a sibling of the bundle, not the bundle: a step that
+      # compares them proves something about the build directory and nothing about what
+      # Sonatype received. central-bundle.zip is the artifact that went over the wire, so the
+      # comparison reads the jars out of it.
+      #
+      # Since the pre-sign scan landed it also asserts that every non-javadoc jar in the bundle was
+      # scanned (scanned-sha256.txt, by digest); see the comment above the scan step.
+      #
+      # This necessarily lands AFTER the upload - signing happens at verify and the upload at
+      # deploy. That is why it is not the whole control: the release runbook states that
+      # Publish is pressed only on a green run, and that a red comparison means the deployment
+      # is DROPPED on the Portal, never published. A red run leaves a bundle that no human
+      # should ever release, and this step is what tells them so.
+      #
+      # Every jar AND pom recorded by the reproducibility check must be present in the
+      # bundle, and every jar or pom in the bundle must have been recorded: a missing
+      # artifact and an extra one are both failures. Poms are compared too, not only jars
+      # (RP-5): Central consumes the pom bytes, and the window this check exists to close
+      # applies to them identically. Javadoc jars are reported and not enforced (javadoc
+      # embeds JDK build detail that -notimestamp does not remove; Central requires the
+      # jar, nobody diffs one).
+      - name: Confirm the uploaded bundle matches the reproducibility check
         if: success()
         run: |
           set -euo pipefail
           sha_file="${{ runner.temp }}/reproducible-sha256.txt"
+          bundle="target/central-publishing/central-bundle.zip"
+          [ -f "$bundle" ] || { echo "::error::$bundle was not created"; exit 1; }
+          [ -f "$sha_file" ] || { echo "::error::no checksum file from the reproducibility check"; exit 1; }
+          scanned_file="${{ runner.temp }}/scanned-sha256.txt"
+          [ -f "$scanned_file" ] || { echo "::error::no scanned-sha256.txt from the pre-sign scan: nothing binds the bundle to what was scanned"; exit 1; }
+
+          work="${{ runner.temp }}/bundle-contents"
+          rm -rf "$work"; mkdir -p "$work"
+          unzip -q "$bundle" -d "$work"
+
           status=0
           {
-            echo "### Published jars vs. the reproducibility check"
+            echo "### Uploaded bundle vs. the reproducibility check"
             echo
-            printf '| %s | %s | %s |\n' "artifact" "verdict" "sha256"
+            printf '| %s | %s | %s |\n' "bundle entry" "verdict" "sha256"
             printf '|---|---|---|\n'
           } >>"$GITHUB_STEP_SUMMARY"
-          for jar in agent-guard-core/target/*.jar agent-guard-spring-boot-starter/target/*.jar; do
-            [ -e "$jar" ] || continue
+
+          seen="${{ runner.temp }}/bundle-jars-seen.txt"
+          : > "$seen"
+          while IFS= read -r jar; do
             name="$(basename "$jar")"
-            expected="$(grep -F " $name" "$sha_file" | awk '{print $1}' | head -1)"
+            echo "$name" >> "$seen"
+            # RP-6: an entry with no recorded checksum (the un-recorded parent pom, before
+            # the collect() fix) must report NO RECORD and let the loop continue to the
+            # next entry, never kill the step here. `grep -F ... | awk ...` under
+            # set -euo pipefail did exactly that: grep's exit 1 (no match) was promoted by
+            # pipefail to the assignment's status, and set -e killed the step at this line,
+            # silently, before the NO RECORD branch below could ever run - which is also
+            # why every entry sorted after the missing one (alphabetically, the starter's
+            # jars and pom) was never compared either. awk alone, exiting 0 whether or not
+            # it finds a match, cannot kill the step.
+            expected="$(awk -v n=" $name" 'index($0, n) { print $1; exit }' "$sha_file")"
             actual="$(shasum -a 256 "$jar" | cut -d' ' -f1)"
+            entry="${jar#$work/}"
+            # Binding between scanned and signed bytes (design F-1/F-2): every published jar entry
+            # must appear in scanned-sha256.txt BY DIGEST. Exempt: poms (bound through the
+            # reproducibility record; a pom is not a scanned artifact) and jars whose name ends in
+            # exactly `-javadoc.jar` (a named, accepted residue: no runtime code, not reproducible,
+            # not scanned). Nothing else is exempt: `-javadocX.jar` is a jar like any other.
+            case "$name" in
+              *.jar)
+                case "$name" in
+                  *-javadoc.jar) ;;
+                  *)
+                    if ! awk -v d="$actual" '$1 == d { found=1 } END { exit !found }' "$scanned_file"; then
+                      echo "::error::$entry is in the uploaded bundle but its digest is not in scanned-sha256.txt: these bytes were never scanned"
+                      printf '| %s | %s | %s |\n' "$entry" "UNSCANNED" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                      status=1
+                    fi
+                    ;;
+                esac
+                ;;
+            esac
             if [ -z "$expected" ]; then
-              echo "::error::$name has no recorded checksum from the reproducibility check"
-              printf '| %s | %s | %s |\n' "$name" "NO RECORD" "$actual" >>"$GITHUB_STEP_SUMMARY"
+              echo "::error::$entry is in the uploaded bundle but has no recorded checksum from the reproducibility check"
+              printf '| %s | %s | %s |\n' "$entry" "NO RECORD" "$actual" >>"$GITHUB_STEP_SUMMARY"
               status=1
             elif [ "$expected" = "$actual" ]; then
-              printf '| %s | %s | %s |\n' "$name" "matches" "$actual" >>"$GITHUB_STEP_SUMMARY"
+              printf '| %s | %s | %s |\n' "$entry" "matches" "$actual" >>"$GITHUB_STEP_SUMMARY"
             else
               case "$name" in
                 *-javadoc.jar)
-                  echo "::warning::$name differs from the reproducibility check (not enforced: the javadoc jar is not diffed for reproducibility)"
-                  printf '| %s | %s | %s |\n' "$name" "differs (not enforced)" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  echo "::warning::$entry differs from the reproducibility check (not enforced: the javadoc jar is not diffed)"
+                  printf '| %s | %s | %s |\n' "$entry" "differs (not enforced)" "$actual" >>"$GITHUB_STEP_SUMMARY"
                   ;;
                 *)
-                  echo "::error::$name does not match its reproducibility-check checksum: $expected vs $actual"
-                  printf '| %s | %s | %s |\n' "$name" "MISMATCH" "$actual" >>"$GITHUB_STEP_SUMMARY"
+                  echo "::error::$entry does not match its reproducibility-check checksum: $expected vs $actual"
+                  printf '| %s | %s | %s |\n' "$entry" "MISMATCH" "$actual" >>"$GITHUB_STEP_SUMMARY"
                   status=1
                   ;;
               esac
             fi
-          done
+          done < <(find "$work" \( -name '*.jar' -o -name '*.pom' \) -type f | sort)
+
+          # The other direction: a jar the reproducibility check proved must not be missing
+          # from what was uploaded.
+          while read -r _ name _; do
+            [ -n "${name:-}" ] || continue
+            if ! grep -qxF "$name" "$seen"; then
+              echo "::error::$name was checked for reproducibility but is not in the uploaded bundle"
+              printf '| %s | %s | %s |\n' "$name" "MISSING FROM BUNDLE" "-" >>"$GITHUB_STEP_SUMMARY"
+              status=1
+            fi
+          done < "$sha_file"
+
           exit "$status"
+
+      # F-7: the scan's evidence is copied out of the runner temp directory into the workspace,
+      # whatever happened before, so that the uploads below can address it: a refusal leaves the
+      # report that caused it. scanned-sha256.txt is the file that carries the binding between
+      # what was scanned and what was uploaded; vulnerabilities-below-threshold.txt is what the
+      # release notes' MEDIUM decisions are copied from.
+      - name: Collect the scan evidence
+        if: always()
+        run: |
+          mkdir -p release-evidence
+          for f in grype.json grype-sbom.json scanned-sha256.txt vulnerabilities-below-threshold.txt vulnscan-gate.txt; do
+            if [ -f "${{ runner.temp }}/$f" ]; then cp "${{ runner.temp }}/$f" "release-evidence/$f"; fi
+          done
 
       # L4: signing happens at `verify`, the Portal upload after; a run that fails at
       # upload must not still hand out a downloadable artifact with a valid signature for
@@ -372,6 +685,11 @@ jobs:
             agent-guard-core/target/*.asc
             agent-guard-spring-boot-starter/target/*.jar
             agent-guard-spring-boot-starter/target/*.asc
+            release-evidence/grype.json
+            release-evidence/grype-sbom.json
+            release-evidence/scanned-sha256.txt
+            release-evidence/vulnerabilities-below-threshold.txt
+            release-evidence/vulnscan-gate.txt
           if-no-files-found: error
 
       - name: Upload failure diagnostics
@@ -382,6 +700,11 @@ jobs:
           path: |
             **/target/THIRD-PARTY-NOTICES.txt
             **/target/surefire-reports/**
+            release-evidence/grype.json
+            release-evidence/grype-sbom.json
+            release-evidence/scanned-sha256.txt
+            release-evidence/vulnerabilities-below-threshold.txt
+            release-evidence/vulnscan-gate.txt
           if-no-files-found: ignore
 
   sample-smoke:

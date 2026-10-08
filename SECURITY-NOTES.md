@@ -235,6 +235,18 @@ the pool at or above real peak concurrency, and size `platform-thread-count`/`pl
 at or above real peak concurrent tool calls independently of `max-total` if the connection pool itself is
 deliberately smaller.
 
+## Release pipeline: vulnerability scan before signing
+The release workflow scans, with a pinned and checksum-verified Grype, the main and sources jars of
+`agent-guard-core` and `agent-guard-spring-boot-starter` plus every jar of their resolved runtime
+dependency set, before anything is signed or uploaded. The scanned digests are written to
+`scanned-sha256.txt` and the step that compares the uploaded `central-bundle.zip` requires every
+non-javadoc jar in it to appear there. Documented residues: `provided` and `optional` dependencies
+(supplied by the host) and the sample are not scanned here (the pull-request OSV-Scanner check
+covers the tree); javadoc jars are neither scanned nor bound (no runtime code, not reproducible);
+the digest comparison runs after the upload, so a red comparison means the deployment is dropped
+on the Portal and never published; the scanner's installability is proved inside the signing job
+(before the key is imported), not in a separate secret-free job.
+
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.
 - [x] Fuzz `ArgumentRedactor` with adversarial JSON (L5 closed with the JSON-aware redactor).

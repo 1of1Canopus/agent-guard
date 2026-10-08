@@ -25,6 +25,18 @@
 #   agent-guard-core-<v>-sources.jar
 #   agent-guard-spring-boot-starter-<v>.jar
 #   agent-guard-spring-boot-starter-<v>-sources.jar
+#   agent-guard-core-<v>.pom
+#   agent-guard-spring-boot-starter-<v>.pom
+#   agent-guard-parent-<v>.pom
+#
+# Poms are checked for the same reason the jars are: Central consumes the pom bytes too,
+# and the window between this proved build and the upload applies to them identically
+# (RP-5). Signatures are correctly left out - they are not reproducible.
+#
+# The parent pom (RP-6) is recorded too: the bundle carries exactly three published
+# coordinates - parent, core, starter - and a record covering only two of them leaves the
+# third an unrecorded bundle entry on every release, which is what broke the comparison
+# step (see release.yml's own fix, same finding).
 #
 # Reported but NOT enforced: the javadoc jars. javadoc embeds the JDK build string and,
 # in some JDK versions, generation-time detail that -notimestamp does not remove. Maven
@@ -58,10 +70,43 @@ echo "  scratch:   $WORK"
 collect() { # collect <dir>
   local dest="$1"
   mkdir -p "$dest"
-  for jar in agent-guard-core/target/*.jar agent-guard-spring-boot-starter/target/*.jar; do
-    [ -e "$jar" ] || continue
-    cp "$jar" "$dest/"
+  local module jar name
+  for module in agent-guard-core agent-guard-spring-boot-starter; do
+    for jar in "$module"/target/*.jar; do
+      [ -e "$jar" ] || continue
+      cp "$jar" "$dest/"
+    done
+    # `mvn package` never writes a pom into target/ - the pom Central receives is a bundle
+    # entry central-publishing-maven-plugin assembles only at `deploy`, from this module's
+    # own pom.xml verbatim (RP-5). Name it to match the bundle's convention
+    # (artifactId-version.pom, same as the main jar's basename) by borrowing the main jar's
+    # name, never the sources/javadoc jar's.
+    name=""
+    for jar in "$module"/target/*.jar; do
+      [ -e "$jar" ] || continue
+      case "$jar" in
+        *-sources.jar|*-javadoc.jar) continue ;;
+      esac
+      name="$(basename "$jar")"
+      break
+    done
+    if [ -n "$name" ] && [ -e "$module/pom.xml" ]; then
+      cp "$module/pom.xml" "$dest/${name%.jar}.pom"
+    fi
   done
+  # The reactor root, agent-guard-parent (packaging pom, no jar of its own to borrow a
+  # name from): the bundle listing assertion elsewhere in the pipeline already refuses a
+  # release whose bundle lacks com/housedevinci/agent-guard-parent/, so this record must
+  # exist for every release the comparison step ever sees (RP-6). Version read from the
+  # root pom.xml itself, the same <artifactId>/<version> pair pattern every module's own
+  # <parent> block already carries.
+  local parent_version
+  parent_version="$(awk '
+    /<artifactId>agent-guard-parent<\/artifactId>/ { getline; print; exit }
+  ' pom.xml | sed -E 's/.*<version>(.*)<\/version>.*/\1/')"
+  if [ -n "$parent_version" ] && [ -e pom.xml ]; then
+    cp pom.xml "$dest/agent-guard-parent-${parent_version}.pom"
+  fi
 }
 
 echo "  build 1 (fast baseline, tests skipped) ..."
@@ -77,7 +122,8 @@ mkdir -p "$(dirname "$SHA_FILE")"
 sha_file="$SHA_FILE"
 : > "$sha_file"
 printf '\n%-56s %-8s %s\n' "artifact" "verdict" "sha256 (build 1)"
-for f in "$WORK/one"/*.jar; do
+for f in "$WORK/one"/*.jar "$WORK/one"/*.pom; do
+  [ -e "$f" ] || continue
   name="$(basename "$f")"
   other="$WORK/two/$name"
   if [ ! -e "$other" ]; then

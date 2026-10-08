@@ -259,7 +259,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 
 ## Threat notes
 See `SECURITY-NOTES.md`: policy on the actual call, args hash bound to the decision, single-use decisions, redacted
-previews, per-call evaluation plus per-conversation budgets, hash-chained audit (append-only from 0.2.0; see the [0.1.x advisory](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)).
+previews, per-call evaluation plus per-conversation budgets, hash-chained audit (append-only from 0.1.2, checked at startup; see the advisory in SECURITY-NOTES.md, [audit trail guards on 0.1.0 and 0.1.1](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)).
 
 ## FAQ
 **Does it work without Spring AI?** The core has no Spring dependency; the starter activates the Spring AI and MCP

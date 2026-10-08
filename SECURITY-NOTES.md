@@ -163,7 +163,7 @@ In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five 
 names no relation. A trigger with the same name on any other relation in the database suppresses the real guard, and the
 schema step still reports success. On an affected installation the application's runtime role can `UPDATE` and `DELETE`
 audit rows, and the anchor has no monotonic guard and no no-delete guard. Append-only is therefore **not guaranteed on
-0.1.x**. Fixed in 0.2.0, not yet released. The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
+0.1.x**. Fixed in 0.1.2 (not yet released). The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
 the two tables and re-running the schema step moves the guards to the archived copies and leaves the fresh trail with
 none.
 Repairing the schema protects rows from the moment of repair; rows written while the guards were missing are not
@@ -188,7 +188,7 @@ Expect five rows whose `nspname` is the schema your application uses. Fewer than
 schema means you are affected. The same names under another schema (for example an archived copy) are expected after
 the archive remedy and are not a problem by themselves.
 
-Until 0.2.0 is released, repair by hand. As the owner of the two tables, run the following in one session, with
+Until 0.1.2 is released, repair by hand. As the owner of the two tables, run the following in one session, with
 `SET search_path TO <your schema>;` first and kept for the whole block (the `EXECUTE FUNCTION` names resolve on it and
 are then frozen; without it a trigger can be armed onto a same-named function in another schema with no error):
 
@@ -228,7 +228,7 @@ advisory against the application.
 Do not rewrite the anchor. Before and after the repair, run the chain verifier and keep both outputs, and record
 `SELECT pg_catalog.count(*) FROM <your schema>.agentguard_audit;` against the anchor's `row_count`, with the dates of
 the window. A trail shorter than `row_count` is the tail-deletion signature the anchor exists to leave behind. Neither
-this repair nor 0.2.0 changes the anchor or the trail rows, by design; rewriting the anchor to agree with a shortened
+this repair nor 0.1.2 changes the anchor or the trail rows, by design; rewriting the anchor to agree with a shortened
 trail destroys the only record that rows were lost. If the trail is used to evidence a control to an auditor, disclose
 the window as a period in which append-only was not enforced.
 

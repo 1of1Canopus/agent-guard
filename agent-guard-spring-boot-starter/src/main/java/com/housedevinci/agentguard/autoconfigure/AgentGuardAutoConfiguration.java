@@ -3,7 +3,6 @@ package com.housedevinci.agentguard.autoconfigure;
 import com.housedevinci.agentguard.adapter.jdbc.JdbcAuditSink;
 import com.housedevinci.agentguard.adapter.jdbc.JdbcBudgetStore;
 import com.housedevinci.agentguard.adapter.jdbc.JdbcDecisionStore;
-import com.housedevinci.agentguard.adapter.jdbc.JdbcSupport;
 import com.housedevinci.agentguard.adapter.memory.InMemoryAuditSink;
 import com.housedevinci.agentguard.adapter.memory.InMemoryBudgetStore;
 import com.housedevinci.agentguard.adapter.memory.InMemoryDecisionStore;
@@ -40,17 +39,17 @@ import com.housedevinci.agentguard.security.ToolPolicyAuthorizationManager;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -220,14 +219,14 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @ConditionalOnMissingBean
   public DecisionStore decisionStore(
-      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+      AgentGuardProperties props, ObjectProvider<AgentGuardSchemaGate> schemaGate) {
     return switch (props.getStore()) {
       case MEMORY -> {
         log.warn(
             "agentguard.store=MEMORY: decisions and audit are not durable. Use JDBC in production.");
         yield new InMemoryDecisionStore();
       }
-      case JDBC -> new JdbcDecisionStore(jdbc(props, dataSources));
+      case JDBC -> new JdbcDecisionStore(schemaGate.getObject().dataSource());
     };
   }
 
@@ -245,15 +244,16 @@ public class AgentGuardAutoConfiguration {
       name = "store",
       havingValue = "JDBC",
       matchIfMissing = true)
-  public JdbcAuditSink jdbcAuditSink(
-      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
-    return new JdbcAuditSink(jdbc(props, dataSources));
+  public JdbcAuditSink jdbcAuditSink(ObjectProvider<AgentGuardSchemaGate> schemaGate) {
+    return new JdbcAuditSink(schemaGate.getObject().dataSource());
   }
 
   @Bean
   @ConditionalOnMissingBean
   public BudgetStore budgetStore(
-      AgentGuardProperties props, ObjectProvider<DataSource> dataSources, Clock agentGuardClock) {
+      AgentGuardProperties props,
+      ObjectProvider<AgentGuardSchemaGate> schemaGate,
+      Clock agentGuardClock) {
     var type = props.getBudgets().getStore();
     if (type == AgentGuardProperties.BudgetStoreType.DEFAULT) {
       type =
@@ -263,7 +263,7 @@ public class AgentGuardAutoConfiguration {
     }
     return switch (type) {
       case MEMORY -> new InMemoryBudgetStore(agentGuardClock);
-      case JDBC -> new JdbcBudgetStore(jdbc(props, dataSources), agentGuardClock);
+      case JDBC -> new JdbcBudgetStore(schemaGate.getObject().dataSource(), agentGuardClock);
       case REDIS -> {
         if (props.getRedis().getUri() == null) {
           throw new AgentGuardConfigurationException(
@@ -280,33 +280,27 @@ public class AgentGuardAutoConfiguration {
     };
   }
 
-  /** DataSources whose schema step already ran in this JVM (L10: once, not per bean). */
-  private static final Set<Integer> SCHEMA_DONE = ConcurrentHashMap.newKeySet();
-
-  private static DataSource jdbc(
+  /**
+   * Always registered and never lazy (CP34-1): the guard check must run on every boot path, also
+   * when the application supplies its own stores. Ordered after any database initializer of the
+   * same context ({@code @DependsOnDatabaseInitialization}). Not replaceable: it is the startup
+   * check of the audit trail's guards.
+   */
+  @Bean
+  @DependsOnDatabaseInitialization
+  AgentGuardSchemaGate agentGuardSchemaGate(
       AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
-    DataSource ds = dataSources.getIfAvailable();
-    if (ds == null) {
-      throw new AgentGuardConfigurationException(
-          "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true, but no"
-              + " DataSource found (add spring-boot-starter-jdbc + spring.datasource.*). For a local"
-              + " trial set agentguard.store=memory - not for production.");
-    }
-    if (props.getJdbc().isInitializeSchema() && SCHEMA_DONE.add(System.identityHashCode(ds))) {
-      JdbcSupport.initializeSchema(ds);
-      log.info("agentguard: schema step ran (agentguard.jdbc.initialize-schema=true)");
-      try {
-        if (JdbcSupport.runtimeRoleOwnsAuditTable(ds)) {
-          log.warn(
-              "agentguard: the runtime database role owns agentguard_audit and can disable its"
-                  + " append-only triggers; use a separate owner role for the schema and a runtime role"
-                  + " with INSERT/SELECT only (docs, \"Database roles\")");
-        }
-      } catch (RuntimeException e) {
-        log.debug("agentguard: could not determine the audit table owner: {}", e.toString());
-      }
-    }
-    return ds;
+    return new AgentGuardSchemaGate(props, dataSources);
+  }
+
+  /**
+   * The guard check and the stores stay eager under {@code spring.main.lazy-initialization=true},
+   * so the check runs at startup rather than at the first guarded call.
+   */
+  @Bean
+  static LazyInitializationExcludeFilter agentGuardStoresAreEager() {
+    return LazyInitializationExcludeFilter.forBeanTypes(
+        AgentGuardSchemaGate.class, DecisionStore.class, AuditSink.class, BudgetStore.class);
   }
 
   // ---- notifiers ----------------------------------------------------------------------------

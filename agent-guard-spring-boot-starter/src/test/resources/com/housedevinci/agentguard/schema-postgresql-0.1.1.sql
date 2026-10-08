@@ -1,7 +1,7 @@
 -- Agent Guard schema (PostgreSQL). Idempotent, and serialised against the audit sink's appends and
 -- against other instances starting at the same time: the whole script runs in one transaction under
 -- the sink's advisory lock (see JdbcSupport.initializeSchema).
-SELECT pg_catalog.pg_advisory_xact_lock(18374244850549833);
+SELECT pg_advisory_xact_lock(18374244850549833);
 
 -- Keyed-from-birth declares agentguard_audit.key_id and
 -- agentguard_audit_anchor.keyed NOT NULL in the CREATE TABLE bodies below, with no backfill: this
@@ -24,16 +24,16 @@ SELECT pg_catalog.pg_advisory_xact_lock(18374244850549833);
 -- re-parsed as a different name, matching exactly what the unqualified CREATE TABLE targets.
 DO $$
 DECLARE
-  a oid := pg_catalog.to_regclass(pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit');
-  n oid := pg_catalog.to_regclass(pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit_anchor');
+  a oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit');
+  n oid := to_regclass(quote_ident(current_schema()) || '.agentguard_audit_anchor');
 BEGIN
   IF (a IS NOT NULL
       AND NOT EXISTS (
-        SELECT 1 FROM pg_catalog.pg_attribute
+        SELECT 1 FROM pg_attribute
         WHERE attrelid = a AND attname = 'key_id' AND attnum > 0 AND NOT attisdropped))
      OR (n IS NOT NULL
       AND NOT EXISTS (
-        SELECT 1 FROM pg_catalog.pg_attribute
+        SELECT 1 FROM pg_attribute
         WHERE attrelid = n AND attname = 'keyed' AND attnum > 0 AND NOT attisdropped)) THEN
     RAISE EXCEPTION
       'audit schema predates keyed-from-birth; archive the table and start a new trail (see SECURITY-NOTES)';
@@ -105,23 +105,13 @@ ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) N
 -- Append-only: UPDATE, DELETE and TRUNCATE are refused at the database level. A role that owns the
 -- table can still DISABLE TRIGGER: run the application with a role that has INSERT/SELECT only
 -- (see docs, "Database roles"); the anchor below makes tail deletion and truncation detectable.
--- Each trigger below is created only when the trigger of that name is absent ON THIS RELATION:
--- a trigger name is unique per relation, not per database, so 0.1.0 and 0.1.1, which looked the
--- name up database-wide, skipped the guard whenever an archived copy of the trail or any
--- unrelated table carried a trigger of the same name (security advisory, audit trail guards on
--- 0.1.0 and 0.1.1).
--- Every function name is pg_catalog-qualified so a same-named function earlier on the owner's
--- search_path cannot answer for it.
 CREATE OR REPLACE FUNCTION agentguard_audit_append_only() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION 'agentguard_audit is append-only (attempted %)', TG_OP;
 END;
 $$ LANGUAGE plpgsql;
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger
-                  WHERE tgname = 'agentguard_audit_append_only'
-                    AND tgrelid = pg_catalog.to_regclass(
-                          pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit')) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_append_only') THEN
     CREATE TRIGGER agentguard_audit_append_only
       BEFORE UPDATE OR DELETE ON agentguard_audit
       FOR EACH ROW EXECUTE FUNCTION agentguard_audit_append_only();
@@ -129,10 +119,7 @@ DO $$ BEGIN
 END $$;
 
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger
-                  WHERE tgname = 'agentguard_audit_no_truncate'
-                    AND tgrelid = pg_catalog.to_regclass(
-                          pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit')) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_no_truncate') THEN
     CREATE TRIGGER agentguard_audit_no_truncate
       BEFORE TRUNCATE ON agentguard_audit
       FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_append_only();
@@ -182,10 +169,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger
-                  WHERE tgname = 'agentguard_audit_anchor_monotonic'
-                    AND tgrelid = pg_catalog.to_regclass(
-                          pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit_anchor')) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_monotonic') THEN
     CREATE TRIGGER agentguard_audit_anchor_monotonic
       BEFORE UPDATE ON agentguard_audit_anchor
       FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_monotonic();
@@ -201,20 +185,14 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger
-                  WHERE tgname = 'agentguard_audit_anchor_no_delete'
-                    AND tgrelid = pg_catalog.to_regclass(
-                          pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit_anchor')) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_no_delete') THEN
     CREATE TRIGGER agentguard_audit_anchor_no_delete
       BEFORE DELETE ON agentguard_audit_anchor
       FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_append_only();
   END IF;
 END $$;
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger
-                  WHERE tgname = 'agentguard_audit_anchor_no_truncate'
-                    AND tgrelid = pg_catalog.to_regclass(
-                          pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit_anchor')) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'agentguard_audit_anchor_no_truncate') THEN
     CREATE TRIGGER agentguard_audit_anchor_no_truncate
       BEFORE TRUNCATE ON agentguard_audit_anchor
       FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_anchor_append_only();
@@ -235,16 +213,3 @@ CREATE TABLE IF NOT EXISTS agentguard_budget (
   used       bigint NOT NULL,
   expires_at timestamptz NOT NULL
 );
-
--- The five guards fire in every session_replication_role, including a replication apply worker,
--- a replica-mode session and pg_restore --disable-triggers. They do not defend against the table
--- owner, who can DISABLE TRIGGER directly: run the application as a non-owner role. Appended
--- AFTER the conditional blocks above, never before: on a database where a block was skipped there
--- would be no trigger to enable and the whole script would abort. Re-applying the script is the
--- repair for a guard someone disabled, set to replica or dropped. The application checks all of
--- this at startup and refuses to start when it does not hold (AG-SCHEMA-003).
-ALTER TABLE agentguard_audit        ENABLE ALWAYS TRIGGER agentguard_audit_append_only;
-ALTER TABLE agentguard_audit        ENABLE ALWAYS TRIGGER agentguard_audit_no_truncate;
-ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_monotonic;
-ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_no_delete;
-ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_no_truncate;

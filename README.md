@@ -15,7 +15,7 @@ Full reference (all properties, all error codes, the FAQ): [`docs/index.md`](doc
 
 - **Tool policy** — `@ToolPolicy(roles=…, scopes=…, tenants=…, sideEffect=…)` on a tool method, evaluated through Spring Security on the actual call, never on model intent.
 - **Human approval gate** — a `WRITE`/`DESTRUCTIVE` tool call is parked until a human approves it; it then runs exactly once, under the identity of the principal that asked.
-- **Tamper-evident audit trail** — every call is recorded in a hash-chained, append-only PostgreSQL table, keyed with HMAC from its first row.
+- **Tamper-evident audit trail** — every call is recorded in a hash-chained PostgreSQL table, keyed with HMAC from its first row; append-only from 0.1.2 (checked at startup; see the [advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011) in SECURITY-NOTES.md).
 - **Budgets** — per-principal, per-tenant and per-conversation limits on tool calls, steps and tokens, enforced before dispatch.
 
 ## Quickstart

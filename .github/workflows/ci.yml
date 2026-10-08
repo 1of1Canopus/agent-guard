@@ -105,11 +105,30 @@ jobs:
       # ubuntu-latest ships Docker: Testcontainers starts PostgreSQL and Redis for the integration tests.
       - name: Build, test, format check, coverage gate, third-party notices
         run: ./mvnw -B clean verify
+      - name: Refuse a moved-private document reference or a machine-local path inside a built jar
+        run: tools/check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter
       - name: Upload third-party notices
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: third-party-notices
           path: "**/target/THIRD-PARTY-NOTICES.txt"
+
+  # The reference guard is its own job, not a step inside "Build & test", because the release
+  # hygiene checklist requires it as a required status check in its own right. The pattern
+  # lives in exactly one place, tools/check-private-references.sh; this job runs its tree half
+  # (no JDK, no build needed) and the script's own --self-test. The jar half runs in
+  # "Build & test" (main jars) and in release.yml (main and sources jars).
+  reference-guard:
+    name: Reference guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Self-test the guard (one planted mutation per class, each must go red)
+        run: tools/check-private-references.sh --self-test
+      - name: Refuse a reference to a moved-private document or a machine-local path
+        run: tools/check-private-references.sh --tree
 
   # N12: tools/cipher-probe-release-pipeline.sh used to be run only by hand. That is the
   # mechanical reason N6 reached a tagged release - the suite that would have caught it was

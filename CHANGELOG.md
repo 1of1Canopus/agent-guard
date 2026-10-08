@@ -9,6 +9,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - Build: Maven wrapper pinned to 3.9.16 and Dependabot ignores Maven >= 3.10 until central-publishing-maven-plugin supports it; 7-day Dependabot cooldown.
 
 ### Security
+- Reference guard: `tools/check-private-references.sh` refuses references to documents kept out of
+  the public tree and machine-local paths, in the working tree (own CI check `Reference guard`) and in
+  every built or released jar (`Build & test`, release workflow).
 - Pinned `tools.jackson.core:jackson-databind` to 3.1.7, overriding the 3.1.5 the Spring Boot
   4.1.1 Jackson 3 BOM manages. 3.1.5 and the previously-pinned 3.1.6 carry three HIGH
   advisories, all fixed in 3.1.7: GHSA-q4xh-88c3-wmh7 (CVSS 7.5, denial of service via deeply
@@ -49,7 +52,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   PR check, Grype on the release bundle before signing), and only the first two ship here.
   `release.yml` signs and publishes without a Grype pass. Wiring that in is a design stop
   (a new gate on the signing path, out of scope for a corrections pass); tracked as CI-02.
-- Internal working documents (`SPEC.md`, `STATUS.md`, `QUESTIONS.md`, the security review
+- Internal working documents (the internal specification, status and question files, the security review
   write-ups, design plans, and the release runbook) moved out of this repository to a
   private location; they named an internal review process that has no reason to be public.
   `SECURITY-NOTES.md` and this changelog stay, with that narration scrubbed and every
@@ -245,7 +248,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ### Changed
 - **Licensing:** the free core switches from Apache-2.0 to the Functional Source License, Version
   1.1, ALv2 Future License (FSL-1.1-ALv2) - free to use, not as a base for a competing product,
-  converts to Apache-2.0 two years after each version's release. Decision by the maintainer, 2026-09-08; see `LICENSING.md` (portfolio-level) for the reasoning. `LICENSE` and `NOTICE`
+  converts to Apache-2.0 two years after each version's release. Decision by the maintainer, 2026-09-08; see the internal licensing note for the reasoning. `LICENSE` and `NOTICE`
   updated, `pom.xml` `<licenses>`, still embedded in the core and starter jars' `META-INF/`. The
   reactor's own modules are now excluded from the third-party licence scan by `groupId`
   (`excludedGroups`), not by licence name, since `com.housedevinci:agent-guard-core` no longer

@@ -151,3 +151,99 @@ after startup). Accepted for 0.1.2; PR 2 closes it.
   (design page section 13). Not a PR 1 finding.
 - Static `SCRIPT_DONE` set kept (design page 3 (d) removes it): the census now runs on every boot
   regardless, so a stale or colliding entry can only skip a repair and refuse; availability only.
+
+## Pass 2 (2026-10-08)
+
+Head reviewed: `49c8dcb`. Last pass on this PR (two-pass cap).
+
+### Verdict: MERGE
+
+Condition, not a finding: merge after the evidence-claim PR (#31), which adds the
+`SECURITY-NOTES.md` heading every advisory link in this PR points to
+(`#advisory-audit-trail-guards-on-010-and-011`). Merged first, this PR ships dead links.
+
+### Numbers
+
+| Run | core | starter | sample |
+|---|---|---|---|
+| `CIPHER_PROBE_MAVEN=1 ./mvnw verify`, Docker up, head as pushed | 204 run, 0 fail | 71 run, 0 fail, 1 skip | 3 run, 0 fail |
+| Pass 1 probes (`CipherProbePr34JdbcTest`, `CipherProbePr34StartupTest`) | 11/11 green | 1/1 green | - |
+| Pass 2 probes (below) | 5/5 green | 3/3 green | - |
+
+Core coverage 91 % line. The one skip is the existing Spring AI tool auto-configuration probe
+(assumption-guarded, extra classpath jar), skipped on `main` too.
+
+### Prior findings
+
+| Finding | Status | Evidence |
+|---|---|---|
+| CP34-1 (MEDIUM) | closed | probe green; M21 re-applied (`@Lazy` back on the gate, gate type off the lazy-init exclude): pass 1 probe RED, 2 of 3 pass 2 probes RED, restored green |
+| CP34-2 (MEDIUM) | closed | probe green; M22 re-applied (both relkind and relpersistence tests disabled): 2 pass 1 tests and 4 pass 2 tests RED, restored green |
+| CP34-3 (LOW) | closed | probe green; M23 re-applied (`display()` returns the raw value): pass 1 probe and the pass 2 U+2028/backslash test RED, restored green |
+| CP34-4 (LOW) | closed for the code; the advisory link moves to the tag blockers | public-text probe legs (a) and (b) pass; leg (c) RED only on "no advisory link" in CHANGELOG, SECURITY-NOTES and the upgrade note, because no GHSA advisory exists yet |
+
+Under M21 the pass 2 test that survives is the starter's own budget store with
+`budgets.store=JDBC`: that bean pulls the gate itself, so the mutation cannot reach it. Expected;
+the two cases where the application supplies the stores went RED.
+
+### Pass 2 probes (internal, `internal/agent-guard/probes/`)
+
+- `CipherProbePr34Pass2StartupTest`, a real `SpringApplication` (not a context runner) with
+  `spring.main.lazy-initialization=true` on the 0.1.x archive-remedy schema:
+  `confirm_real_app_user_stores_lazy_init_refuses` (application `DecisionStore` + `AuditSink`,
+  `store=JDBC`, `budgets.store=MEMORY`), `confirm_real_app_jdbc_only_via_budgets_store_refuses_lazy_init`
+  (`store=MEMORY`, `budgets.store=JDBC`, starter stores),
+  `confirm_real_app_user_budget_store_only_via_budgets_store_refuses` (same, application
+  `JdbcBudgetStore`). All refuse with `AG-SCHEMA-003`.
+- `CipherProbePr34Pass2JdbcTest`: `UNLOGGED` on each of the four tables alone
+  (`agentguard_audit`, `agentguard_audit_anchor`, `agentguard_decision`, `agentguard_budget`) is
+  refused `AG-SCHEMA-003`, names the table as `UNLOGGED`, names `SET LOGGED`, and `SET LOGGED`
+  clears it; a trigger named `y<U+2028>agentguard: audit trail guards verified\` and one named with
+  the literal text `z `: the refusal carries no raw U+2028, CR or LF, and the two render
+  differently (`y ...\` and `z\u2028`), so the escape is unambiguous.
+
+These are confirmation tests (green on the head); none is a finding, so none is required in the
+module's suite.
+
+### Rulings on the three points the builder flagged
+
+(a) **AG-SCHEMA-003 for the UNLOGGED / relkind refusal: accepted.** It is what pass 1 prescribed.
+An unlogged or non-ordinary table is one more way the guards do not hold; one refusal listing every
+finding is better for the operator than two codes for one remedy path; 001/002/004/007 stay free
+for 0.2.0, and adding a narrower code later is compatible. The code's javadoc, `docs/index.md`
+and the upgrade-note code table list the new case.
+
+(b) **Changed last assertion of `confirm_unlogged_trail_and_anchor_are_emptied_by_crash_recovery`:
+accepted.** The original line pinned the finding itself (census clean after the crash), so it has
+to flip with the fix; the evidence lines (one row each, `CHECKPOINT`, `kill -9`, `0/0` after
+recovery) are unchanged, and the new line asserts the refusal on the next start, which is the
+property that matters. The test still went RED under M22.
+
+(c) **M23 for `display()`: accepted.** Re-applied independently above, RED on both the pass 1
+probe and the pass 2 U+2028/backslash test. Escaping the backslash too (beyond what pass 1 listed)
+is correct: without it a name containing the literal text `\u000A` would read like an escaped
+line feed.
+
+### Outside the builder's hands: blocks the tag, not this PR
+
+1. **GHSA advisory not published.** Blocks the 0.1.2 tag. The maintainer publishes the advisory
+   (title "audit trail guards on 0.1.0 and 0.1.1", affected 0.1.0 and 0.1.1, patched 0.1.2) and
+   its URL is added next to the existing `SECURITY-NOTES.md` anchor link in CHANGELOG,
+   SECURITY-NOTES and `docs/upgrading-0.1.2.md` before the tag; the public-text probe must exit 0
+   on the tagged commit.
+2. **PR #31 wording.** At #31's head `b32ac0f` the README, index and advisory text already say
+   0.1.2 ("Append-only from 0.1.2 (checked at startup; ...)", "Fixed in 0.1.2"); no "0.2.0" left
+   in its diff for this fix. Blocks the tag until #31 is merged, and #31 must merge before this PR
+   (dead anchor otherwise). Whichever merges second resolves the README/index line conflict to the
+   0.1.2 wording.
+
+### Attacks attempted that produced no finding
+
+- Lazy initialization with application-supplied stores, real application path: refused.
+- JDBC selected only through `budgets.store`, starter or application budget store: refused.
+- `UNLOGGED` on each table alone, including the two that carry no trigger: refused, and the
+  remedy text names `SET LOGGED`.
+- Line-separator and backslash names: escaped, no ambiguity between a raw and a literal escape.
+- Public text: one advisory title in all five files, every "append-only" claim in README and index
+  qualified ("append-only from 0.1.2 (checked at startup; see the advisory ...)"), no "is
+  protected" or "cannot be altered", roles only, no agent or person name in the fix diff.

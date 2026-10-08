@@ -300,7 +300,12 @@ class CipherProbePr34JdbcTest {
     }
     assertThat(pid).isNotNull();
     assertThat(rows).as("trail rows / anchor rows after crash recovery").isEqualTo("0/0");
-    assertThatCode(() -> JdbcSupport.verifyGuards(owner(db))).doesNotThrowAnyException();
+    // Fix pass: on the reviewed head the census was still clean here; with the CP34-2 fix the
+    // next start refuses the unlogged pair.
+    assertThat(catchThrowable(() -> JdbcSupport.verifyGuards(owner(db))))
+        .isInstanceOfSatisfying(
+            AgentGuardException.class,
+            e -> assertThat(e.code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
   }
 
   /**

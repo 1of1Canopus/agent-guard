@@ -86,9 +86,10 @@ public final class ErrorCodes {
    * The audit trail's guards do not hold in the schema the application uses: one of the five
    * bundled triggers is missing, extra, disabled, not {@code ENABLE ALWAYS}, carries a {@code WHEN}
    * clause or a column list, or points at the wrong function; a guard body differs from the bundled
-   * script; or a rule, row level security, a policy or an inheritance edge exists on one of the
-   * four tables. Refused at startup; no property downgrades it. Codes 001, 002, 004 and 007 of this
-   * area are reserved for the schema verification of 0.2.0.
+   * script; one of the four tables is not an ordinary, logged table ({@code UNLOGGED}, a view, a
+   * partitioned table); or a rule, row level security, a policy or an inheritance edge exists on
+   * one of the four tables. Refused at startup; no property downgrades it. Codes 001, 002, 004 and
+   * 007 of this area are reserved for the schema verification of 0.2.0.
    */
   public static final String SCHEMA_UNGUARDED = "AG-SCHEMA-003";
 

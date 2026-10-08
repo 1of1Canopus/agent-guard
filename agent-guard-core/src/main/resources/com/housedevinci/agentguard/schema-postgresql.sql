@@ -108,7 +108,8 @@ ALTER TABLE agentguard_audit ADD COLUMN IF NOT EXISTS chain_version varchar(8) N
 -- Each trigger below is created only when the trigger of that name is absent ON THIS RELATION:
 -- a trigger name is unique per relation, not per database, so 0.1.0 and 0.1.1, which looked the
 -- name up database-wide, skipped the guard whenever an archived copy of the trail or any
--- unrelated table carried a trigger of the same name (security advisory, schema trigger guards).
+-- unrelated table carried a trigger of the same name (security advisory, audit trail guards on
+-- 0.1.0 and 0.1.1).
 -- Every function name is pg_catalog-qualified so a same-named function earlier on the owner's
 -- search_path cannot answer for it.
 CREATE OR REPLACE FUNCTION agentguard_audit_append_only() RETURNS trigger AS $$

@@ -34,8 +34,14 @@ import java.util.regex.Pattern;
  *       on the bundled events and pointing at the bundled function in the same schema;
  *   <li>each guard function's body equals the body in the bundled script (compared in Java, after
  *       folding CRLF to LF and trimming; any other carriage return is a refusal);
+ *   <li>each of the four tables present is an ordinary ({@code relkind = 'r'}), logged ({@code
+ *       relpersistence = 'p'}) table: an {@code UNLOGGED} table is emptied by crash recovery with
+ *       no trigger firing, and is not replicated;
  *   <li>no rule, row level security flag, policy or inheritance edge on any of the four tables.
  * </ol>
+ *
+ * <p>Every name read from the catalogue or the session enters a finding through {@link
+ * #display(String)}, so a name carrying a line break cannot forge a line in the startup log.
  *
  * <p>Every relation is named by the captured schema or by {@code pg_catalog}; every function is
  * {@code pg_catalog}-qualified as well as pinned. A finding is {@link ErrorCodes#SCHEMA_UNGUARDED};
@@ -100,14 +106,14 @@ final class GuardCensus {
       " Remedy: apply the bundled schema-postgresql.sql once as the role that owns the tables (it"
           + " creates a missing guard and sets all five to ENABLE ALWAYS; it changes no row of the"
           + " trail or the anchor), drop any extra trigger, rule, policy or child table named"
-          + " above, then restart. Run the application as a role that does not own the tables."
+          + " above, run ALTER TABLE ... SET LOGGED on any table named UNLOGGED, then restart. Run the application as a role that does not own the tables."
           + " See docs/upgrading-0.1.2.md. No property downgrades this refusal.";
 
   private static final String ARCHIVE_SENTENCE =
       " Every guard of a table is missing, which is the state 0.1.0 and 0.1.1 left behind when a"
           + " trail was archived (ALTER TABLE ... SET SCHEMA) and the schema step re-run, or when a"
-          + " trigger of the same name existed on another relation (security advisory, schema"
-          + " trigger guards). Check with: SELECT n.nspname, t.tgname, t.tgenabled FROM"
+          + " trigger of the same name existed on another relation (security advisory, audit"
+          + " trail guards on 0.1.0 and 0.1.1). Check with: SELECT n.nspname, t.tgname, t.tgenabled FROM"
           + " pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid JOIN"
           + " pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal AND"
           + " t.tgname LIKE 'agentguard%' ORDER BY 1, 2; and read nspname, never the bare"
@@ -171,7 +177,7 @@ final class GuardCensus {
     return new AgentGuardException(
         ErrorCodes.SCHEMA_UNVERIFIABLE,
         "agentguard: could not verify the audit trail guards"
-            + (schema == null ? "" : " in schema " + schema)
+            + (schema == null ? "" : " in schema " + display(schema))
             + ": a catalogue read failed (SQLState "
             + e.getSQLState()
             + "). The check reads "
@@ -198,7 +204,7 @@ final class GuardCensus {
           ErrorCodes.SCHEMA_UNVERIFIABLE,
           "agentguard: could not pin search_path to pg_catalog for the audit trail guard check in"
               + " schema "
-              + schema
+              + display(schema)
               + " (the check must run inside a transaction); unverifiable is refused, never"
               + " treated as clean.");
     }
@@ -210,11 +216,11 @@ final class GuardCensus {
         ResultSet rs = st.executeQuery("SELECT current_user, pg_catalog.current_database()")) {
       rs.next();
       return "schema "
-          + schema
+          + display(schema)
           + " of database "
-          + rs.getString(2)
+          + display(rs.getString(2))
           + " (role "
-          + rs.getString(1)
+          + display(rs.getString(1))
           + ")";
     }
   }
@@ -246,7 +252,8 @@ final class GuardCensus {
     try (PreparedStatement ps =
             scoped(
                 c,
-                "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity"
+                "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, c.relkind,"
+                    + " c.relpersistence"
                     + " FROM pg_catalog.pg_class c"
                     + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
                     + " WHERE n.nspname = ? AND c.relname IN "
@@ -257,14 +264,34 @@ final class GuardCensus {
       while (rs.next()) {
         String table = rs.getString(1);
         present.add(table);
+        String shown = display(schema) + "." + display(table);
         if (rs.getBoolean(2) || rs.getBoolean(3)) {
-          findings.add(schema + "." + table + " has row level security enabled or forced");
+          findings.add(shown + " has row level security enabled or forced");
+        }
+        String kind = rs.getString(4);
+        if (!"r".equals(kind)) {
+          findings.add(
+              shown
+                  + " is not an ordinary table (relkind="
+                  + display(kind)
+                  + ", expected r); the guards are only checked on an ordinary table");
+        }
+        String persistence = rs.getString(5);
+        if (!"p".equals(persistence)) {
+          findings.add(
+              shown
+                  + " is "
+                  + ("u".equals(persistence) ? "UNLOGGED" : "not a permanent logged table")
+                  + " (relpersistence="
+                  + display(persistence)
+                  + ", expected p); a crash empties an unlogged table with no trigger firing");
         }
       }
     }
     for (String table : List.of(AUDIT, ANCHOR)) {
       if (!present.contains(table)) {
-        findings.add("table " + schema + "." + table + " not found, so none of its guards exist");
+        findings.add(
+            "table " + display(schema) + "." + table + " not found, so none of its guards exist");
       }
     }
   }
@@ -298,7 +325,7 @@ final class GuardCensus {
       while (rs.next()) {
         String table = rs.getString(1);
         String name = rs.getString(2);
-        String label = "trigger " + name + " on " + schema + "." + table;
+        String label = "trigger " + display(name) + " on " + display(schema) + "." + display(table);
         Guard g = expected.get(table + "." + name);
         if (g == null) {
           findings.add(label + " is not one of the bundled guards");
@@ -310,7 +337,8 @@ final class GuardCensus {
         }
         String enabled = rs.getString(4);
         if (!"A".equals(enabled)) {
-          findings.add(label + " is tgenabled=" + enabled + ", expected ENABLE ALWAYS (A)");
+          findings.add(
+              label + " is tgenabled=" + display(enabled) + ", expected ENABLE ALWAYS (A)");
         }
         if (!rs.getBoolean(5)) {
           findings.add(label + " carries a WHEN clause");
@@ -332,11 +360,11 @@ final class GuardCensus {
           findings.add(
               label
                   + " points at function "
-                  + fnSchema
+                  + display(fnSchema)
                   + "."
-                  + fn
+                  + display(fn)
                   + ", expected the bundled "
-                  + schema
+                  + display(schema)
                   + "."
                   + g.function()
                   + "() (plpgsql, no arguments, not SECURITY DEFINER, no SET clause)");
@@ -349,7 +377,8 @@ final class GuardCensus {
     for (var e : expected.entrySet()) {
       if (!seen.contains(e.getKey())) {
         Guard g = e.getValue();
-        findings.add("trigger " + g.name() + " on " + schema + "." + g.table() + " is missing");
+        findings.add(
+            "trigger " + g.name() + " on " + display(schema) + "." + g.table() + " is missing");
         missingPerTable.merge(g.table(), 1, Integer::sum);
       }
     }
@@ -391,6 +420,28 @@ final class GuardCensus {
     return body.replace("\r\n", "\n").strip();
   }
 
+  /**
+   * A catalogue or session value as it may appear in a refusal: every C0 control character, DEL,
+   * NEL (U+0085), LINE SEPARATOR (U+2028), PARAGRAPH SEPARATOR (U+2029) and the backslash itself
+   * replaced by a backslash, {@code u} and four hex digits, so no name can break the message into a
+   * forged log line (CP34-3) and an escape in the output is never ambiguous.
+   */
+  static String display(String value) {
+    if (value == null) {
+      return "(null)";
+    }
+    StringBuilder out = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char ch = value.charAt(i);
+      if (ch < 0x20 || ch == 0x7F || ch == 0x85 || ch == 0x2028 || ch == 0x2029 || ch == '\\') {
+        out.append(String.format("\\u%04X", (int) ch));
+      } else {
+        out.append(ch);
+      }
+    }
+    return out.toString();
+  }
+
   static String md5Prefix(String text) {
     try {
       byte[] d = MessageDigest.getInstance("MD5").digest(text.getBytes(StandardCharsets.UTF_8));
@@ -415,7 +466,13 @@ final class GuardCensus {
                 1);
         ResultSet rs = ps.executeQuery()) {
       while (rs.next()) {
-        findings.add("rule " + rs.getString(2) + " exists on " + schema + "." + rs.getString(1));
+        findings.add(
+            "rule "
+                + display(rs.getString(2))
+                + " exists on "
+                + display(schema)
+                + "."
+                + display(rs.getString(1)));
       }
     }
     try (PreparedStatement ps =
@@ -431,7 +488,7 @@ final class GuardCensus {
                 1);
         ResultSet rs = ps.executeQuery()) {
       while (rs.next()) {
-        findings.add(schema + "." + rs.getString(1) + " is flagged relhasrules");
+        findings.add(display(schema) + "." + display(rs.getString(1)) + " is flagged relhasrules");
       }
     }
   }
@@ -453,11 +510,11 @@ final class GuardCensus {
       while (rs.next()) {
         findings.add(
             "row level security policy "
-                + rs.getString(2)
+                + display(rs.getString(2))
                 + " exists on "
-                + schema
+                + display(schema)
                 + "."
-                + rs.getString(1));
+                + display(rs.getString(1)));
       }
     }
   }
@@ -484,13 +541,13 @@ final class GuardCensus {
       while (rs.next()) {
         findings.add(
             "inheritance edge: "
-                + rs.getString(3)
+                + display(rs.getString(3))
                 + "."
-                + rs.getString(4)
+                + display(rs.getString(4))
                 + " inherits from "
-                + rs.getString(1)
+                + display(rs.getString(1))
                 + "."
-                + rs.getString(2));
+                + display(rs.getString(2)));
       }
     }
   }

@@ -26,10 +26,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * The audit-trail guard census (advisory "schema trigger guards", 0.1.x): the bundled script scopes
- * its five trigger predicates to the relation and arms them {@code ENABLE ALWAYS}, and {@link
- * JdbcSupport#verifyGuards} refuses every state in which the append-only trail, the anchor or
- * keyed-from-birth does not hold. Each test runs in a database of its own.
+ * The audit-trail guard census (advisory "audit trail guards on 0.1.0 and 0.1.1"): the bundled
+ * script scopes its five trigger predicates to the relation and arms them {@code ENABLE ALWAYS},
+ * and {@link JdbcSupport#verifyGuards} refuses every state in which the append-only trail, the
+ * anchor or keyed-from-birth does not hold. Each test runs in a database of its own.
  */
 @Testcontainers
 class SchemaGuardCensusJdbcTest {
@@ -486,6 +486,39 @@ class SchemaGuardCensusJdbcTest {
         "ALTER TABLE agentguard_decision DISABLE ROW LEVEL SECURITY",
         "ALTER TABLE agentguard_audit_anchor FORCE ROW LEVEL SECURITY");
     assertUnguarded(owner(db), "agentguard_audit_anchor", "row level security");
+  }
+
+  /** CP34-2: an UNLOGGED table is emptied by crash recovery with no trigger firing. */
+  @Test
+  void an_unlogged_trail_anchor_or_budget_table_is_refused_and_set_logged_clears_it()
+      throws Exception {
+    String db = freshDatabase();
+    JdbcSupport.initializeSchema(owner(db));
+    for (String table :
+        new String[] {"agentguard_audit", "agentguard_audit_anchor", "agentguard_budget"}) {
+      owner(db, "ALTER TABLE " + table + " SET UNLOGGED");
+      assertUnguarded(
+          owner(db), "public." + table + " is UNLOGGED", "relpersistence=u", "SET LOGGED");
+      owner(db, "ALTER TABLE " + table + " SET LOGGED");
+      assertThatCode(() -> JdbcSupport.verifyGuards(owner(db))).doesNotThrowAnyException();
+    }
+  }
+
+  /** CP34-3: a name read from the catalogue cannot put a line break into the refusal. */
+  @Test
+  void catalogue_names_are_escaped_in_the_refusal() throws Exception {
+    String db = freshDatabase();
+    JdbcSupport.initializeSchema(owner(db));
+    owner(
+        db,
+        "CREATE FUNCTION zz_noop() RETURNS trigger AS $$ BEGIN RETURN NEW; END $$ LANGUAGE"
+            + " plpgsql",
+        "CREATE TRIGGER \"zz\nforged\u2028line\\x\" BEFORE INSERT ON agentguard_budget FOR EACH ROW"
+            + " EXECUTE FUNCTION zz_noop()");
+    AgentGuardException e = refusal(owner(db));
+    assertThat(e.getMessage())
+        .doesNotContain("\n", "\u2028")
+        .contains("zz\\u000Aforged\\u2028line\\u005Cx");
   }
 
   @Test

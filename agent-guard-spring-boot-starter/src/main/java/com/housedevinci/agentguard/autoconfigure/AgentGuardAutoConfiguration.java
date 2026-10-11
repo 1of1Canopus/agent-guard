@@ -297,9 +297,10 @@ public class AgentGuardAutoConfiguration {
   }
 
   /**
-   * Hands every {@code JdbcAuditSink} bean to the gate once the singletons exist, whatever the
-   * store properties say (B-RC12-1). Static so it is created before any other bean without pulling
-   * this configuration in early.
+   * Hands every {@code JdbcAuditSink}, {@code JdbcDecisionStore} and {@code JdbcBudgetStore} bean
+   * to the gate once the singletons exist, whatever the store properties say (B-RC12-1, B-RC12-4).
+   * Static and priority ordered so it is registered before any application post-processor without
+   * pulling this configuration in early (B-RC12-5).
    */
   @Bean
   static JdbcAuditSinkDataSourceCheck agentGuardJdbcAuditSinkCheck(

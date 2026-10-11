@@ -25,6 +25,16 @@ public final class JdbcBudgetStore implements BudgetStore {
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
+  /**
+   * The {@code DataSource} this store reads and writes through. The Spring Boot starter compares it
+   * by identity with the {@code DataSource} its startup guard check verified.
+   *
+   * @return the {@code DataSource} given at construction, never a copy or a wrapper
+   */
+  public DataSource dataSource() {
+    return dataSource;
+  }
+
   @Override
   public long incrementAndGet(String key, long amount, Duration ttl) {
     var now = clock.instant();

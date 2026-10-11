@@ -4,11 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.housedevinci.agentguard.adapter.jdbc.JdbcAuditSink;
+import com.housedevinci.agentguard.adapter.jdbc.JdbcBudgetStore;
+import com.housedevinci.agentguard.adapter.jdbc.JdbcDecisionStore;
 import com.housedevinci.agentguard.adapter.memory.InMemoryAuditSink;
 import com.housedevinci.agentguard.domain.AgentGuardException;
 import com.housedevinci.agentguard.domain.AuditChain;
 import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.AuditSink;
+import com.housedevinci.agentguard.domain.BudgetStore;
+import com.housedevinci.agentguard.domain.DecisionStore;
 import com.housedevinci.agentguard.domain.ErrorCodes;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,15 +21,19 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Clock;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.PriorityOrdered;
 import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -275,5 +283,178 @@ class SchemaGateSinkCoverageTest {
                   .isInstanceOf(AgentGuardException.class)
                   .hasMessageContaining("protoSink");
             });
+  }
+
+  /** B-RC12-4: an application decision store on a second DataSource is refused, by name. */
+  @Test
+  void a_decision_store_on_a_second_datasource_is_refused_by_name() throws Exception {
+    DataSource primary = guarded();
+    DataSource other = guarded();
+    runner("JDBC")
+        .withBean("primaryDataSource", DataSource.class, () -> primary, bd -> bd.setPrimary(true))
+        .withBean("otherDataSource", DataSource.class, () -> other)
+        .withBean("userDecisions", DecisionStore.class, () -> new JdbcDecisionStore(other))
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.SCHEMA_DATASOURCE_MISMATCH);
+              assertThat(e.getMessage())
+                  .contains("JdbcDecisionStore bean 'userDecisions'")
+                  .contains("otherDataSource");
+            });
+  }
+
+  /** B-RC12-4, budget twin of the decision-store probe: UNLOGGED budget table on a second DS. */
+  @Test
+  void a_budget_store_on_a_second_datasource_is_refused_by_name() throws Exception {
+    DataSource primary = guarded();
+    DataSource other = guarded();
+    try (Connection c = other.getConnection();
+        Statement st = c.createStatement()) {
+      st.execute("ALTER TABLE agentguard_budget SET UNLOGGED");
+    }
+    runner("JDBC")
+        .withBean("primaryDataSource", DataSource.class, () -> primary, bd -> bd.setPrimary(true))
+        .withBean("otherDataSource", DataSource.class, () -> other)
+        .withBean(
+            "userBudgets", BudgetStore.class, () -> new JdbcBudgetStore(other, Clock.systemUTC()))
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.SCHEMA_DATASOURCE_MISMATCH);
+              assertThat(e.getMessage())
+                  .contains("JdbcBudgetStore bean 'userBudgets'")
+                  .contains("otherDataSource");
+            });
+  }
+
+  /** B-RC12-4: with no JDBC store in the properties, a budget store bean triggers the check. */
+  @Test
+  void a_budget_store_under_memory_properties_triggers_the_guard_check() throws Exception {
+    DataSource audit = archived();
+    runner("MEMORY")
+        .withBean(DataSource.class, () -> audit)
+        .withBean(
+            "userBudgets", BudgetStore.class, () -> new JdbcBudgetStore(audit, Clock.systemUTC()))
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
+  }
+
+  /** The starter's own stores and an application store on the checked DataSource all start. */
+  @Test
+  void stores_on_the_checked_datasource_start() throws Exception {
+    DataSource primary = guarded();
+    runner("JDBC")
+        .withPropertyValues("agentguard.budgets.store=JDBC")
+        .withBean("primaryDataSource", DataSource.class, () -> primary)
+        .withBean(
+            "userDecisions",
+            Object.class,
+            () -> new JdbcDecisionStore(primary),
+            bd -> bd.setAutowireCandidate(false))
+        .run(
+            ctx -> {
+              assertThat(ctx).hasNotFailed();
+              assertThat(ctx.getBean(JdbcBudgetStore.class).dataSource()).isSameAs(primary);
+            });
+  }
+
+  /** Wraps every audit sink after initialization, at the highest precedence too. */
+  static final class HighestWrapper extends PriorityWrapper {
+    @Override
+    public int getOrder() {
+      return Ordered.HIGHEST_PRECEDENCE;
+    }
+  }
+
+  /** Wraps every audit sink after initialization, registered in the priority-ordered tier. */
+  static class PriorityWrapper implements BeanPostProcessor, PriorityOrdered {
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) {
+      if (bean instanceof AuditSink sink) {
+        return java.lang.reflect.Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            bean.getClass().getInterfaces(),
+            (proxy, method, args) -> method.invoke(sink, args));
+      }
+      return bean;
+    }
+
+    @Override
+    public int getOrder() {
+      return 0;
+    }
+  }
+
+  /** An ordered post-processor that needs the sink, so the sink is created while it is built. */
+  static final class OrderedSinkUser implements BeanPostProcessor, Ordered {
+    OrderedSinkUser(AuditSink sink) {}
+
+    @Override
+    public int getOrder() {
+      return 0;
+    }
+  }
+
+  /** A priority-ordered post-processor that needs the sink: built before any is registered. */
+  static final class PrioritySinkUser
+      implements BeanPostProcessor,
+          PriorityOrdered,
+          org.springframework.beans.factory.BeanFactoryAware {
+    @Override
+    public void setBeanFactory(org.springframework.beans.factory.BeanFactory beanFactory) {
+      beanFactory.getBean("userSink");
+    }
+
+    @Override
+    public int getOrder() {
+      return 0;
+    }
+  }
+
+  /**
+   * B-RC12-5, priority order: the sink is created while an ordered post-processor is built and is
+   * wrapped by a priority-ordered one. Only a check registered in the priority-ordered tier sees
+   * the raw sink; the singleton the factory holds is the wrapper.
+   */
+  @Test
+  void a_sink_created_early_and_wrapped_is_checked_by_the_priority_ordered_check()
+      throws Exception {
+    DataSource audit = archived();
+    runner("MEMORY")
+        .withBean("wrapper", PriorityWrapper.class)
+        .withBean("user", OrderedSinkUser.class)
+        .withBean(DataSource.class, () -> audit)
+        .withBean("userSink", AuditSink.class, () -> new JdbcAuditSink(audit))
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
+  }
+
+  /**
+   * B-RC12-5, final sweep: the sink is created while a priority-ordered post-processor is built,
+   * before any post-processor (the check included) is registered. Only the sweep of the singletons
+   * at startup finds it.
+   */
+  @Test
+  void a_sink_created_before_any_post_processor_is_registered_is_swept() throws Exception {
+    DataSource audit = archived();
+    runner("MEMORY")
+        .withBean("user", PrioritySinkUser.class)
+        .withBean(DataSource.class, () -> audit)
+        .withBean("userSink", AuditSink.class, () -> new JdbcAuditSink(audit))
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
+  }
+
+  /**
+   * B-RC12-5, before initialization: a wrapper at the same highest precedence as the check may run
+   * its after-initialization step first, so the check also records the raw sink before any
+   * after-initialization step.
+   */
+  @Test
+  void a_sink_wrapped_at_the_same_precedence_is_checked() throws Exception {
+    DataSource audit = archived();
+    runner("MEMORY")
+        .withBean("wrapper", HighestWrapper.class)
+        .withBean(DataSource.class, () -> audit)
+        .withBean("userSink", AuditSink.class, () -> new JdbcAuditSink(audit))
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.SCHEMA_UNGUARDED));
   }
 }

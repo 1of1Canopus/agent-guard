@@ -88,7 +88,7 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.store` | `JDBC` | `JDBC` (PostgreSQL, needs a `DataSource`) or `MEMORY` (dev only). |
 | `agentguard.strict` | `true` | Fail startup on unguarded `@ToolPolicy` tools; deny calls whose budget scope has no subject. |
 | `agentguard.jdbc.initialize-schema` | `true` | Run the bundled idempotent schema (`agentguard_decision`, `agentguard_audit`, `agentguard_audit_anchor`, `agentguard_budget`) with the application's role at startup. Needs a role that owns the schema; any other role is refused with `AG-SCHEMA-006`. Either way the startup guard check runs (see "Database roles"). |
-| `agentguard.schema.gate.datasource` | primary `DataSource` | Bean name of the `DataSource` whose audit trail guards the startup check verifies; the starter's JDBC stores use it too. Every `JdbcAuditSink` bean must write through this exact `DataSource`, or startup is refused with `AG-SCHEMA-007`. An unknown name is refused. |
+| `agentguard.schema.gate.datasource` | primary `DataSource` | Bean name of the `DataSource` whose audit trail guards the startup check verifies; the starter's JDBC stores use it too. Every `JdbcAuditSink`, `JdbcDecisionStore` and `JdbcBudgetStore` bean must use this exact `DataSource`, or startup is refused with `AG-SCHEMA-007`. An unknown name is refused. |
 | `agentguard.policy.unregistered-tools` | `DENY` | `DENY`, `ALLOW` (treat as READ) or `REQUIRE_APPROVAL` for tools without a policy. |
 | `agentguard.policy.approval-required-for` | `WRITE, DESTRUCTIVE` | Side effects that park the call. |
 | `agentguard.approval.ttl` | `1h` | Parked calls expire after this. |
@@ -180,21 +180,21 @@ five to `ENABLE ALWAYS`; it changes no row of the trail or the anchor), drop any
 TABLE ... SET LOGGED` on a table it names `UNLOGGED`, restart. No property downgrades the refusal.
 
 When the check runs: on every boot whose properties name a JDBC store (`agentguard.store=JDBC` or
-`agentguard.budgets.store=JDBC`), and on every boot whose context holds a `JdbcAuditSink` bean, whatever the store
-properties say. Which `DataSource` it checks: the bean named by `agentguard.schema.gate.datasource`, else the primary
-`DataSource`. The starter's own stores use that same `DataSource`. Once every singleton exists, each `JdbcAuditSink`
-bean (the starter's or the application's, whatever type it is declared as, lazy ones included) must write through
-exactly that `DataSource` object, or startup is refused with `AG-SCHEMA-007`, naming the sink bean, its `DataSource`
-and the checked one. A separate audit database therefore needs `agentguard.schema.gate.datasource=<its bean name>`.
+`agentguard.budgets.store=JDBC`), and on every boot whose context holds a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean, whatever
+the store properties say. Which `DataSource` it checks: the bean named by `agentguard.schema.gate.datasource`, else the primary
+`DataSource`. The starter's own stores use that same `DataSource`. Once every singleton exists, each
+`JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean (the starter's or the application's, whatever type it is declared as, lazy ones,
+ones wrapped by a post-processor and ones created before it included) must use exactly that `DataSource` object, or
+startup is refused with `AG-SCHEMA-007`, naming the store bean, its `DataSource` and the checked one. A separate audit database therefore needs `agentguard.schema.gate.datasource=<its bean name>`.
 The comparison is by identity: a `TransactionAwareDataSourceProxy`, a `LazyConnectionDataSourceProxy` or a pool
-around the checked `DataSource` is a different object and is refused; hand the sink the bean itself. A name that is no
-`DataSource` bean is refused at startup with `AG-SCHEMA-007`. A `JdbcAuditSink` created after startup (prototype
+around the checked `DataSource` is a different object and is refused; hand the store the bean itself. A name that is no
+`DataSource` bean is refused at startup with `AG-SCHEMA-007`. A store bean created after startup (prototype
 scope) is checked when it is created.
 
-Outside the check: a `JdbcAuditSink` built inside another bean and never exposed as a bean, and `JdbcDecisionStore`
-or `JdbcBudgetStore` beans the application builds on another `DataSource` (only audit sinks are compared). Code that
-builds a `JdbcAuditSink` that way, or uses the core without Spring, must call `JdbcSupport.verifyGuards(dataSource)`
-before it constructs the sink. A check that cannot complete (a catalogue the role cannot read, no current schema) is
+Outside the check: a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` built inside another bean and never
+exposed as a bean, and a store created before the check is registered that a post-processor registered even earlier
+also wraps. Code that builds a store that way, or uses the core without Spring, must call
+`JdbcSupport.verifyGuards(dataSource)` before it constructs the store. Each application context is checked by the auto-configuration in it: a child context that runs the auto-configuration checks its own store beans, and one without it is outside coverage, like code without the starter, and must call `JdbcSupport.verifyGuards`. A check that cannot complete (a catalogue the role cannot read, no current schema) is
 `AG-SCHEMA-005`, never a pass. Upgrading from 0.1.0 or 0.1.1: see [upgrading to 0.1.2](upgrading-0.1.2.md).
 
 The check runs at startup only. A role that owns the tables can still disable a trigger after startup, which is one
@@ -297,7 +297,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance, `UNLOGGED` or not an ordinary table) |
 | `AG-SCHEMA-005` | startup refused: the guard check could not complete; unverifiable is never treated as clean |
 | `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |
-| `AG-SCHEMA-007` | startup refused: a `JdbcAuditSink` bean writes through a `DataSource` other than the checked one (compared by identity, so a proxy counts as another), or `agentguard.schema.gate.datasource` names no `DataSource` bean |
+| `AG-SCHEMA-007` | startup refused: a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses a `DataSource` other than the checked one (compared by identity, so a proxy counts as another), or `agentguard.schema.gate.datasource` names no `DataSource` bean |
 
 ## Free vs Pro
 

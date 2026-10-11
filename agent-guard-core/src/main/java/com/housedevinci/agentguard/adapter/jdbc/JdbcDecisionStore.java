@@ -39,6 +39,16 @@ public final class JdbcDecisionStore implements DecisionStore {
     this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
   }
 
+  /**
+   * The {@code DataSource} this store reads and writes through. The Spring Boot starter compares it
+   * by identity with the {@code DataSource} its startup guard check verified.
+   *
+   * @return the {@code DataSource} given at construction, never a copy or a wrapper
+   */
+  public DataSource dataSource() {
+    return dataSource;
+  }
+
   @Override
   public void save(PendingDecision d) {
     JdbcSupport.withConnection(

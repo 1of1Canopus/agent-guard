@@ -79,8 +79,8 @@ public final class AgentGuardSchemaGate {
     try {
       if (JdbcSupport.runtimeRoleOwnsAuditTable(ds)) {
         log.warn(
-            "agentguard: the runtime database role owns agentguard_audit and can disable its"
-                + " append-only triggers; use a separate owner role for the schema and a runtime role"
+            "agentguard: the runtime database role owns agentguard_audit or is a member of the"
+                + " role that owns it, and can disable its append-only triggers; use a separate owner role for the schema and a runtime role"
                 + " with INSERT/SELECT only (docs, \"Database roles\")");
       }
     } catch (RuntimeException e) {

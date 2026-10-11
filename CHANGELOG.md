@@ -15,8 +15,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - New startup refusal `AG-SCHEMA-003` when the audit trail's guards do not hold in the schema the application uses
   (exact trigger set on the four tables, `ENABLE ALWAYS`, no `WHEN` clause or column list, bundled functions and
   bodies, no rule, row level security, policy or inheritance edge, each of the four an ordinary logged table, not
-  `UNLOGGED`), on every boot path whose properties name a JDBC store, `initialize-schema` `true` or `false`, also
-  when the application supplies its own store beans. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+  `UNLOGGED`), on every boot whose properties name a JDBC store or whose context holds a JDBC store bean,
+  `initialize-schema` `true` or `false`. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+- New startup refusal `AG-SCHEMA-007` when a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses
+  a `DataSource` other than the one the check verified (compared by identity, so a proxy around it is refused too),
+  and when `agentguard.schema.gate.datasource` names no `DataSource` bean. Every such bean is compared, the
+  starter's and the application's, including one an application post-processor wraps or depends on (B-RC12-4,
+  B-RC12-5). Not covered: a store built inside another bean and never exposed as a bean, which must call
+  `JdbcSupport.verifyGuards` itself. Each application context is checked by the auto-configuration in it; a child
+  context without it is outside coverage, like code without the starter.
   Checked at startup only: a role that owns the tables can still disable a trigger afterwards.
 - `initialize-schema=true` with a role that does not own the schema is refused with `AG-SCHEMA-006` (SQLState
   only) instead of surfacing the driver's raw permission error; it never booted in 0.1.x either.
@@ -31,7 +38,12 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ### Added
 - `JdbcSupport.verifyGuards(DataSource)` and `JdbcSupport.initializeSchemaAndVerifyGuards(DataSource)` for
-  applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`.
+  applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`,
+  `AG-SCHEMA-007`.
+- `agentguard.schema.gate.datasource`: the bean name of the `DataSource` the startup check verifies and the starter's
+  JDBC stores use (default: the primary `DataSource`). Needed when the audit trail lives in its own database.
+- `JdbcAuditSink.dataSource()`, `JdbcDecisionStore.dataSource()` and `JdbcBudgetStore.dataSource()`, which the
+  starter uses to compare a store's `DataSource` with the checked one.
 
 ### Changed
 - The `AG-AUDIT-002` message and "Starting a new trail" now end with the check an operator runs after archiving.

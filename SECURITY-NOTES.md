@@ -100,8 +100,16 @@ does about it, and what still needs a reviewer's eye.
   to start (`AG-SCHEMA-003`) unless the guard set, its functions and bodies are exactly the bundled ones and no rule,
   row level security, policy or inheritance edge sits on the four tables, and each of the four is an ordinary, logged
   table: an `UNLOGGED` trail and anchor are both emptied by crash recovery with no trigger firing, so the anchor
-  cannot tell. The check runs on every boot whose properties name a JDBC store, also when the application supplies its
-  own store beans; names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
+  cannot tell. The check runs on every boot whose properties name a JDBC store, and on every boot whose context holds
+  a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean, whatever the store properties say. It checks one `DataSource`: the one named by
+  `agentguard.schema.gate.datasource`, else the primary one. Every audit sink, decision store and budget store bean
+  (the starter's or the application's, wrapped by a post-processor or created before it) must use that same
+  `DataSource` object, or startup is refused with `AG-SCHEMA-007`, naming both beans. The comparison is by identity,
+  so a proxy or a pool around the checked `DataSource` is refused too. Outside the check: a store built inside another
+  bean and never exposed as a bean (it must call `JdbcSupport.verifyGuards` itself, as code without Spring must), and
+  a store created before the check is registered that a post-processor registered even earlier also wraps.
+  Each application context is checked by the auto-configuration in it: a child context that runs the auto-configuration checks its own store beans, and one without it is outside coverage, like code without the starter, and must call `JdbcSupport.verifyGuards`.
+  Names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
   `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
   same-named functions of its own.
 - The owner warning at `initialize-schema=true` covers ownership and role membership: a runtime role that is a member

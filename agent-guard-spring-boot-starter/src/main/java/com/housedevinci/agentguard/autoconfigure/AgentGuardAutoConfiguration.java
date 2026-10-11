@@ -42,6 +42,7 @@ import java.util.List;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.LazyInitializationExcludeFilter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -289,8 +290,22 @@ public class AgentGuardAutoConfiguration {
   @Bean
   @DependsOnDatabaseInitialization
   AgentGuardSchemaGate agentGuardSchemaGate(
-      AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
-    return new AgentGuardSchemaGate(props, dataSources);
+      AgentGuardProperties props,
+      ObjectProvider<DataSource> dataSources,
+      ListableBeanFactory beanFactory) {
+    return new AgentGuardSchemaGate(props, dataSources, beanFactory);
+  }
+
+  /**
+   * Hands every {@code JdbcAuditSink}, {@code JdbcDecisionStore} and {@code JdbcBudgetStore} bean
+   * to the gate once the singletons exist, whatever the store properties say (B-RC12-1, B-RC12-4).
+   * Static and priority ordered so it is registered before any application post-processor without
+   * pulling this configuration in early (B-RC12-5).
+   */
+  @Bean
+  static JdbcAuditSinkDataSourceCheck agentGuardJdbcAuditSinkCheck(
+      ObjectProvider<AgentGuardSchemaGate> schemaGate) {
+    return new JdbcAuditSinkDataSourceCheck(schemaGate);
   }
 
   /**

@@ -5,8 +5,15 @@
 
 1. The bundled `schema-postgresql.sql` creates each of its five guard triggers whenever that trigger is missing **on
    its own table** (0.1.x looked the name up across the whole database), and then sets all five to `ENABLE ALWAYS`.
-2. At startup, whenever a JDBC store is in use, the application checks the guards and refuses to start with
-   `AG-SCHEMA-003` when they do not hold. There is no property that turns this into a warning.
+2. At startup, whenever a JDBC store is in use or the context holds a JDBC store bean, the application checks
+   the guards and refuses to start with `AG-SCHEMA-003` when they do not hold. There is no property that turns this
+   into a warning. It checks the primary `DataSource`, or the one named by `agentguard.schema.gate.datasource`, and
+   refuses with `AG-SCHEMA-007` when a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses any other
+   `DataSource` object (a proxy around the checked one included). **If your audit trail lives in its own database**, set
+   `agentguard.schema.gate.datasource` to that `DataSource`'s bean name. A store built inside another bean and never
+   exposed as a bean is not checked; that code must call `JdbcSupport.verifyGuards(dataSource)` itself. Each
+   application context is checked by the auto-configuration in it; a child context without it is outside coverage,
+   like code without the starter.
 
 **Every 0.1.x installation that uses a JDBC store has one step to do before the 0.1.2 application starts**: apply the
 0.1.2 `schema-postgresql.sql` once as the role that owns the tables (step 3). 0.1.x left the guards at plain
@@ -72,6 +79,7 @@ remedy:
 | `AG-SCHEMA-003` | a guard is missing, extra, disabled, at `O`/`R`/`D`, has a `WHEN` clause or a column list, points at another function or body; or a rule, row level security, a policy or an inheritance child sits on one of the four tables; or one of the four is `UNLOGGED` or not an ordinary table | step 3 for the triggers; drop the extra objects it names; `ALTER TABLE ... SET LOGGED` on a table named `UNLOGGED`; restart |
 | `AG-SCHEMA-005` | the check could not complete (a catalogue the role cannot read, no current schema, a damaged jar) | fix what it names; it is never treated as a pass |
 | `AG-SCHEMA-006` | `initialize-schema=true` and the script failed as the application's role | set `initialize-schema=false`, apply the script as the owner |
+| `AG-SCHEMA-007` | a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses a `DataSource` other than the checked one, or `agentguard.schema.gate.datasource` names no `DataSource` bean | set `agentguard.schema.gate.datasource` to the bean name of the audit `DataSource`, and hand the store that bean, not a proxy around it |
 
 **7. Run the chain verifier again** and keep both outputs.
 

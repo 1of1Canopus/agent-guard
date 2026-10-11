@@ -71,7 +71,7 @@ method, then runs `ALTER TABLE agentguard_audit DISABLE TRIGGER agentguard_audit
 the same table name answers with an arbitrary row) and is not `pg_catalog`-qualified, unlike every
 other read of the check.
 
-Fix (correction, Isis): in `JdbcSupport.runtimeRoleOwnsAuditTable`, resolve the table against
+Fix (correction, the fix pass): in `JdbcSupport.runtimeRoleOwnsAuditTable`, resolve the table against
 `current_schema()` through `pg_catalog.to_regclass(pg_catalog.quote_ident(pg_catalog.current_schema()) || '.agentguard_audit')`
 and test `pg_catalog.pg_has_role(current_user, c.relowner, 'MEMBER')` on `pg_catalog.pg_class`.
 Change the WARN text in `AgentGuardSchemaGate.warnIfOwner` to "owns agentguard_audit or is a
@@ -86,7 +86,7 @@ at HIGH. The `if name == "NEGLIGIBLE"` branch after it can never run. Repro: a r
 LOW-only report exit 0 and are listed in the summary file, as intended. Fails closed, hence LOW,
 but a release can be blocked by the least severe class Grype reports, and the code says otherwise.
 
-Fix (correction, Isis): in `findings_from_grype`, upper-case the raw severity, map `NEGLIGIBLE`
+Fix (correction, the fix pass): in `findings_from_grype`, upper-case the raw severity, map `NEGLIGIBLE`
 to `LOW` before `_normalise_name`, delete the dead branch. Add a `--self-test` case
 "grype negligible lists as LOW", and add the internal probe to `tools/cipher-probe-release-pipeline.sh`.
 
@@ -169,7 +169,7 @@ Conditions:
 1. **Not inside the gate's constructor.** The starter's `jdbcAuditSink` bean needs the gate. A gate
    that looks up every `JdbcAuditSink` while it is being built creates a circular reference. The
    comparison runs after the beans exist: a `BeanPostProcessor` on `JdbcAuditSink`, or a
-   `SmartInitializingSingleton`, chosen by Thor. It stays eager under lazy initialization. The
+   `SmartInitializingSingleton`, chosen by the builder. It stays eager under lazy initialization. The
    sink exposes its DataSource for the comparison, and the comparison is by identity. A proxy
    around the checked DataSource is therefore refused with 007, loudly, and the docs say so.
 2. **Every `JdbcAuditSink` bean**, not just the first one. Two sinks on two DataSources are refused
@@ -195,7 +195,7 @@ The third probe, `probe_named_audit_datasource_is_the_one_checked`, asserts all 
 - The property naming a guarded second DataSource: the context starts.
 - The property naming a bean that does not exist: the context fails.
 
-**Routing.** This is a fix list for Thor, not Isis, because it extends the gate he built. No
+**Routing.** This is a fix list for the builder, not the fix pass, because it extends the gate the builder built. No
 separate design page is needed, because conditions 1 to 3 fix the property and the paths. The PR
 body must name the hook chosen and must show each of the three probes RED before the fix
 (mutation rule). Two passes as usual. The HOLD stands until the three probes are green and
@@ -252,7 +252,7 @@ B-RC12-2 and B-RC12-3: **closed**.
   coverage, not a finding.**
 - **(4) Lazy initialization.** Global lazy initialization with the starter's JDBC store on an
   unguarded trail is refused at startup (`verify_lazy_initialization_still_checks_the_starter_store_at_startup`).
-  The lazy application sink case is Thor's `a_lazy_sink_nothing_injects_is_checked_at_startup` (green). Holds.
+  The lazy application sink case is the builder's `a_lazy_sink_nothing_injects_is_checked_at_startup` (green). Holds.
 - **(5) Circular reference.** The starter's own sink plus an application `JdbcAuditSink` bean (not an
   autowire candidate, so both coexist). On a second DataSource: refused with 007, naming `userSink`.
   On the checked DataSource: starts. No cycle (`verify_starter_sink_and_application_sink_are_both_checked`). Holds.
@@ -332,3 +332,57 @@ must stay green.
 **HOLD.** Open: B-RC12-5 (LOW) and B-RC12-4 (LOW, decision and budget stores). Both are corrections
 to the PR 37 hook, so they are one fix pass on the same branch. Then a second pass from me, with
 these probes only. B-RC12-1, B-RC12-2 and B-RC12-3 are closed.
+
+## Third pass (2026-10-12)
+
+Scope: probes only, on PR 37 head `63453ea` (`fix/schema-gate-covers-every-jdbc-sink`). No new
+attack surface was searched in this pass.
+
+### Numbers
+
+| Item | Result |
+|------|--------|
+| `CipherProbeRc012ReverifyStartupTest` (7 tests) | 7 run, 0 failures |
+| `SchemaGateSinkCoverageTest` | 17 run, 0 failures |
+| Docker | up; nothing skipped in these two classes |
+
+The probe file in the tree matches the internal one except for formatting and unused imports.
+
+### Mutations (one per finding, each restored after the run)
+
+| Mutation in `JdbcAuditSinkDataSourceCheck` | Tests that went red |
+|------|------|
+| Drop the decision-store compare (`JdbcDecisionStore` maps to no store) | `probe_decision_store_on_a_second_datasource_is_never_compared`, `a_decision_store_on_a_second_datasource_is_refused_by_name` |
+| Remove the singleton sweep in `afterSingletonsInstantiated` | `a_sink_created_before_any_post_processor_is_registered_is_swept` |
+| Remove `PriorityOrdered` (plain `BeanPostProcessor`) | `a_sink_created_early_and_wrapped_is_checked_by_the_priority_ordered_check` |
+
+Each control has at least one test that fails without it. As the builder noted, my two B-RC12-5
+probes alone do not catch the sweep or the priority-order removal: recording before
+initialization and the sweep cover each other there. The builder's dedicated tests close that.
+
+### Documented gap
+
+The statement is: a store created before the check is registered, and wrapped by a post-processor
+registered even earlier, is not checked. Accepted by reading, without a probe (budget). Such a bean
+gets no callback from the check. The sweep looks it up by store class. A wrapper that is not an
+instance of the store class is not found. The statement is accurate and appears in
+`SECURITY-NOTES.md` and `docs/index.md`.
+
+### Child contexts
+
+The sentence exists in `SECURITY-NOTES.md`, `docs/index.md` (line 197) and
+`docs/upgrading-0.1.2.md` (line 15): each context is checked by the auto-configuration in it, and a
+context without it must call `JdbcSupport.verifyGuards`.
+
+### Findings
+
+| ID | Severity | Status |
+|----|----------|--------|
+| B-RC12-4 | LOW | closed: probe green, mutation red |
+| B-RC12-5 | LOW | closed: probes green, sweep and priority-order mutations red |
+
+No finding is open on the 0.1.2 candidate.
+
+### Verdict
+
+**RELEASE.** Agent names in this document were replaced by roles in this pass.

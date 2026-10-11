@@ -200,8 +200,8 @@ trade-off does not go unnoticed after whoever set it has moved on. Keep the secr
 credentials' store — it is a second factor only where database write access cannot also reach it; a deployment
 that keeps both in the same place has, in effect, an unkeyed chain.
 
-Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (immutable
-afterwards, same trigger that protects `head_hash`/`row_count`). Every later append — from this instance or any
+Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (it cannot change after that: the
+same trigger that protects `head_hash`/`row_count` refuses the update). Every later append — from this instance or any
 other — must agree with it, or is refused with `AG-AUDIT-001`, naming the property and the remedy. This is what
 makes a **rolling restart that changes `agentguard.audit.hmac-secret` unsafe**: stop every instance before starting
 the first one with the new setting, or a still-mismatched instance is refused rather than corrupting the trail.

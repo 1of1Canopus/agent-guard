@@ -5,7 +5,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Security
-- Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)): the bundled
+- Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)): the bundled
   `schema-postgresql.sql` looked each of its five guard triggers up by name across the whole database, so a trigger
   of the same name on any other relation, including the archived copy the `AG-AUDIT-002` remedy produces, suppressed
   the real guard with no error and the trail ran with no append-only, no-truncate, anchor-monotonic or anchor
@@ -660,8 +660,8 @@ ruled the design itself, then amended it once more after further design review.
   is **required by default**; missing, startup fails naming the property and the remedy (`openssl rand -base64 32`).
   `agentguard.audit.unkeyed=true` is the explicit, WARN-at-every-startup local-dev opt-out.
 - `agentguard_audit_anchor.keyed_from_seq` (nullable bigint) is replaced by `agentguard_audit_anchor.keyed`
-  (`boolean NOT NULL`): set once, at the first append, immutable afterwards via the anchor's existing monotonic
-  trigger. Every append after that, from any instance, must agree with it or is refused with a structured
+  (`boolean NOT NULL`): set once, at the first append; the anchor's monotonic trigger refuses later changes (on 0.1.x see the
+  guard advisory in SECURITY-NOTES). Every append after that, from any instance, must agree with it or is refused with a structured
   `AgentGuardException` (`AG-AUDIT-001`), naming the property and the remedy — this is what actually closes F4
   (fail-closed, not detectable-after-the-fact).
 - `AuditChainVerifier.verify` checks every row's `chain_version` against what `keyed` says the whole trail must
@@ -676,7 +676,7 @@ ruled the design itself, then amended it once more after further design review.
     material (`agentguard_audit.key_id`, `'none'` for unkeyed rows). `AuditChainVerifier` holds a keyring
     (current key plus every `agentguard.audit.hmac-keys.<id>`); a row's `key_id` absent from the keyring is
     `BROKEN`, not skipped. Rotation is a config change, not a trail migration; `keyed` still governs *whether* a
-    key is required (immutable), `key_id` only *which* already-trusted key signed a row.
+    key is required (set once), `key_id` only *which* already-trusted key signed a row.
   - **Anchor-missing refuses, never guesses:** a trail with rows but no anchor row is refused (`AG-AUDIT-002`),
     on both the next append and at the next startup. The "re-anchor from the trail head" fallback and its
     one-time-warn guard are removed; the schema seed's `INSERT … ON CONFLICT DO NOTHING` no longer derives values

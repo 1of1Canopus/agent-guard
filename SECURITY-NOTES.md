@@ -92,7 +92,7 @@ does about it, and what still needs a reviewer's eye.
   `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the head hash
   periodically. The anchor's `agentguard_audit_anchor_no_delete`/`_no_truncate` triggers (F3(a)) mean that
   role cannot lose the anchor row even by accident.
-- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011)).** 0.1.0 and 0.1.1 created each guard
+- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)).** 0.1.0 and 0.1.1 created each guard
   trigger only when no trigger of that name existed anywhere in the database, so an archived copy of the trail (the
   `AG-AUDIT-002` remedy) or any same-named trigger on another relation left the live trail with no guard, silently.
   From 0.1.2 the script scopes each check to its relation, arms all five guards `ENABLE ALWAYS` (they then also fire
@@ -114,8 +114,8 @@ does about it, and what still needs a reviewer's eye.
   `agentguard.audit.hmac-secret` is **required by default**; missing, startup fails naming the property and the
   remedy (`openssl rand -base64 32`). The explicit local-dev opt-out, `agentguard.audit.unkeyed=true`, starts
   unkeyed but warns at every startup, not only the first. Which mode a trail is in is recorded once, at the first
-  append, on `agentguard_audit_anchor.keyed` (a plain boolean, immutable afterwards via the anchor's existing
-  monotonic trigger — the same protection `head_hash`/`row_count` already had). Every later append, from this
+  append, on `agentguard_audit_anchor.keyed` (a plain boolean that cannot change after that: the anchor's
+  monotonic trigger refuses the update — the same protection `head_hash`/`row_count` already had). Every later append, from this
   instance or any other, must agree with it or is refused with `AG-AUDIT-001`, naming the property and the remedy
   (start a new trail — see below). This is what makes a **rolling restart that changes
   `agentguard.audit.hmac-secret` unsafe by itself**: stop every instance before starting the first one with the
@@ -129,7 +129,7 @@ does about it, and what still needs a reviewer's eye.
   keyring (the current key plus every id in `agentguard.audit.hmac-keys.<id>`) and picks the right secret per row
   by its `key_id`. A row claiming an id the keyring does not hold is `BROKEN`, not skipped or treated as unkeyed.
   This is not a second mode switch on top of keyed-from-birth: `keyed` still only says whether the trail is keyed
-  at all (immutable); `key_id` says which already-trusted key signed a given row within that mode, and a
+  at all (set once, at the first append); `key_id` says which already-trusted key signed a given row within that mode, and a
   table-owning attacker can only relabel to an id whose secret they also hold.
 - **Anchor-missing refused, never guessed (amendment, superseding the F1/F2 sequence-position mechanism and the
   prior schema-seed-from-an-existing-trail behaviour):** `JdbcAuditSink` no longer re-derives a lost anchor's

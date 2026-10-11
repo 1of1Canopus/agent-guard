@@ -1,7 +1,7 @@
 # Upgrading to 0.1.2
 
 0.1.2 fixes the defect described in the security advisory "audit trail guards on 0.1.0 and 0.1.1" (affects 0.1.0 and 0.1.1; see
-[the advisory](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)). It changes two things an operator sees:
+[the advisory](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)). It changes two things an operator sees:
 
 1. The bundled `schema-postgresql.sql` creates each of its five guard triggers whenever that trigger is missing **on
    its own table** (0.1.x looked the name up across the whole database), and then sets all five to `ENABLE ALWAYS`.

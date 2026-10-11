@@ -145,7 +145,7 @@ reject timestamps older than a few minutes. The URL must be https unless the hos
 `agentguard.jdbc.initialize-schema=true` runs DDL with the application's credentials. For production use two roles:
 an owner/migration role that runs the schema once, and a runtime role with `SELECT, INSERT` on `agentguard_audit`,
 `SELECT, INSERT, UPDATE` on `agentguard_decision` and `agentguard_audit_anchor`, and no DDL (so it cannot disable
-the append-only triggers). `agentguard_audit.seq` is a `bigserial`, the only identity column across the four
+the guard triggers). `agentguard_audit.seq` is a `bigserial`, the only identity column across the four
 tables (`agentguard_decision.id` is a `uuid` set by the application, `agentguard_audit_anchor.id` is a fixed
 `smallint`, `agentguard_budget.key` is application-supplied `text`), so the runtime role also needs `USAGE` on its
 backing sequence, `agentguard_audit_seq_seq`. `agentguard_budget` is the one exception to "no DDL beyond
@@ -168,7 +168,7 @@ Without `DELETE` on `agentguard_budget`, the 1000th budget-consuming guarded cal
 `ANCHOR_MISMATCH` if the tail is trimmed or the table truncated by a role that could. `agentguard_audit_anchor`
 itself refuses `DELETE`/`TRUNCATE` the same way `agentguard_audit` does; losing the anchor row is what makes the
 verifier report `NO_ANCHOR` instead of guessing — unconditionally, keyed or unkeyed, whether or not a key was
-given. Only the table owner can disable these triggers — documented residual, same as the append-only ones.
+given. Only the table owner can disable these triggers — documented residual, same as the other guard triggers.
 
 ### Audit chain keying (keyed-from-birth)
 A trail is keyed from row 1 or unkeyed forever — there is no mixing and no later switch. `agentguard.audit.hmac-secret`
@@ -203,8 +203,8 @@ non-empty trail, is an owner-run procedure, not something an application instanc
 fresh, empty pair; the chain restarts at GENESIS. This is deliberately not automated — the two situations that
 reach it (a real audit-mode change, or a lost anchor) both warrant a human decision, not a silent recovery.
 
-Residual: a database role that owns the tables can disable the append-only and anchor triggers and rewrite
-`agentguard_audit_anchor.keyed` along with everything else — the same table-owner residual as the append-only
+Residual: a database role that owns the tables can disable the guard triggers and rewrite
+`agentguard_audit_anchor.keyed` along with everything else — the same table-owner residual as the guard
 triggers generally. Run the schema with an owner/migration role and the application with the narrower runtime
 role documented above. A consistent point-in-time restore of the trail and its anchor together is also
 undetectable from inside the database; mitigate by exporting the head hash offsite on a schedule. A role holding
@@ -259,7 +259,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 
 ## Threat notes
 See `SECURITY-NOTES.md`: policy on the actual call, args hash bound to the decision, single-use decisions, redacted
-previews, per-call evaluation plus per-conversation budgets, append-only chained audit.
+previews, per-call evaluation plus per-conversation budgets, hash-chained audit (append-only from 0.1.2, checked at startup; see the advisory in SECURITY-NOTES.md, [audit trail guards on 0.1.0 and 0.1.1](../SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)).
 
 ## FAQ
 **Does it work without Spring AI?** The core has no Spring dependency; the starter activates the Spring AI and MCP

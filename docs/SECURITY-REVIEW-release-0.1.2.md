@@ -153,3 +153,50 @@ probes ran on `050b0a6` with Docker up: 4 of 4 RED (the two starter contexts sta
 check returned `false` after the runtime role disabled the append-only trigger; the gate exited 1
 on a Negligible-only report). Java probes are on branch `review/rc-0.1.2`; copies and the shell
 probe are in the internal probes folder for the fix pass.
+
+## 2026-10-11, note on a smaller fix for B-RC12-1
+
+Question: for 0.1.2 only, replace the design stop with (a) the gate also runs when any
+`JdbcAuditSink` bean exists, whatever the store property; (b) startup refused with
+`AG-SCHEMA-007` when a `JdbcAuditSink` bean runs on a DataSource other than the checked one,
+unless `agentguard.schema.gate.datasource=<beanName>` names the DataSource to check; (c) docs state
+the exact coverage.
+
+**Answer: yes, accepted for 0.1.2.** It closes both reproduced paths with a loud refusal. It also
+keeps the secure default: the property chooses which DataSource is checked and never skips the check.
+Conditions:
+
+1. **Not inside the gate's constructor.** The starter's `jdbcAuditSink` bean needs the gate. A gate
+   that looks up every `JdbcAuditSink` while it is being built creates a circular reference. The
+   comparison runs after the beans exist: a `BeanPostProcessor` on `JdbcAuditSink`, or a
+   `SmartInitializingSingleton`, chosen by Thor. It stays eager under lazy initialization. The
+   sink exposes its DataSource for the comparison, and the comparison is by identity. A proxy
+   around the checked DataSource is therefore refused with 007, loudly, and the docs say so.
+2. **Every `JdbcAuditSink` bean**, not just the first one. Two sinks on two DataSources are refused
+   unless both are the named one. An unknown bean name in the property refuses at startup.
+3. **Docs (c)** replace "also when the application supplies its own store beans" in
+   SECURITY-NOTES, CHANGELOG and the upgrade note with the exact coverage: `JdbcAuditSink` beans
+   are checked. The docs also name what stays outside: a `JdbcAuditSink` built inside another bean
+   and never exposed as a bean, which must call `JdbcSupport.verifyGuards` itself, as the docs
+   already require for non-Spring use. On re-verification I try that path and either reclassify it
+   or row it for 0.2.0.
+
+**Probes.** Both existing probes must flip:
+- `probe_own_audit_sink_on_a_second_datasource_starts_on_an_unguarded_trail` flips by refusal
+  with `AG-SCHEMA-007`.
+- `probe_own_jdbc_audit_sink_under_store_memory_is_never_checked` flips by refusal with
+  `AG-SCHEMA-003`.
+
+The third probe, `probe_named_audit_datasource_is_the_one_checked`, asserts all of these:
+- A primary DataSource that is guarded, plus a `JdbcAuditSink` on a second DataSource bean, with
+  no property: the context fails. The root cause carries `AG-SCHEMA-007` and names both bean names.
+- The same context with the property naming the second DataSource, when that DataSource is in the
+  archive state: the context fails with `AG-SCHEMA-003`.
+- The property naming a guarded second DataSource: the context starts.
+- The property naming a bean that does not exist: the context fails.
+
+**Routing.** This is a fix list for Thor, not Isis, because it extends the gate he built. No
+separate design page is needed, because conditions 1 to 3 fix the property and the paths. The PR
+body must name the hook chosen and must show each of the three probes RED before the fix
+(mutation rule). Two passes as usual. The HOLD stands until the three probes are green and
+B-RC12-2 and B-RC12-3 are closed.

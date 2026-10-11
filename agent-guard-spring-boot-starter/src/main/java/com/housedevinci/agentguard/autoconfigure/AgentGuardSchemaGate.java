@@ -1,21 +1,29 @@
 package com.housedevinci.agentguard.autoconfigure;
 
+import com.housedevinci.agentguard.adapter.jdbc.JdbcAuditSink;
 import com.housedevinci.agentguard.adapter.jdbc.JdbcSupport;
+import com.housedevinci.agentguard.domain.AgentGuardException;
+import com.housedevinci.agentguard.domain.ErrorCodes;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * The one place the starter hands a {@link DataSource} to the JDBC stores, and the startup check of
  * the audit trail's guards. Always registered and never lazy, so the check runs whether the stores
- * are the starter's beans or the application's own (CP34-1). Whether JDBC is in use is decided from
- * the properties alone: {@code agentguard.store=JDBC}, or {@code agentguard.budgets.store=JDBC}. If
- * it is not, the gate holds no {@code DataSource}, needs none, and {@link #dataSource()} refuses.
- * If it is, the gate refuses to start the context unless the audit trail's guards hold:
+ * are the starter's beans or the application's own (CP34-1). Whether the starter's JDBC stores are
+ * in use is decided from the properties: {@code agentguard.store=JDBC}, or {@code
+ * agentguard.budgets.store=JDBC}. If not, {@link #dataSource()} refuses, and the check runs only if
+ * a {@code JdbcAuditSink} bean exists (below). If so, the gate refuses to start the context at its
+ * construction unless the audit trail's guards hold:
  *
  * <ul>
  *   <li>{@code agentguard.jdbc.initialize-schema=true}: the bundled script and the guard check run
@@ -23,6 +31,16 @@ import org.springframework.beans.factory.ObjectProvider;
  *       again in every later context);
  *   <li>{@code agentguard.jdbc.initialize-schema=false}: the guard check alone, read-only.
  * </ul>
+ *
+ * <p>Which {@code DataSource} is checked: the one named by {@code
+ * agentguard.schema.gate.datasource}, else the primary one. A name that is no {@code DataSource}
+ * bean refuses with {@code AG-SCHEMA-007}.
+ *
+ * <p>Every {@code JdbcAuditSink} bean, whatever the store properties say, is handed to {@link
+ * #checkSink} once the singletons exist ({@link JdbcAuditSinkDataSourceCheck}). Its {@code
+ * DataSource} must be the checked one by identity, or startup is refused with {@code
+ * AG-SCHEMA-007}. When the properties configure no JDBC store, the first sink triggers the guard
+ * check (read-only, the schema step does not run) on the checked {@code DataSource}.
  *
  * <p>Ordered after Flyway, Liquibase and {@code spring.sql.init} by {@code
  * DependsOnDatabaseInitialization} on its bean method, so a migration that creates the schema in
@@ -36,13 +54,31 @@ public final class AgentGuardSchemaGate {
   private static final Set<Integer> SCRIPT_DONE = ConcurrentHashMap.newKeySet();
 
   private final Optional<DataSource> dataSource;
+  private final Optional<String> namedDataSource;
+  private final ObjectProvider<DataSource> dataSources;
+  private final ListableBeanFactory beans;
 
-  AgentGuardSchemaGate(AgentGuardProperties props, ObjectProvider<DataSource> dataSources) {
+  /** Guards {@link #checked}; a lock rather than {@code synchronized} (virtual threads, JDK 21). */
+  private final ReentrantLock lock = new ReentrantLock();
+
+  /** The {@code DataSource} whose guards passed the check in this context, once one did. */
+  private DataSource checked;
+
+  AgentGuardSchemaGate(
+      AgentGuardProperties props,
+      ObjectProvider<DataSource> dataSources,
+      ListableBeanFactory beans) {
+    this.dataSources = dataSources;
+    this.beans = beans;
+    this.namedDataSource = Optional.ofNullable(props.getSchema().getGate().getDatasource());
+    // an unknown name refuses at startup even when no JDBC store is configured: a typo in the
+    // property that picks the checked DataSource must never pass silently
+    Optional<DataSource> named = namedDataSource.map(this::namedBean);
     if (!jdbcInUse(props)) {
       this.dataSource = Optional.empty();
       return;
     }
-    DataSource ds = dataSources.getIfAvailable();
+    DataSource ds = named.orElseGet(dataSources::getIfAvailable);
     if (ds == null) {
       throw new AgentGuardConfigurationException(
           "agentguard.store=JDBC requires a DataSource bean when agentguard.enabled=true, but no"
@@ -50,7 +86,85 @@ public final class AgentGuardSchemaGate {
               + " trial set agentguard.store=memory - not for production.");
     }
     verify(props, ds);
+    this.checked = ds;
     this.dataSource = Optional.of(ds);
+  }
+
+  private DataSource namedBean(String name) {
+    try {
+      return beans.getBean(name, DataSource.class);
+    } catch (BeansException e) {
+      throw new AgentGuardException(
+          ErrorCodes.SCHEMA_DATASOURCE_MISMATCH,
+          "agentguard: agentguard.schema.gate.datasource="
+              + name
+              + " names no DataSource bean, so the audit trail guards cannot be checked on it. Set"
+              + " it to the bean name of the DataSource the audit trail is written through.");
+    }
+  }
+
+  /**
+   * Refuses unless {@code sink} writes through the {@code DataSource} whose guards passed the
+   * check, compared by identity. When no check ran yet (no JDBC store in the properties), runs it
+   * first on the named or primary {@code DataSource}, read-only.
+   *
+   * @throws AgentGuardException {@code AG-SCHEMA-007} on a different {@code DataSource} or when
+   *     there is none to check; {@code AG-SCHEMA-003} or {@code AG-SCHEMA-005} from the check
+   */
+  void checkSink(String sinkBeanName, JdbcAuditSink sink) {
+    DataSource verified = checkedForSinks(sinkBeanName);
+    if (sink.dataSource() != verified) {
+      throw new AgentGuardException(
+          ErrorCodes.SCHEMA_DATASOURCE_MISMATCH,
+          "agentguard: the JdbcAuditSink bean '"
+              + sinkBeanName
+              + "' writes through "
+              + describe(sink.dataSource())
+              + ", but the audit trail guards were checked on "
+              + describe(verified)
+              + ". Set agentguard.schema.gate.datasource to the bean name of the DataSource the"
+              + " audit trail is written through. Compared by identity: a proxy or a pool around"
+              + " the checked DataSource is a different one.");
+    }
+  }
+
+  private DataSource checkedForSinks(String sinkBeanName) {
+    lock.lock();
+    try {
+      if (checked == null) {
+        DataSource ds = namedDataSource.map(this::namedBean).orElseGet(dataSources::getIfAvailable);
+        if (ds == null) {
+          throw new AgentGuardException(
+              ErrorCodes.SCHEMA_DATASOURCE_MISMATCH,
+              "agentguard: the JdbcAuditSink bean '"
+                  + sinkBeanName
+                  + "' exists but no DataSource bean is there to check its audit trail guards on."
+                  + " Expose that DataSource as a bean and name it in"
+                  + " agentguard.schema.gate.datasource.");
+        }
+        JdbcSupport.verifyGuards(ds);
+        log.info(
+            "agentguard: audit trail guards verified at startup for the JdbcAuditSink bean '{}'"
+                + " (no JDBC store in the properties; read-only check, no schema step)",
+            sinkBeanName);
+        checked = ds;
+      }
+      return checked;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /** The bean name(s) of {@code ds} found by identity, or a note that it is not a bean. */
+  private String describe(DataSource ds) {
+    String names =
+        beans.getBeansOfType(DataSource.class, true, false).entrySet().stream()
+            .filter(e -> e.getValue() == ds)
+            .map(e -> "'" + e.getKey() + "'")
+            .collect(Collectors.joining(", "));
+    return names.isEmpty()
+        ? "a DataSource that is not a bean (" + ds.getClass().getName() + ")"
+        : "the DataSource bean " + names;
   }
 
   /** JDBC is in use when the decision/audit store or the budget store is configured as JDBC. */

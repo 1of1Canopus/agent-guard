@@ -100,8 +100,14 @@ does about it, and what still needs a reviewer's eye.
   to start (`AG-SCHEMA-003`) unless the guard set, its functions and bodies are exactly the bundled ones and no rule,
   row level security, policy or inheritance edge sits on the four tables, and each of the four is an ordinary, logged
   table: an `UNLOGGED` trail and anchor are both emptied by crash recovery with no trigger firing, so the anchor
-  cannot tell. The check runs on every boot whose properties name a JDBC store, also when the application supplies its
-  own store beans; names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
+  cannot tell. The check runs on every boot whose properties name a JDBC store, and on every boot whose context holds
+  a `JdbcAuditSink` bean, whatever the store properties say. It checks one `DataSource`: the one named by
+  `agentguard.schema.gate.datasource`, else the primary one. Every `JdbcAuditSink` bean must write through that same
+  `DataSource` object, or startup is refused with `AG-SCHEMA-007`, naming both beans. The comparison is by identity,
+  so a proxy or a pool around the checked `DataSource` is refused too. Outside the check: a `JdbcAuditSink` built
+  inside another bean and never exposed as a bean (it must call `JdbcSupport.verifyGuards` itself, as code without
+  Spring must), and `JdbcDecisionStore` or `JdbcBudgetStore` beans the application builds on another `DataSource`.
+  Names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
   `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
   same-named functions of its own.
 - **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a

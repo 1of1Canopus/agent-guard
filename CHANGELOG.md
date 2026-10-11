@@ -24,6 +24,11 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   the 0.1.2 application starts, because 0.1.x left the guards at `ENABLE` (origin) and 0.1.2 requires `ENABLE
   ALWAYS`. See `docs/upgrading-0.1.2.md`, which also covers an installation that followed the archive remedy.
 
+- The startup warning for a runtime role that can disable the audit triggers now also fires for a role that is a
+  member of the role owning `agentguard_audit` (B-RC12-2); the read is scoped to the current schema and
+  `pg_catalog`-qualified.
+- The release vulnerability gate lists a Grype "Negligible" match as LOW instead of blocking it as UNRATED (B-RC12-3).
+
 ### Added
 - `JdbcSupport.verifyGuards(DataSource)` and `JdbcSupport.initializeSchemaAndVerifyGuards(DataSource)` for
   applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`.

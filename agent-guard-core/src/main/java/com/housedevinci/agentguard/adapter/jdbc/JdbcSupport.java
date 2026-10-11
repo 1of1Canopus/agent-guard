@@ -193,16 +193,44 @@ public final class JdbcSupport {
     }
   }
 
-  /** True when the current database role owns the audit table (and could disable its triggers). */
+  /**
+   * True when the current database role owns the audit table in the current schema, or is a member
+   * of the role that owns it (a member holds every owner privilege and could disable the triggers).
+   * Every name is {@code pg_catalog}-qualified and {@code search_path} is pinned for the read, like
+   * the rest of the guard check.
+   */
   public static boolean runtimeRoleOwnsAuditTable(DataSource ds) {
     return withConnection(
         ds,
         c -> {
-          try (Statement st = c.createStatement();
-              var rs =
-                  st.executeQuery(
-                      "SELECT tableowner = current_user FROM pg_tables WHERE tablename = 'agentguard_audit'")) {
-            return rs.next() && rs.getBoolean(1);
+          boolean autoCommit = c.getAutoCommit();
+          c.setAutoCommit(false);
+          try {
+            String schema;
+            try (Statement st = c.createStatement();
+                var rs = st.executeQuery("SELECT pg_catalog.current_schema()")) {
+              schema = rs.next() ? rs.getString(1) : null;
+            }
+            if (schema == null) {
+              return false;
+            }
+            try (Statement st = c.createStatement()) {
+              st.execute("SELECT pg_catalog.set_config('search_path', 'pg_catalog', true)");
+            }
+            try (var ps =
+                c.prepareStatement(
+                    "SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'MEMBER')"
+                        + " FROM pg_catalog.pg_class c"
+                        + " JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace"
+                        + " WHERE n.nspname = ? AND c.relname = 'agentguard_audit'")) {
+              ps.setString(1, schema);
+              try (var rs = ps.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+              }
+            }
+          } finally {
+            c.rollback();
+            c.setAutoCommit(autoCommit);
           }
         });
   }

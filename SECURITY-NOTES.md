@@ -110,6 +110,9 @@ does about it, and what still needs a reviewer's eye.
   Names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
   `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
   same-named functions of its own.
+- The owner warning at `initialize-schema=true` covers ownership and role membership: a runtime role that is a member
+  of the role owning `agentguard_audit` holds every owner privilege and is warned too (read scoped to the current
+  schema, `pg_catalog`-qualified, `search_path` pinned).
 - **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a
   trigger after startup; `ENABLE ALWAYS` does not defend against the table owner. Not covered by the check, by design:
   event triggers, `session_replication_role` changes and executor hooks, all of which need a superuser. Rows written

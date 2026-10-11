@@ -1832,6 +1832,35 @@ probe_jar_guard_is_not_run_on_the_jars() {
   return 1
 }
 
+probe_grype_negligible_is_listed_not_blocking() {
+  # B-RC12-3. A Grype match of severity Negligible must be listed as LOW, not read as UNRATED.
+  # Weak (return 0) while the gate blocks on it or does not list it.
+  local w; w="$(mktemp -d)"
+  python3 -I - "$w" <<'PY'
+import json, sys, os
+w = sys.argv[1]
+json.dump({"metadata": {"component": {"name": "/s"},
+                        "tools": {"components": [{"name": "grype", "version": "0.1"}]}},
+           "components": [{"type": "library", "name": "a"},
+                          {"type": "file", "name": "/s/a.jar",
+                           "hashes": [{"alg": "SHA-256", "content": "ab" * 32}]}]},
+          open(os.path.join(w, "sbom.json"), "w"))
+json.dump({"matches": [{"vulnerability": {"id": "CVE-0000-1", "severity": "Negligible"},
+                        "artifact": {"name": "a", "version": "1"}}],
+           "source": {"target": "/s"}, "descriptor": {"name": "grype", "version": "0.1"}},
+          open(os.path.join(w, "grype.json"), "w"))
+open(os.path.join(w, "digests.txt"), "w").write("ab" * 32 + "  a.jar\n")
+PY
+  local rc=0
+  python3 -I tools/check-vulnerability-report.py --format grype \
+    --report "$w/grype.json" --sbom "$w/sbom.json" --min-artifacts 1 \
+    --expect-digests "$w/digests.txt" --fail-on high --summary-file "$w/below.txt" >>"$PROBE_CAPTURE" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q '^- LOW CVE-0000-1' "$w/below.txt" 2>/dev/null; then
+    rm -rf "$w"; return 1
+  fi
+  rm -rf "$w"; return 0
+}
+
 probe probe_reference_guard_is_not_its_own_job             "the guard is not a check of its own"                 probe_reference_guard_is_not_its_own_job
 probe probe_reference_guard_pattern_defined_wrongly       "the guard pattern is not defined exactly once"       probe_reference_guard_pattern_is_not_defined_exactly_once
 probe probe_reference_guard_pattern_matches_own_source    "the guard pattern matches its own source"            probe_reference_guard_pattern_matches_its_own_source
@@ -1841,6 +1870,7 @@ probe probe_reference_guard_misses_a_path_family          "the guard misses one 
 probe probe_reference_guard_calls_a_scanner_error_clean   "a scanner error is read as clean"                    probe_reference_guard_calls_a_scanner_error_clean
 probe probe_reference_guard_self_test_is_red              "the guard's own self-test is not green"              probe_reference_guard_self_test_is_red
 probe probe_jar_guard_not_run_on_the_jars                 "the jar scan is not run on built and released jars"  probe_jar_guard_is_not_run_on_the_jars
+probe probe_grype_negligible_is_listed_not_blocking       "a Grype Negligible match blocks the release as UNRATED"  probe_grype_negligible_is_listed_not_blocking
 
 echo
 echo "still weak: $pass    fixed: $flipped"

@@ -191,7 +191,7 @@ In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five 
 names no relation. A trigger with the same name on any other relation in the database suppresses the real guard, and the
 schema step still reports success. On an affected installation the application's runtime role can `UPDATE` and `DELETE`
 audit rows, and the anchor has no monotonic guard and no no-delete guard. Append-only is therefore **not guaranteed on
-0.1.x**. Fixed in 0.1.2 (not yet released). The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
+0.1.x**. Fixed in 0.1.2. The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
 the two tables and re-running the schema step moves the guards to the archived copies and leaves the fresh trail with
 none.
 Repairing the schema protects rows from the moment of repair; rows written while the guards were missing are not

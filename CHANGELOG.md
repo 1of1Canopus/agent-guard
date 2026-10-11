@@ -4,6 +4,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-12
+
 ### Security
 - Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)): the bundled
   `schema-postgresql.sql` looked each of its five guard triggers up by name across the whole database, so a trigger

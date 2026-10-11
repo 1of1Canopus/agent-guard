@@ -86,12 +86,29 @@ does about it, and what still needs a reviewer's eye.
   `keyed`) is written in the same transaction, and `AuditChainVerifier` reports `EMPTY` / `INTACT` / `INTACT_UNKEYED`
   / `BROKEN` / `ANCHOR_MISMATCH` / `NO_ANCHOR` — tail deletion, truncation, or a downgraded keyed chain, by a role that can
   disable triggers, is detected; a missing anchor is reported, not silently guessed past.
-- **Residual (R4):** a role that owns the tables can disable the append-only and anchor triggers and rewrite
+- **Residual (R4):** a role that owns the tables can disable the guard triggers and rewrite
   chain, anchor **and** `keyed` consistently — run the application with a least-privilege role (INSERT + SELECT on
   `agentguard_audit`, INSERT/SELECT/UPDATE on the anchor, no DDL, not the table owner) and keep
   `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the head hash
   periodically. The anchor's `agentguard_audit_anchor_no_delete`/`_no_truncate` triggers (F3(a)) mean that
   role cannot lose the anchor row even by accident.
+- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011)).** 0.1.0 and 0.1.1 created each guard
+  trigger only when no trigger of that name existed anywhere in the database, so an archived copy of the trail (the
+  `AG-AUDIT-002` remedy) or any same-named trigger on another relation left the live trail with no guard, silently.
+  From 0.1.2 the script scopes each check to its relation, arms all five guards `ENABLE ALWAYS` (they then also fire
+  for a replication apply worker, a replica-mode session and `pg_restore --disable-triggers`), and the starter refuses
+  to start (`AG-SCHEMA-003`) unless the guard set, its functions and bodies are exactly the bundled ones and no rule,
+  row level security, policy or inheritance edge sits on the four tables, and each of the four is an ordinary, logged
+  table: an `UNLOGGED` trail and anchor are both emptied by crash recovery with no trigger firing, so the anchor
+  cannot tell. The check runs on every boot whose properties name a JDBC store, also when the application supplies its
+  own store beans; names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
+  `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
+  same-named functions of its own.
+- **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a
+  trigger after startup; `ENABLE ALWAYS` does not defend against the table owner. Not covered by the check, by design:
+  event triggers, `session_replication_role` changes and executor hooks, all of which need a superuser. Rows written
+  while a trail was unguarded are not made trustworthy by any repair. 0.2.0 adds the startup checks on the role
+  itself (no ownership, no excess privilege) and stops running DDL with the application's credentials by default.
 - **Keyed-from-birth (design change, superseding the earlier per-row-version design and
   findings C6/V2/F1-F4):** a trail is keyed from row 1 or unkeyed forever — no mixing, no later switch.
   `agentguard.audit.hmac-secret` is **required by default**; missing, startup fails naming the property and the
@@ -157,6 +174,80 @@ does about it, and what still needs a reviewer's eye.
   so a payload under the cap could have a canonical form over it — replayed raw, it hashed identically to its own
   denial. `ToolGuard.rejectIfTooLarge` also checks the canonicalised length once the raw check has already bounded
   the parse cost, so that payload is refused as oversized on the canonical check too, not silently allowed through.
+
+## Advisory: audit trail guards on 0.1.0 and 0.1.1
+In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five trigger guards inside a condition that
+names no relation. A trigger with the same name on any other relation in the database suppresses the real guard, and the
+schema step still reports success. On an affected installation the application's runtime role can `UPDATE` and `DELETE`
+audit rows, and the anchor has no monotonic guard and no no-delete guard. Append-only is therefore **not guaranteed on
+0.1.x**. Fixed in 0.1.2 (not yet released). The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
+the two tables and re-running the schema step moves the guards to the archived copies and leaves the fresh trail with
+none.
+Repairing the schema protects rows from the moment of repair; rows written while the guards were missing are not
+protected afterwards.
+
+What still holds on a keyed trail: a party without the HMAC key cannot edit, insert or reorder a row without the
+verifier reporting `BROKEN`.
+
+To check an installation, run as the table owner:
+
+```sql
+SELECT n.nspname, t.tgname, t.tgrelid::regclass AS on_relation, t.tgenabled
+  FROM pg_catalog.pg_trigger t
+  JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+ WHERE NOT t.tgisinternal
+   AND t.tgname LIKE 'agentguard%'
+ ORDER BY 1, 2;
+```
+
+Expect five rows whose `nspname` is the schema your application uses. Fewer than five rows with `nspname` equal to your
+schema means you are affected. The same names under another schema (for example an archived copy) are expected after
+the archive remedy and are not a problem by themselves.
+
+Until 0.1.2 is released, repair by hand. As the owner of the two tables, run the following in one session, with
+`SET search_path TO <your schema>;` first and kept for the whole block (the `EXECUTE FUNCTION` names resolve on it and
+are then frozen; without it a trigger can be armed onto a same-named function in another schema with no error):
+
+```sql
+CREATE TRIGGER agentguard_audit_append_only
+  BEFORE UPDATE OR DELETE ON agentguard_audit
+  FOR EACH ROW EXECUTE FUNCTION agentguard_audit_append_only();
+
+CREATE TRIGGER agentguard_audit_no_truncate
+  BEFORE TRUNCATE ON agentguard_audit
+  FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_append_only();
+
+CREATE TRIGGER agentguard_audit_anchor_monotonic
+  BEFORE UPDATE ON agentguard_audit_anchor
+  FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_monotonic();
+
+CREATE TRIGGER agentguard_audit_anchor_no_delete
+  BEFORE DELETE ON agentguard_audit_anchor
+  FOR EACH ROW EXECUTE FUNCTION agentguard_audit_anchor_append_only();
+
+CREATE TRIGGER agentguard_audit_anchor_no_truncate
+  BEFORE TRUNCATE ON agentguard_audit_anchor
+  FOR EACH STATEMENT EXECUTE FUNCTION agentguard_audit_anchor_append_only();
+
+ALTER TABLE agentguard_audit        ENABLE ALWAYS TRIGGER agentguard_audit_append_only;
+ALTER TABLE agentguard_audit        ENABLE ALWAYS TRIGGER agentguard_audit_no_truncate;
+ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_monotonic;
+ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_no_delete;
+ALTER TABLE agentguard_audit_anchor ENABLE ALWAYS TRIGGER agentguard_audit_anchor_no_truncate;
+```
+
+Then re-run the check above: five rows for your schema, `tgenabled` = `A` on every one. `ENABLE ALWAYS` makes the guards
+fire for a replication apply worker, a session in replica mode and `pg_restore --disable-triggers`. It does not stop
+the table owner, who can still disable a trigger; if the application's own role owns these tables, the guards are
+advisory against the application.
+
+Do not rewrite the anchor. Before and after the repair, run the chain verifier and keep both outputs, and record
+`SELECT pg_catalog.count(*) FROM <your schema>.agentguard_audit;` against the anchor's `row_count`, with the dates of
+the window. A trail shorter than `row_count` is the tail-deletion signature the anchor exists to leave behind. Neither
+this repair nor 0.1.2 changes the anchor or the trail rows, by design; rewriting the anchor to agree with a shortened
+trail destroys the only record that rows were lost. If the trail is used to evidence a control to an auditor, disclose
+the window as a period in which append-only was not enforced.
 
 ## Operational hazards
 - **Redis + virtual threads on JDK 21–23 (H3).** The pin is not in Jedis itself but in commons-pool2's growth
@@ -226,7 +317,7 @@ full (including the original whole-trail repro) more simply than the sequence-po
 F3(a) (the anchor DELETE/TRUNCATE guard, independent of the migration) directly; F1/F2/F4 against the old mechanism
 no longer apply (there is no sequence arithmetic and no accommodating-a-later-key-enable left to get wrong) — see
 the audit-tampering section above. Documented residuals that remain by design: a role that *owns* the tables can drop the
-append-only and anchor triggers, rewriting the trail, the anchor's head/count *and* `keyed` consistently (split
+guard triggers, rewriting the trail, the anchor's head/count *and* `keyed` consistently (split
 roles, see docs "Database roles"); a `ToolCallingManager` built by hand and handed to a `ChatModel` builder is
 outside the guard (use the bean or `AgentGuard.guard(manager)`); on JDK 21–23 Redis calls run on platform threads so
 the pool's growth lock is never touched by a virtual thread; a burst past `agentguard.redis.pool.max-total`

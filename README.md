@@ -10,10 +10,11 @@ database, inside your application's transaction. We never receive a copy. It is 
 hosted service.
 
 Each row is hash-chained and keyed with a secret only you hold. Without that key, an edited,
-inserted or reordered row breaks the chain, and the open-source verifier reports it. Your auditor
+inserted or reordered row breaks the chain, and the verifier in the free module reports it. Your auditor
 can check the chain with that verifier, given read access and the audit key.
 
-You do not have to trust us: the verifier is open source and the release builds are reproducible.
+You do not have to take our word for what the verifier checks: its source is public. The release
+builds are reproducible: two clean builds of the same tag give byte-identical jars.
 
 [![Maven Central](https://img.shields.io/maven-central/v/com.housedevinci/agent-guard-spring-boot-starter.svg)](https://central.sonatype.com/artifact/com.housedevinci/agent-guard-spring-boot-starter)
 [![Licence: FSL-1.1-ALv2](https://img.shields.io/badge/licence-FSL--1.1--ALv2-blue.svg)](./LICENSE)
@@ -25,7 +26,7 @@ Full reference (all properties, all error codes, the FAQ): [`docs/index.md`](doc
 
 - **Tool policy** — `@ToolPolicy(roles=…, scopes=…, tenants=…, sideEffect=…)` on a tool method, evaluated through Spring Security on the actual call, never on model intent.
 - **Human approval gate** — a `WRITE`/`DESTRUCTIVE` tool call is parked until a human approves it; it then runs exactly once, under the identity of the principal that asked.
-- **Audit trail** — every call is recorded in a hash-chained PostgreSQL table, keyed with HMAC from its first row. Append-only from 0.1.2 (checked at startup; see the advisory in SECURITY-NOTES.md); 0.1.0 and 0.1.1 can miss the table guards, see the [advisory "audit trail guards on 0.1.0 and 0.1.1"](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011).
+- **Audit trail** — every call is recorded in a hash-chained PostgreSQL table, keyed with HMAC from its first row. Append-only from 0.1.2 (checked at startup; see the advisory in SECURITY-NOTES.md); 0.1.0 and 0.1.1 can miss the table guards, see the [advisory "audit trail guards on 0.1.0 and 0.1.1"](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also published as [GitHub security advisory GHSA-xc43-5ch5-2pfq](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq).
 - **Budgets** — per-principal, per-tenant and per-conversation limits on tool calls, steps and tokens, enforced before dispatch.
 
 ## Quickstart

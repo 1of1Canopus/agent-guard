@@ -200,3 +200,135 @@ separate design page is needed, because conditions 1 to 3 fix the property and t
 body must name the hook chosen and must show each of the three probes RED before the fix
 (mutation rule). Two passes as usual. The HOLD stands until the three probes are green and
 B-RC12-2 and B-RC12-3 are closed.
+
+## Re-verification (2026-10-11)
+
+Tree: PR 37 head `667573e` (`fix/schema-gate-covers-every-jdbc-sink`, main merged in: the wording
+PR, the B-RC12-2/3 fixes, and the bounded B-RC12-1 fix). Verdict first: **HOLD**. The three
+reproduced B-RC12-1 paths and both LOWs are closed and proven by mutation. Two new paths around the
+new check were reproduced (B-RC12-5), and B-RC12-4 is a real gap that the same hook closes. Under the
+no-allowance rule both are fixed before the tag.
+
+### Numbers
+
+| Check | Result |
+|---|---|
+| `./mvnw verify` (Docker up) | BUILD SUCCESS. Core 206 tests, starter 84 (1 skipped), sample 3. 0 failures. JaCoCo gate met |
+| Skipped test | `CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on` (needs the real Spring AI jar on the classpath; skipped as before, not passing) |
+| `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` | 74 fixed, 0 still weak |
+| New probe file | `CipherProbeRc012ReverifyStartupTest`: 8 tests, 3 probes fail on this tree, 5 checks pass |
+
+### Prior findings, by probe and by mutation
+
+Each fix was reverted once. The probe went red, then the fix was restored.
+
+| Finding | Probe on `667573e` | Mutation | Probe under mutation |
+|---|---|---|---|
+| B-RC12-1 | `probe_own_audit_sink_on_a_second_datasource_starts_on_an_unguarded_trail`, `probe_own_jdbc_audit_sink_under_store_memory_is_never_checked`, `probe_named_audit_datasource_is_the_one_checked`: green | identity compare in `AgentGuardSchemaGate.checkSink` disabled | second-DataSource and named-DataSource probes red. The store=MEMORY probe stays green: it flips through the 003 census, not the compare. Expected |
+| B-RC12-2 | `probe_member_of_the_owner_role_can_disable_the_guard_and_is_not_warned`: green | old `JdbcSupport.runtimeRoleOwnsAuditTable` restored (reverse of 503d1c0) | red, and `owner_check_is_judged_by_the_current_schema_only` red |
+| B-RC12-3 | `probe_grype_negligible_is_listed_not_blocking`: PASS | old NEGLIGIBLE mapping restored (reverse of 503d1c0) | FAIL (rc=1) |
+
+B-RC12-2 and B-RC12-3: **closed**.
+
+### The three accepted conditions
+
+1. A proxy around the checked DataSource is refused with `AG-SCHEMA-007`. Verified by
+   `SchemaGateSinkCoverageTest.a_proxy_around_the_checked_datasource_is_refused` (green) and by the
+   mutation above.
+2. Every `JdbcAuditSink` bean is checked, not only the first. Verified by
+   `every_sink_is_checked_not_only_the_first` (two application sinks, the second one bad, refused
+   naming `zSink`). An unknown bean name in `agentguard.schema.gate.datasource` refuses
+   (`an_unknown_name_refuses_even_without_a_jdbc_store`, and the third RC12 probe).
+3. Docs: SECURITY-NOTES, CHANGELOG, `docs/index.md` and `docs/upgrading-0.1.2.md` state the exact
+   coverage. The inner-sink statement is accurate (point 3 below). Child contexts are not mentioned
+   (see B-RC12-4).
+
+### Paths attacked
+
+- **(3) Inner sink.** A bean that builds a `JdbcAuditSink` inside itself on an unguarded trail starts.
+  That matches the docs. The remedy the docs give works: the same holder calling
+  `JdbcSupport.verifyGuards(ds)` (public) first is refused with `AG-SCHEMA-003`. Check:
+  `verify_inner_sink_gap_is_as_documented_and_the_remedy_works`. **Reclassified: documented
+  coverage, not a finding.**
+- **(4) Lazy initialization.** Global lazy initialization with the starter's JDBC store on an
+  unguarded trail is refused at startup (`verify_lazy_initialization_still_checks_the_starter_store_at_startup`).
+  The lazy application sink case is Thor's `a_lazy_sink_nothing_injects_is_checked_at_startup` (green). Holds.
+- **(5) Circular reference.** The starter's own sink plus an application `JdbcAuditSink` bean (not an
+  autowire candidate, so both coexist). On a second DataSource: refused with 007, naming `userSink`.
+  On the checked DataSource: starts. No cycle (`verify_starter_sink_and_application_sink_are_both_checked`). Holds.
+- **Wrapped or early sinks.** Two paths escape the check. This is B-RC12-5 below.
+
+### B-RC12-5 (LOW): a `JdbcAuditSink` bean that the check never sees as one
+
+`JdbcAuditSinkDataSourceCheck` records a sink only in `postProcessAfterInitialization`, and only when
+`bean instanceof JdbcAuditSink`. It implements no `Ordered`. Two framework paths escape:
+
+- **Wrapped.** An ordered application post-processor wraps every `AuditSink` bean (metrics,
+  tracing, or an AOP JDK proxy under `spring.aop.proxy-target-class=false`). The check then receives
+  the wrapper. The sink is never compared. Probe:
+  `probe_sink_wrapped_by_a_post_processor_is_never_checked`. An archived (unguarded) trail starts.
+- **Created early.** An ordered application post-processor depends on the `AuditSink`. Spring
+  creates the sink before the check is registered. The sink is never recorded.
+  `afterSingletonsInstantiated` checks recorded sinks only. Probe:
+  `probe_sink_created_before_the_check_is_registered_is_never_checked`. An archived trail starts.
+
+Both are `JdbcAuditSink` beans, which the docs now say are checked. LOW: each needs an application
+post-processor that wraps or depends on the sink. Fix (correction inside the B-RC12-1 hook, so it
+goes to the builder who wrote it): the check implements `PriorityOrdered` at highest precedence. It
+records in `postProcessBeforeInitialization` (the raw instance, before any after-initialization
+wrapper) as well as after initialization (a `FactoryBean` product only gets the after call). In
+`afterSingletonsInstantiated` it also checks every singleton from
+`getBeansOfType(JdbcAuditSink.class, true, false)` that is not already recorded. Docs: one line
+saying a sink created as a dependency of a post-processor that is itself ordered before the check
+and also wrapped is outside coverage, if the builder cannot cover it. Both probes must flip by
+refusal with `AG-SCHEMA-003`. Mutation rule: show each red before the fix.
+
+### Ruling on B-RC12-4: fix in 0.1.2, do not carry
+
+Not closed as documented coverage, and not carried. Reasoning:
+
+- The census already checks the decision and budget tables (ordinary, logged, no rule, no row-level
+  security, no inheritance). An application `JdbcDecisionStore` or `JdbcBudgetStore` on another
+  DataSource skips that census entirely. That is the B-RC12-1 weakness on the approval and budget
+  tables. Reproduced: `probe_decision_store_on_a_second_datasource_is_never_compared`. A second
+  DataSource whose `agentguard_decision` is `UNLOGGED` starts. Crash recovery would empty the
+  approvals table.
+- The hook that closes it exists now. Extending it is a correction, not a new mechanism: give
+  `JdbcDecisionStore` and `JdbcBudgetStore` a public `dataSource()` accessor, and have
+  `JdbcAuditSinkDataSourceCheck` compare beans of those two types by identity, exactly like sinks
+  (same 007 message, same named-DataSource property). Carrying it to 0.2.0 would be "fix later" for
+  a reproduced gap, which the no-allowance rule refuses.
+- **Child contexts: reclassified, documented coverage.** Checked: a child context that runs the
+  auto-configuration has its own gate and refuses an unguarded child sink (003). A child without the
+  auto-configuration starts. That is code without the starter, the same case as the inner sink.
+  Check: `verify_child_context_with_and_without_the_starter`. Docs fix: SECURITY-NOTES and
+  `docs/index.md` add one sentence. Each application context is checked by the auto-configuration
+  in it. A context without it must call `JdbcSupport.verifyGuards`. The register row claimed the
+  docs already said this. They do not.
+
+Probe to flip: `probe_decision_store_on_a_second_datasource_is_never_compared` by refusal with
+`AG-SCHEMA-007`. The fixer adds a budget-store twin of it.
+
+### Release-time text (point 7)
+
+"(not yet released)" in SECURITY-NOTES (line 192) is **not** the only change. The release commit
+also needs these:
+
+- `CHANGELOG.md`: `## [Unreleased]` becomes `## [0.1.2] - <date>`, with a fresh empty
+  `## [Unreleased]` above it (RELEASING step 2).
+- `README.md:38` and `docs/index.md:17`: the dependency snippet says `<version>0.1.1</version>`.
+  It becomes `0.1.2`.
+
+Nothing else found. The pom stays `0.1.0-SNAPSHOT`, because the version comes from the tag.
+
+### Probe file
+
+The internal probe file is `CipherProbeRc012ReverifyStartupTest.java`. The fixer adds it to the
+starter test tree before touching production code. The three probes must flip, and the five checks
+must stay green.
+
+### Verdict
+
+**HOLD.** Open: B-RC12-5 (LOW) and B-RC12-4 (LOW, decision and budget stores). Both are corrections
+to the PR 37 hook, so they are one fix pass on the same branch. Then a second pass from me, with
+these probes only. B-RC12-1, B-RC12-2 and B-RC12-3 are closed.

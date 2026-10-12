@@ -26,7 +26,7 @@ Full reference (all properties, all error codes, the FAQ): [`docs/index.md`](doc
 
 - **Tool policy** — `@ToolPolicy(roles=…, scopes=…, tenants=…, sideEffect=…)` on a tool method, evaluated through Spring Security on the actual call, never on model intent.
 - **Human approval gate** — a `WRITE`/`DESTRUCTIVE` tool call is parked until a human approves it; it then runs exactly once, under the identity of the principal that asked.
-- **Audit trail** — every call is recorded in a hash-chained PostgreSQL table, keyed with HMAC from its first row. From 0.1.2, database triggers refuse UPDATE, DELETE and TRUNCATE on the trail and its anchor, and the application will not start if those triggers are missing or changed. This holds against an application role that does not own the tables. The table owner can still switch the triggers off after startup, so run the application as a separate role (see "Database roles" in docs/index.md and the residuals in SECURITY-NOTES.md). On 0.1.0 and 0.1.1 the triggers can be missing, and an upgraded trail is protected only from the repair onwards: see the [advisory "audit trail guards on 0.1.0 and 0.1.1"](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [GHSA-xc43-5ch5-2pfq](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq).
+- **Audit trail** — every call is recorded in a hash-chained PostgreSQL table, keyed with HMAC from its first row. From 0.1.2, database triggers refuse UPDATE, DELETE and TRUNCATE on the trail and its anchor (the anchor is a separate row that stores the head hash, the row count and the keyed flag of the trail, written in the same transaction), and the application will not start if those triggers are missing or changed. This holds against an application role that does not own the tables. The table owner can still switch the triggers off after startup, so run the application as a separate role (see "Database roles" in docs/index.md and the residuals in SECURITY-NOTES.md). On 0.1.0 and 0.1.1 the triggers can be missing, and an upgraded trail is protected only from the repair onwards: see the [advisory "audit trail guards on 0.1.0 and 0.1.1"](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [GHSA-xc43-5ch5-2pfq](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq). The check runs at startup only: a trigger switched off later is not seen until the next start.
 - **Budgets** — per-principal, per-tenant and per-conversation limits on tool calls, steps and tokens, enforced before dispatch.
 
 ## Compared with
@@ -35,12 +35,17 @@ Other projects secure Spring AI and MCP too. Each is for something different. Fa
 
 | | agent-guard | mcp-security | Spring AI tool calling |
 |---|---|---|---|
-| Tool-call policy | yes | partial | partial |
+| Tool-call policy | yes | partial | partial (1) |
 | Approval step | yes | no | no |
 | Audit trail with database guards | yes | no | no |
-| Budgets | yes | no | partial |
+| Budgets | yes | no | partial (1) |
+| OAuth2 / JWT for the MCP endpoint | no (use mcp-security or Spring Security) | yes | no |
+| API keys and session binding | no (use mcp-security or Spring Security) | yes | no |
+| MCP client auth (OAuth2, dynamic client registration) | no (use mcp-security or Spring Security) | yes | no |
 
 Caption: as read on 2026-10-12. "No" means not found in the README, the file tree or code search on that date.
+
+(1) Spring AI tool calling has user-controlled tool execution and tool call limits. As read, it has no persistent trail and no approval gate.
 
 ### spring-ai-community/mcp-security
 

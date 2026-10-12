@@ -118,8 +118,8 @@ does about it, and what still needs a reviewer's eye.
 - **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a
   trigger after startup; `ENABLE ALWAYS` does not defend against the table owner. Not covered by the check, by design:
   event triggers, `session_replication_role` changes and executor hooks, all of which need a superuser. Rows written
-  while a trail was unguarded are not made trustworthy by any repair. 0.2.0 adds the startup checks on the role
-  itself (no ownership, no excess privilege) and stops running DDL with the application's credentials by default.
+  while a trail was unguarded are not made trustworthy by any repair. 0.2.0 is planned to add the startup checks on
+  the role itself (no ownership, no excess privilege) and to stop running DDL with the application's credentials by default.
 - **Keyed-from-birth (design change, superseding the earlier per-row-version design and
   findings C6/V2/F1-F4):** a trail is keyed from row 1 or unkeyed forever — no mixing, no later switch.
   `agentguard.audit.hmac-secret` is **required by default**; missing, startup fails naming the property and the
@@ -216,7 +216,7 @@ Expect five rows whose `nspname` is the schema your application uses. Fewer than
 schema means you are affected. The same names under another schema (for example an archived copy) are expected after
 the archive remedy and are not a problem by themselves.
 
-Until 0.1.2 is released, repair by hand. As the owner of the two tables, run the following in one session, with
+To repair without upgrading, do it by hand. To upgrade, see [upgrading to 0.1.2](docs/upgrading-0.1.2.md). As the owner of the two tables, run the following in one session, with
 `SET search_path TO <your schema>;` first and kept for the whole block (the `EXECUTE FUNCTION` names resolve on it and
 are then frozen; without it a trigger can be armed onto a same-named function in another schema with no error):
 

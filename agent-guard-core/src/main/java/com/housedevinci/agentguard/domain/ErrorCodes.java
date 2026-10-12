@@ -88,8 +88,8 @@ public final class ErrorCodes {
    * clause or a column list, or points at the wrong function; a guard body differs from the bundled
    * script; one of the four tables is not an ordinary, logged table ({@code UNLOGGED}, a view, a
    * partitioned table); or a rule, row level security, a policy or an inheritance edge exists on
-   * one of the four tables. Refused at startup; no property downgrades it. Codes 001, 002, 004 and
-   * 007 of this area are reserved for the schema verification of 0.2.0.
+   * one of the four tables. Refused at startup; no property downgrades it. Codes 001, 002 and 004
+   * of this area are reserved for the schema verification of 0.2.0.
    */
   public static final String SCHEMA_UNGUARDED = "AG-SCHEMA-003";
 
@@ -105,4 +105,13 @@ public final class ErrorCodes {
    * because the application's role does not own the schema. Carries the SQLState only.
    */
   public static final String SCHEMA_CREATION_FAILED = "AG-SCHEMA-006";
+
+  /**
+   * A {@code JdbcAuditSink} bean writes through a {@code DataSource} other than the one whose
+   * guards the startup check verified (compared by identity, so a proxy around the checked {@code
+   * DataSource} is refused too), or {@code agentguard.schema.gate.datasource} names no {@code
+   * DataSource} bean. Refused at startup; the property chooses which {@code DataSource} is checked,
+   * never whether.
+   */
+  public static final String SCHEMA_DATASOURCE_MISMATCH = "AG-SCHEMA-007";
 }

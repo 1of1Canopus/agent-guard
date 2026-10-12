@@ -62,6 +62,16 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   }
 
   /**
+   * The {@code DataSource} this sink writes through. The Spring Boot starter compares it by
+   * identity with the {@code DataSource} its startup guard check verified.
+   *
+   * @return the {@code DataSource} given at construction, never a copy or a wrapper
+   */
+  public DataSource dataSource() {
+    return dataSource;
+  }
+
+  /**
    * The anchor's {@code keyed} flag, or {@code null} when the trail is empty (anchor absent, no
    * rows yet — either mode is still legitimate, the first append decides it).
    */

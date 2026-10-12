@@ -4,8 +4,10 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-12
+
 ### Security
-- Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011)): the bundled
+- Audit trail guards (security advisory "audit trail guards on 0.1.0 and 0.1.1", affects 0.1.0 and 0.1.1; see [the advisory](SECURITY-NOTES.md#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)): the bundled
   `schema-postgresql.sql` looked each of its five guard triggers up by name across the whole database, so a trigger
   of the same name on any other relation, including the archived copy the `AG-AUDIT-002` remedy produces, suppressed
   the real guard with no error and the trail ran with no append-only, no-truncate, anchor-monotonic or anchor
@@ -15,8 +17,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - New startup refusal `AG-SCHEMA-003` when the audit trail's guards do not hold in the schema the application uses
   (exact trigger set on the four tables, `ENABLE ALWAYS`, no `WHEN` clause or column list, bundled functions and
   bodies, no rule, row level security, policy or inheritance edge, each of the four an ordinary logged table, not
-  `UNLOGGED`), on every boot path whose properties name a JDBC store, `initialize-schema` `true` or `false`, also
-  when the application supplies its own store beans. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+  `UNLOGGED`), on every boot whose properties name a JDBC store or whose context holds a JDBC store bean,
+  `initialize-schema` `true` or `false`. No property downgrades it. `AG-SCHEMA-005` when the check cannot complete.
+- New startup refusal `AG-SCHEMA-007` when a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses
+  a `DataSource` other than the one the check verified (compared by identity, so a proxy around it is refused too),
+  and when `agentguard.schema.gate.datasource` names no `DataSource` bean. Every such bean is compared, the
+  starter's and the application's, including one an application post-processor wraps or depends on (B-RC12-4,
+  B-RC12-5). Not covered: a store built inside another bean and never exposed as a bean, which must call
+  `JdbcSupport.verifyGuards` itself. Each application context is checked by the auto-configuration in it; a child
+  context without it is outside coverage, like code without the starter.
   Checked at startup only: a role that owns the tables can still disable a trigger afterwards.
 - `initialize-schema=true` with a role that does not own the schema is refused with `AG-SCHEMA-006` (SQLState
   only) instead of surfacing the driver's raw permission error; it never booted in 0.1.x either.
@@ -24,12 +33,31 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   the 0.1.2 application starts, because 0.1.x left the guards at `ENABLE` (origin) and 0.1.2 requires `ENABLE
   ALWAYS`. See `docs/upgrading-0.1.2.md`, which also covers an installation that followed the archive remedy.
 
+- The startup warning for a runtime role that can disable the audit triggers now also fires for a role that is a
+  member of the role owning `agentguard_audit` (B-RC12-2); the read is scoped to the current schema and
+  `pg_catalog`-qualified.
+- The release vulnerability gate lists a Grype "Negligible" match as LOW instead of blocking it as UNRATED (B-RC12-3).
+
 ### Added
 - `JdbcSupport.verifyGuards(DataSource)` and `JdbcSupport.initializeSchemaAndVerifyGuards(DataSource)` for
-  applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`.
+  applications that use the core without Spring; error codes `AG-SCHEMA-003`, `AG-SCHEMA-005`, `AG-SCHEMA-006`,
+  `AG-SCHEMA-007`.
+- `agentguard.schema.gate.datasource`: the bean name of the `DataSource` the startup check verifies and the starter's
+  JDBC stores use (default: the primary `DataSource`). Needed when the audit trail lives in its own database.
+- `JdbcAuditSink.dataSource()`, `JdbcDecisionStore.dataSource()` and `JdbcBudgetStore.dataSource()`, which the
+  starter uses to compare a store's `DataSource` with the checked one.
 
 ### Changed
 - The `AG-AUDIT-002` message and "Starting a new trail" now end with the check an operator runs after archiving.
+- Release pipeline (CI-02): the release workflow now scans what it is about to sign with the
+  pinned Grype before anything is signed or uploaded. The scan set is the published jars plus
+  the resolved runtime dependency jars of the two published modules, bound to the checksum record
+  of the reproducibility check; HIGH and CRITICAL findings fail the release, MEDIUM and below are
+  listed for a decision in the release notes. The post-upload step now compares the entries of
+  `central-bundle.zip` itself (jars and poms) against that record and requires every
+  non-javadoc jar in the bundle to be one that was scanned, by digest. A published pom with a
+  version range, `SNAPSHOT`, `LATEST` or `RELEASE` dependency version is refused. The
+  reproducibility record now includes the poms.
 
 ### Fixed
 
@@ -651,8 +679,8 @@ ruled the design itself, then amended it once more after further design review.
   is **required by default**; missing, startup fails naming the property and the remedy (`openssl rand -base64 32`).
   `agentguard.audit.unkeyed=true` is the explicit, WARN-at-every-startup local-dev opt-out.
 - `agentguard_audit_anchor.keyed_from_seq` (nullable bigint) is replaced by `agentguard_audit_anchor.keyed`
-  (`boolean NOT NULL`): set once, at the first append, immutable afterwards via the anchor's existing monotonic
-  trigger. Every append after that, from any instance, must agree with it or is refused with a structured
+  (`boolean NOT NULL`): set once, at the first append; the anchor's monotonic trigger refuses later changes (on 0.1.x see the
+  guard advisory in SECURITY-NOTES). Every append after that, from any instance, must agree with it or is refused with a structured
   `AgentGuardException` (`AG-AUDIT-001`), naming the property and the remedy — this is what actually closes F4
   (fail-closed, not detectable-after-the-fact).
 - `AuditChainVerifier.verify` checks every row's `chain_version` against what `keyed` says the whole trail must
@@ -667,7 +695,7 @@ ruled the design itself, then amended it once more after further design review.
     material (`agentguard_audit.key_id`, `'none'` for unkeyed rows). `AuditChainVerifier` holds a keyring
     (current key plus every `agentguard.audit.hmac-keys.<id>`); a row's `key_id` absent from the keyring is
     `BROKEN`, not skipped. Rotation is a config change, not a trail migration; `keyed` still governs *whether* a
-    key is required (immutable), `key_id` only *which* already-trusted key signed a row.
+    key is required (set once), `key_id` only *which* already-trusted key signed a row.
   - **Anchor-missing refuses, never guesses:** a trail with rows but no anchor row is refused (`AG-AUDIT-002`),
     on both the next append and at the next startup. The "re-anchor from the trail head" fallback and its
     one-time-warn guard are removed; the schema seed's `INSERT … ON CONFLICT DO NOTHING` no longer derives values

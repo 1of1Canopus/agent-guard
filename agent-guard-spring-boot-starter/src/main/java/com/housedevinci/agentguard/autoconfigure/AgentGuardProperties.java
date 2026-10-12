@@ -38,6 +38,7 @@ public class AgentGuardProperties {
   @Valid private final Policy policy = new Policy();
   @Valid private final Approval approval = new Approval();
   @Valid private final Jdbc jdbc = new Jdbc();
+  @Valid private final Schema schema = new Schema();
   @Valid private final Redis redis = new Redis();
   @Valid private final Budgets budgets = new Budgets();
   @Valid private final Redaction redaction = new Redaction();
@@ -313,6 +314,34 @@ public class AgentGuardProperties {
 
     public void setWebhookTimeout(Duration v) {
       this.webhookTimeout = v;
+    }
+  }
+
+  public static class Schema {
+    @Valid private final Gate gate = new Gate();
+
+    public Gate getGate() {
+      return gate;
+    }
+
+    /** The startup check of the audit trail's guards. */
+    public static class Gate {
+      /**
+       * Bean name of the {@code DataSource} whose guards the startup check verifies, and that the
+       * starter's JDBC stores use. Unset: the primary {@code DataSource}. Every {@code
+       * JdbcAuditSink} bean must write through this exact {@code DataSource} (identity, not
+       * equality), or startup is refused with {@code AG-SCHEMA-007}. A name that is no {@code
+       * DataSource} bean refuses too.
+       */
+      private String datasource;
+
+      public String getDatasource() {
+        return datasource;
+      }
+
+      public void setDatasource(String v) {
+        this.datasource = v;
+      }
     }
   }
 
@@ -665,6 +694,10 @@ public class AgentGuardProperties {
 
   public Jdbc getJdbc() {
     return jdbc;
+  }
+
+  public Schema getSchema() {
+    return schema;
   }
 
   public Redis getRedis() {

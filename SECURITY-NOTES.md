@@ -92,7 +92,7 @@ does about it, and what still needs a reviewer's eye.
   `agentguard.jdbc.initialize-schema` for a migration step run by the owner role; log or export the head hash
   periodically. The anchor's `agentguard_audit_anchor_no_delete`/`_no_truncate` triggers (F3(a)) mean that
   role cannot lose the anchor row even by accident.
-- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011)).** 0.1.0 and 0.1.1 created each guard
+- **Startup guard check (0.1.2, security advisory "audit trail guards on 0.1.0 and 0.1.1"; see [the advisory](#advisory-audit-trail-guards-on-010-and-011), also [published on GitHub](https://github.com/1of1Canopus/agent-guard/security/advisories/GHSA-xc43-5ch5-2pfq)).** 0.1.0 and 0.1.1 created each guard
   trigger only when no trigger of that name existed anywhere in the database, so an archived copy of the trail (the
   `AG-AUDIT-002` remedy) or any same-named trigger on another relation left the live trail with no guard, silently.
   From 0.1.2 the script scopes each check to its relation, arms all five guards `ENABLE ALWAYS` (they then also fire
@@ -100,10 +100,21 @@ does about it, and what still needs a reviewer's eye.
   to start (`AG-SCHEMA-003`) unless the guard set, its functions and bodies are exactly the bundled ones and no rule,
   row level security, policy or inheritance edge sits on the four tables, and each of the four is an ordinary, logged
   table: an `UNLOGGED` trail and anchor are both emptied by crash recovery with no trigger firing, so the anchor
-  cannot tell. The check runs on every boot whose properties name a JDBC store, also when the application supplies its
-  own store beans; names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
+  cannot tell. The check runs on every boot whose properties name a JDBC store, and on every boot whose context holds
+  a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean, whatever the store properties say. It checks one `DataSource`: the one named by
+  `agentguard.schema.gate.datasource`, else the primary one. Every audit sink, decision store and budget store bean
+  (the starter's or the application's, wrapped by a post-processor or created before it) must use that same
+  `DataSource` object, or startup is refused with `AG-SCHEMA-007`, naming both beans. The comparison is by identity,
+  so a proxy or a pool around the checked `DataSource` is refused too. Outside the check: a store built inside another
+  bean and never exposed as a bean (it must call `JdbcSupport.verifyGuards` itself, as code without Spring must), and
+  a store created before the check is registered that a post-processor registered even earlier also wraps.
+  Each application context is checked by the auto-configuration in it: a child context that runs the auto-configuration checks its own store beans, and one without it is outside coverage, like code without the starter, and must call `JdbcSupport.verifyGuards`.
+  Names read from the catalogue are escaped in the refusal so none can forge a log line. The check's own catalogue reads are
   `pg_catalog`-qualified and run with `search_path` pinned to `pg_catalog`, so a role cannot answer them with
   same-named functions of its own.
+- The owner warning at `initialize-schema=true` covers ownership and role membership: a runtime role that is a member
+  of the role owning `agentguard_audit` holds every owner privilege and is warned too (read scoped to the current
+  schema, `pg_catalog`-qualified, `search_path` pinned).
 - **Residual (0.1.2):** the check runs at startup only. An application role that owns the tables can still disable a
   trigger after startup; `ENABLE ALWAYS` does not defend against the table owner. Not covered by the check, by design:
   event triggers, `session_replication_role` changes and executor hooks, all of which need a superuser. Rows written
@@ -114,8 +125,8 @@ does about it, and what still needs a reviewer's eye.
   `agentguard.audit.hmac-secret` is **required by default**; missing, startup fails naming the property and the
   remedy (`openssl rand -base64 32`). The explicit local-dev opt-out, `agentguard.audit.unkeyed=true`, starts
   unkeyed but warns at every startup, not only the first. Which mode a trail is in is recorded once, at the first
-  append, on `agentguard_audit_anchor.keyed` (a plain boolean, immutable afterwards via the anchor's existing
-  monotonic trigger — the same protection `head_hash`/`row_count` already had). Every later append, from this
+  append, on `agentguard_audit_anchor.keyed` (a plain boolean that cannot change after that: the anchor's
+  monotonic trigger refuses the update — the same protection `head_hash`/`row_count` already had). Every later append, from this
   instance or any other, must agree with it or is refused with `AG-AUDIT-001`, naming the property and the remedy
   (start a new trail — see below). This is what makes a **rolling restart that changes
   `agentguard.audit.hmac-secret` unsafe by itself**: stop every instance before starting the first one with the
@@ -129,7 +140,7 @@ does about it, and what still needs a reviewer's eye.
   keyring (the current key plus every id in `agentguard.audit.hmac-keys.<id>`) and picks the right secret per row
   by its `key_id`. A row claiming an id the keyring does not hold is `BROKEN`, not skipped or treated as unkeyed.
   This is not a second mode switch on top of keyed-from-birth: `keyed` still only says whether the trail is keyed
-  at all (immutable); `key_id` says which already-trusted key signed a given row within that mode, and a
+  at all (set once, at the first append); `key_id` says which already-trusted key signed a given row within that mode, and a
   table-owning attacker can only relabel to an id whose secret they also hold.
 - **Anchor-missing refused, never guessed (amendment, superseding the F1/F2 sequence-position mechanism and the
   prior schema-seed-from-an-existing-trail behaviour):** `JdbcAuditSink` no longer re-derives a lost anchor's
@@ -180,7 +191,7 @@ In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five 
 names no relation. A trigger with the same name on any other relation in the database suppresses the real guard, and the
 schema step still reports success. On an affected installation the application's runtime role can `UPDATE` and `DELETE`
 audit rows, and the anchor has no monotonic guard and no no-delete guard. Append-only is therefore **not guaranteed on
-0.1.x**. Fixed in 0.1.2 (not yet released). The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
+0.1.x**. Fixed in 0.1.2. The most likely way in is the library's own `AG-AUDIT-002` remedy: archiving
 the two tables and re-running the schema step moves the guards to the archived copies and leaves the fresh trail with
 none.
 Repairing the schema protects rows from the moment of repair; rows written while the guards were missing are not
@@ -325,6 +336,18 @@ concurrent callers now fails closed (`AG-GUARD-001`) instead of queueing unbound
 the pool at or above real peak concurrency, and size `platform-thread-count`/`platform-thread-queue-size` (V5)
 at or above real peak concurrent tool calls independently of `max-total` if the connection pool itself is
 deliberately smaller.
+
+## Release pipeline: vulnerability scan before signing
+The release workflow scans, with a pinned and checksum-verified Grype, the main and sources jars of
+`agent-guard-core` and `agent-guard-spring-boot-starter` plus every jar of their resolved runtime
+dependency set, before anything is signed or uploaded. The scanned digests are written to
+`scanned-sha256.txt` and the step that compares the uploaded `central-bundle.zip` requires every
+non-javadoc jar in it to appear there. Documented residues: `provided` and `optional` dependencies
+(supplied by the host) and the sample are not scanned here (the pull-request OSV-Scanner check
+covers the tree); javadoc jars are neither scanned nor bound (no runtime code, not reproducible);
+the digest comparison runs after the upload, so a red comparison means the deployment is dropped
+on the Portal and never published; the scanner's installability is proved inside the signing job
+(before the key is imported), not in a separate secret-free job.
 
 ## Reviewer checklist (before the first public release)
 - [ ] Dependency scan (`./mvnw -Psecurity-scan verify`) clean or triaged.

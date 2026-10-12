@@ -216,7 +216,7 @@ Expect five rows whose `nspname` is the schema your application uses. Fewer than
 schema means you are affected. The same names under another schema (for example an archived copy) are expected after
 the archive remedy and are not a problem by themselves.
 
-To repair without upgrading, do it by hand (or see docs/upgrading-0.1.2.md). As the owner of the two tables, run the following in one session, with
+To repair without upgrading, do it by hand. To upgrade, see [upgrading to 0.1.2](docs/upgrading-0.1.2.md). As the owner of the two tables, run the following in one session, with
 `SET search_path TO <your schema>;` first and kept for the whole block (the `EXECUTE FUNCTION` names resolve on it and
 are then frozen; without it a trigger can be armed onto a same-named function in another schema with no error):
 

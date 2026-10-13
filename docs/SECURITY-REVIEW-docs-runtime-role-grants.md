@@ -121,7 +121,7 @@ Least privilege is not weakened by the fix: the role already holds `UPDATE` on
 `agentguard_budget`, so it can already set `used` to zero. `DELETE` on a counter table grants no new
 capability, and the audit tables keep `INSERT, SELECT` only.
 
-Fix (documentation only, no mechanism, no code change — Isis):
+Fix (documentation only, no mechanism, no code change — the fix pass):
 1. `docs/index.md`, "Database roles": add `DELETE` for `agentguard_budget` to the block. Keep the
    audit and anchor grants untouched. Suggested shape:
    ```sql

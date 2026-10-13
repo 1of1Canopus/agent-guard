@@ -163,7 +163,7 @@ Full threat model and residual risks: [`SECURITY-NOTES.md`](./SECURITY-NOTES.md)
 | Multi-tenant isolation (Tenantify), SSO | – | yes |
 | Replay suite (replay recorded tool calls) | – | yes |
 
-The core is complete for a single application. A paid edition for teams is planned. If you need one of the planned rows, write to oss@housedevinci.com and say which.
+The core is complete for a single application. A paid edition for teams is planned. It would add an approval inbox with chat and email actions, an audit console with search and export, cost-based budgets, policy as YAML, multi-tenant isolation with SSO, and a replay suite. If you need one of the planned rows, write to oss@housedevinci.com and say which.
 
 ## Licence
 

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Agent Guard",
+  "description": "Spring Boot starter that adds tool policy, a human approval gate, a hash-chained audit trail in your own PostgreSQL database, and budgets to Spring AI tool calling and MCP servers.",
+  "folders": [
+    "docs"
+  ],
+  "excludeFolders": [
+    "target",
+    ".github",
+    "tools",
+    "scripts",
+    ".mvn"
+  ],
+  "excludeFiles": [
+    "CONTRIBUTING.md"
+  ],
+  "rules": [
+    "Maven coordinate: com.housedevinci:agent-guard-spring-boot-starter, current version 0.1.2.",
+    "Upgrading from 0.1.x: follow docs/upgrading-0.1.2.md in order; step 3 re-applies the schema once as the table owner.",
+    "The audit-trail trigger check runs at startup only; a trigger switched off later is not seen until the next start.",
+    "Run the application as a separate database role from the table owner; the owner can still switch the triggers off."
+  ]
+}

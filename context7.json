@@ -13,10 +13,7 @@
     ".mvn"
   ],
   "excludeFiles": [
-    "CONTRIBUTING.md",
-    "SECURITY-REVIEW-docs-runtime-role-grants.md",
-    "SECURITY-REVIEW-fix-schema-trigger-guards.md",
-    "SECURITY-REVIEW-release-0.1.2.md"
+    "CONTRIBUTING.md"
   ],
   "rules": [
     "Maven coordinate: com.housedevinci:agent-guard-spring-boot-starter, current version 0.1.2.",

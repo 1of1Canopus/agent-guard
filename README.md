@@ -151,9 +151,9 @@ approver's). A second approval returns the same stored result and runs nothing. 
 
 Full threat model and residual risks: [`SECURITY-NOTES.md`](./SECURITY-NOTES.md).
 
-## Free core vs Pro
+## What the free core does, and what a paid edition would add
 
-| | Core (FSL-1.1-ALv2) | Pro |
+| | Core (FSL-1.1-ALv2) | Paid edition (planned) |
 |---|---|---|
 | `@ToolPolicy`, registry, Spring Security integration | yes | yes |
 | Approval gate, log + webhook notifier, JSON endpoints | yes | + inbox UI, Slack/Teams/email with action links, SLA timers |
@@ -163,7 +163,7 @@ Full threat model and residual risks: [`SECURITY-NOTES.md`](./SECURITY-NOTES.md)
 | Multi-tenant isolation (Tenantify), SSO | – | yes |
 | Replay suite (replay recorded tool calls) | – | yes |
 
-Pro edition: coming, contact **oss@housedevinci.com**.
+The core is complete for a single application. A paid edition for teams is planned. If you need one of the planned rows, write to oss@housedevinci.com and say which.
 
 ## Licence
 

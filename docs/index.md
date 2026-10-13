@@ -6,7 +6,7 @@ with the same policy engine for Spring AI tool calling (`@Tool` / `ToolCallback`
 
 Spring Boot 4.0.x, Spring Framework 7, Spring AI 2.0.x, Java 21. Core is fair source
 (FSL-1.1-ALv2): free to use, not as a base for a competing product, becomes Apache-2.0 two years
-after each release. Pro edition under a separate commercial licence.
+after each release. A paid edition, if released, would be under a separate commercial licence.
 
 ## Quickstart (about 60 lines)
 
@@ -299,9 +299,9 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |
 | `AG-SCHEMA-007` | startup refused: a `JdbcAuditSink`, `JdbcDecisionStore` or `JdbcBudgetStore` bean uses a `DataSource` other than the checked one (compared by identity, so a proxy counts as another), or `agentguard.schema.gate.datasource` names no `DataSource` bean |
 
-## Free vs Pro
+## What the free core does, and what a paid edition would add
 
-| | Core (FSL-1.1-ALv2) | Pro |
+| | Core (FSL-1.1-ALv2) | Paid edition (planned) |
 |---|---|---|
 | `@ToolPolicy`, registry, Spring Security integration | yes | yes |
 | Approval gate, log + webhook notifier, JSON endpoints | yes | + inbox UI, Slack/Teams/email with action links, SLA timers |

@@ -1,0 +1,10 @@
+# Every gate job of .github/workflows/ci.yml, by the exact check name GitHub shows.
+# dependabot-auto-merge.yml refuses to arm auto-merge unless each name here is a required
+# status check pinned to GitHub Actions on the target branch (rules API), and every job in
+# ci.yml (base and head) is listed here.
+# Add a CI job: add it here AND to the main ruleset in the same change.
+Build & test
+DCO sign-off
+Cipher probes
+Vulnerability scan
+Reference guard

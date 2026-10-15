@@ -4,6 +4,19 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Added
+- Dependabot patch and minor bumps merge themselves after the 7-day cooldown when every
+  condition holds: the run was raised by Dependabot for the PR's current head (a re-run by a
+  person, a fork, or a moved head is refused); only plain `pom.xml` modifications (no renames,
+  file count equal to the PR's own count); verified Dependabot commit; every CI gate job
+  (`ci.yml` on the base and at the head) is listed in `.github/required-checks.txt` and is a
+  required check pinned to GitHub Actions on the target branch; every required check green.
+  Majors and GitHub Actions bumps wait for a maintainer. Any refusal or error, or a push by
+  someone else onto a Dependabot branch, disarms auto-merge, and a failed disarm is a red run.
+  The repository setting "Allow auto-merge" is the on/off switch; while it is off, the
+  workflow refuses with a notice. After merge, the five required checks must be pinned to
+  GitHub Actions in the branch ruleset, or nothing arms.
+
 ## [0.1.2] - 2026-10-12
 
 ### Security

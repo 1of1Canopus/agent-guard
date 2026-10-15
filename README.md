@@ -181,6 +181,10 @@ Pull requests are welcome. Every commit must carry a `Signed-off-by` trailer und
 checks this on every commit in the PR. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the
 full agreement and the commit convention.
 
+Dependency updates come from Dependabot, 7 days after the upstream release. A patch or minor
+bump that only changes `pom.xml` files merges itself once every required check is green.
+Major bumps and GitHub Actions bumps wait for a maintainer.
+
 ## Security
 
 Found a vulnerability? Do not open a public issue. Email **security@housedevinci.com**.

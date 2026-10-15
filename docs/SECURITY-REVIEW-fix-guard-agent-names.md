@@ -232,3 +232,82 @@ Fix (builder): add "or an agent first name" to the three step names.
 5. Add the nine internal probes to the suite first; each must be WEAK before the fix and
    FIXED after. B-NG-7's probe stays WEAK until its own PR.
 6. Copy every change to the two sibling PRs before their verifier run.
+
+## 2026-10-16, pass 2
+
+**Verdict: MERGE.** B-NG-1 to B-NG-6 and B-NG-8 are closed. Each probe went from WEAK on
+`91287db` to FIXED on `a5c8981`. B-NG-7 stays open as a design stop with its own PR, and it
+does not hold this PR (the coordinator's decision of 2026-10-16).
+
+Reviewed tree: `a5c8981` (fix commit `23eff45`, then a merge from main). The merge does not
+touch the guard script (empty diff on `tools/check-private-references.sh`). The fix commit
+does not touch this review document.
+
+### Numbers
+
+| Check | Result |
+|---|---|
+| Internal probe file (9 probes), on `a5c8981` | 8 FIXED, 1 WEAK (`probe_name_in_a_path_passes`, B-NG-7, expected) |
+| The same file on `91287db` | 9 WEAK |
+| Shipped suite, guard probes only (`CIPHER_PROBE_ONLY`) | 20 fixed, 0 weak |
+| CI on `a5c8981` | 5 of 5 checks green |
+| `--self-test`, BSD grep 2.6 and GNU grep 3.11 (`C`, `C.UTF-8`) | all cases correct |
+| `--tree` on `a5c8981`, this document included | tree clean |
+| Self-non-matching, defined exactly once | both hold (self-test lines, and `grep -c '^pattern='` = 1) |
+
+One internal probe (`probe_self_test_misses_a_widened_carve_out`) first read WEAK on the
+new head. That was my probe's fault: its mutation anchor no longer matched the longer
+pattern, so the probe could not apply the mutation. With the anchor the shipped suite uses
+(the look-ahead tail up to its closing parenthesis), it reads WEAK on `91287db` and FIXED on
+`a5c8981`. The shipped probe has the right anchor and refuses (WEAK) if it cannot mutate.
+
+### Closed
+
+| Id | Closed by | Probe now |
+|---|---|---|
+| B-NG-1 | `[[:space:]]` is a boundary before every name; four red self-test cases | FIXED |
+| B-NG-2 | names 1 to 11 have no dot or slash exemption; name 12 only after `crypto`; six red cases plus `javax.krypto.` | FIXED |
+| B-NG-3 | fallback form: exact word `probes` only; four red cases (probe, probed, probe-verified, probesuite) | FIXED |
+| B-NG-4 | guard job and jar steps checked by exact command in an unguarded job | FIXED |
+| B-NG-5 | lower-case agent address refused; project addresses green | FIXED |
+| B-NG-6 | a jar member starting with `PK\x03\x04` is refused | FIXED |
+| B-NG-8 | the three step names now say "or an agent first name" | FIXED |
+
+### Mutations, re-run on `a5c8981`
+
+| Mutation | Result |
+|---|---|
+| Builder 1: break name 3 and name 12 | 16 FAIL. Caught. |
+| Builder 2: remove `-a` from the jar scan (GNU) | 1 FAIL (`jar-length-byte-before-a-string`). Caught. |
+| Reviewer 1: drop one bracket of name 1 | FAIL "matches this script's own source". Caught. |
+| Reviewer 2: drop `[:cntrl:]` from the name prefix | 1 FAIL (jar green case). Caught. |
+| Reviewer 3: widen the carve-out to any ` p` | 4 FAIL. Caught (it survived in pass 1). |
+| Reviewer 4: delete name 10 | 1 FAIL (`agent-name-10`). Caught. |
+| Extra: give names 1 to 11 the dot and slash exemption back | 5 FAIL. Caught. |
+| Extra: drop the `crypto` look-behind for name 12 | 2 FAIL. Caught. |
+| Extra: disable the nested-archive refusal | 1 FAIL (`jar-nested-archive`). Caught. |
+
+### No exemption widened
+
+I ran the 36 attack cases of pass 1 against `a5c8981` and against the candidate pattern I
+measured in pass 1. The only difference is the lower-case address, which is now refused
+(B-NG-5). Every case that was refused stays refused. The cases that pass are the ones closed
+in pass 1 without a code change, plus the exact check-name word pair. BSD and GNU agree,
+except the Latin-1 byte case under `C`, as in pass 1.
+
+### The one new angle: a name at the start of a line
+
+`[[:space:]]` includes the newline, so I checked that the new alternative does not change
+how a line start is handled. Every case is refused on BSD and GNU (`C` and `C.UTF-8`):
+a name after a line feed in the middle of a paragraph, after CRLF, as the first byte of the
+file, after a blank line, after two spaces of indent, after a tab indent, after `> ` and
+`- `, the short name 3 at a line start, name 12 at a line start. In a jar member, a
+line-start name after LF and after CRLF is refused too. Only "name 12 probes" at a line start
+passes, which is the check name.
+
+### Still open
+
+- B-NG-7 (LOW, DESIGN STOP): names and moved-private names in file paths and jar entry
+  names are never scanned. Own design page and own PR.
+- The required check is still named after a reviewer. The narrow carve-out stays until the
+  check is renamed (a ruleset change for the maintainer).

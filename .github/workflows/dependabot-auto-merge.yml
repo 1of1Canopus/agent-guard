@@ -1,15 +1,25 @@
 name: Dependabot auto-merge
 
 # Explicit, maintainer-approved exception to "a person merges every PR": a Dependabot PR
-# merges itself when every condition below holds, and never otherwise. Every refusal is a `::notice::` and exit 0 - a refusal is not a failure,
-# the PR simply waits for a human, the same as any other Dependabot PR today.
+# merges itself when every condition below holds, and never otherwise.
+#
+# Two kinds of stop. A refusal is a `::notice::` and exit 0: the PR waits for a person, like
+# any other Dependabot PR. An error (a failed disarm, an unexpected arm failure) is red on
+# purpose, because a run that could not decide must not look like one that did.
+#
+# `gh pr merge --auto` arms the merge when the PR is not yet mergeable, and merges at once
+# when it already is (GitHub CLI behaviour; the repository setting is not consulted on that
+# path). So the setting is checked here, and the arm call carries --match-head-commit with
+# the sha this run was raised for.
+#
+# A person cannot make this job succeed: a re-run keeps the actor but not the person who
+# clicked, so the first step compares the triggering actor too. Recovery after a person
+# pushes onto a Dependabot branch is `@dependabot rebase`, or a merge by hand.
 #
 # `pull_request`, never `pull_request_target`: this workflow's definition always comes
-# from main, never from the PR branch, and it never checks out the PR head. There is
-# nothing here for a malicious dependabot.yml edit on a fork or branch to influence.
-# All decision logic lives in shell, reading from env vars set from the event/API
-# responses, rather than in YAML `if:` expressions - so each condition is a step body
-# that can be extracted and run against a synthetic input outside the Actions runtime.
+# from main, never from the PR branch, and it never checks out the PR head. All decision
+# logic lives in shell, reading env vars, so each condition is a step body that can be
+# extracted and run against a synthetic input outside the Actions runtime.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -18,16 +28,58 @@ permissions:
   contents: write
   pull-requests: write
 
+# One run per PR at a time; a newer event cancels the older run, so a slow arm job cannot
+# finish after a faster disarm job.
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   auto-merge:
     name: Auto-merge a patch/minor Dependabot PR after review
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      # No checkout: everything this job needs comes from the GitHub API (fetch-metadata
-      # reads the PR's own commit message, gh api reads the PR's files and head commit).
+      # No checkout: everything this job needs comes from the GitHub API.
+      #
+      # Provenance: this run must be the one Dependabot raised, for the head it is still at.
+      - name: Refuse a re-run, a fork or a moved head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          [ "$ACTOR" = "dependabot[bot]" ] || refuse "actor is not dependabot[bot]"
+          [ "$TRIGGERING_ACTOR" = "dependabot[bot]" ] || refuse "run was started by '$TRIGGERING_ACTOR' (a re-run by a person)"
+          [ "$PR_AUTHOR" = "dependabot[bot]" ] || refuse "PR author is not dependabot[bot]"
+          [ "$HEAD_REPO" = "$REPO" ] || refuse "head repository is not this repository"
+          case "$HEAD_REF" in dependabot/*) ;; *) refuse "head branch is not a dependabot/ branch" ;; esac
+          live="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .head.sha)" || refuse "could not read the live head"
+          [ "$live" = "$HEAD_SHA" ] || refuse "head moved since this run was raised"
+
+      # The repository setting is the real on/off switch (see the header).
+      - name: Refuse while the repository does not allow auto-merge
+        if: env.STOP != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          v="$(gh api "repos/${REPO}" --jq .allow_auto_merge)" || refuse "could not read the repository settings"
+          [ "$v" = "true" ] || refuse "the repository setting 'Allow auto-merge' is not on"
+
       - name: Read the update metadata Dependabot left in the commit message
         id: metadata
+        if: env.STOP != '1'
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
@@ -36,6 +88,7 @@ jobs:
       # two values (major, unknown, empty) refuses. Dependabot security updates carry the
       # same update-type values, so they are covered by the same rule with no carve-out.
       - name: Refuse anything other than a patch or minor update
+        if: env.STOP != '1'
         env:
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
@@ -48,10 +101,9 @@ jobs:
               ;;
           esac
 
-      # Condition 4: the PR changes only pom.xml files (any other path, including .github/, disables it). Read the changed-files list from
-      # the PR itself via the API, not from a local checkout (there is none) - a
-      # Dependabot PR that also touched application code (which Dependabot never does,
-      # but this refuses to trust that) must not auto-merge.
+      # Condition 4: the PR changes only pom.xml files, as plain modifications. Renames are
+      # refused (the old path counts), and the number of entries must equal the PR's own
+      # changed_files count, so a truncated list cannot hide a file. Any API error refuses.
       - name: Refuse a PR that touches anything but a manifest
         if: env.STOP != '1'
         env:
@@ -59,22 +111,24 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')"
-          bad=0
-          while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            case "$f" in
+          set -uo pipefail
+          refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          changed="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .changed_files)" || refuse "could not read the PR"
+          files="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv')" || refuse "could not read the changed files"
+          [[ "$changed" =~ ^[0-9]+$ ]] || refuse "changed_files is not a number"
+          [ "$changed" -ge 1 ] && [ "$changed" -le 50 ] || refuse "changed_files is $changed (allowed: 1 to 50)"
+          count=0
+          while IFS=$'\t' read -r status name prev; do
+            [ -n "$name" ] || continue
+            count=$((count + 1))
+            [ "$status" = "modified" ] || refuse "file $name has status '$status' (only plain modifications)"
+            [ -z "$prev" ] || refuse "file $name was renamed from $prev"
+            case "$name" in
               pom.xml|*/pom.xml) ;;
-              *)
-                echo "::notice::refusing auto-merge: changed file outside the manifest allowlist: $f"
-                bad=1
-                ;;
+              *) refuse "changed file outside the pom.xml allowlist: $name" ;;
             esac
           done <<<"$files"
-          if [ "$bad" -eq 1 ]; then
-            echo "STOP=1" >> "$GITHUB_ENV"
-          fi
+          [ "$count" -eq "$changed" ] || refuse "file list has $count entries but the PR has $changed changed files"
 
       # Condition 5: the head commit is authored by dependabot[bot] with a verified
       # signature. A human pushing onto a Dependabot branch (to slip in an unrelated
@@ -86,22 +140,20 @@ jobs:
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -euo pipefail
-          commit="$(gh api "repos/${REPO}/commits/${HEAD_SHA}")"
-          author_login="$(printf '%s' "$commit" | jq -r '.author.login // empty')"
-          verified="$(printf '%s' "$commit" | jq -r '.commit.verification.verified')"
-          if [ "$author_login" != "dependabot[bot]" ]; then
-            echo "::notice::refusing auto-merge: head commit author is '${author_login:-unknown}', not dependabot[bot]"
-            echo "STOP=1" >> "$GITHUB_ENV"
-          elif [ "$verified" != "true" ]; then
-            echo "::notice::refusing auto-merge: head commit signature is not verified"
-            echo "STOP=1" >> "$GITHUB_ENV"
-          fi
+          set -uo pipefail
+          refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          commit="$(gh api "repos/${REPO}/commits/${HEAD_SHA}")" || refuse "could not read the head commit"
+          author_login="$(printf '%s' "$commit" | jq -r '.author.login // empty')" || refuse "could not parse the head commit"
+          verified="$(printf '%s' "$commit" | jq -r '.commit.verification.verified')" || refuse "could not parse the head commit"
+          [ "$author_login" = "dependabot[bot]" ] || refuse "head commit author is '${author_login:-unknown}', not dependabot[bot]"
+          [ "$verified" = "true" ] || refuse "head commit signature is not verified"
 
       # Condition 7: arming is refused unless every gate job of the repo's CI is a required
-      # check on the target branch, at this moment, on the live head. Three reads, all by API
-      # and none from the PR head's own copy of this list: .github/required-checks.txt on the
-      # BASE branch, the branch rules, and ci.yml at the head sha. An API error refuses.
+      # check on the target branch, at this moment. Gate jobs are read from ci.yml on the base
+      # branch AND at the head sha (the union), with yq, so a job with no `name:` counts under
+      # its id. A context counts as required only when the rule pins it to GitHub Actions
+      # (integration_id 15368): a name-only context can be satisfied by any commit status.
+      # The list is .github/required-checks.txt on the BASE branch. Any error refuses.
       - name: Refuse unless every CI gate job is a required check
         if: env.STOP != '1'
         env:
@@ -112,19 +164,24 @@ jobs:
         run: |
           set -uo pipefail
           refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          jobnames() { yq -r '.jobs | to_entries | .[] | (.value.name // .key)' <<<"$1"; }
           listed="$(gh api -H 'Accept: application/vnd.github.raw' "repos/${REPO}/contents/.github/required-checks.txt?ref=${BASE_REF}")" || refuse "could not read required-checks.txt on ${BASE_REF}"
           rules="$(gh api "repos/${REPO}/rules/branches/${BASE_REF}")" || refuse "could not read the branch rules"
-          ci="$(gh api -H 'Accept: application/vnd.github.raw' "repos/${REPO}/contents/.github/workflows/ci.yml?ref=${HEAD_SHA}")" || refuse "could not read ci.yml at the head"
-          required="$(printf '%s' "$rules" | jq -r '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' | sort -u)" || refuse "could not parse the branch rules"
+          ci_base="$(gh api -H 'Accept: application/vnd.github.raw' "repos/${REPO}/contents/.github/workflows/ci.yml?ref=${BASE_REF}")" || refuse "could not read ci.yml on ${BASE_REF}"
+          ci_head="$(gh api -H 'Accept: application/vnd.github.raw' "repos/${REPO}/contents/.github/workflows/ci.yml?ref=${HEAD_SHA}")" || refuse "could not read ci.yml at the head"
+          required="$(printf '%s' "$rules" | jq -r '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[] | select(.integration_id == 15368) | .context' | sort -u)" || refuse "could not parse the branch rules"
+          jobs_base="$(jobnames "$ci_base")" || refuse "could not parse ci.yml on ${BASE_REF}"
+          jobs_head="$(jobnames "$ci_head")" || refuse "could not parse ci.yml at the head"
+          jobs="$(printf '%s\n%s\n' "$jobs_base" "$jobs_head" | sed '/^$/d' | sort -u)"
           listed="$(printf '%s\n' "$listed" | sed -e '/^#/d' -e '/^$/d' | sort -u)"
-          jobs="$(printf '%s\n' "$ci" | sed -n 's/^    name: //p' | sort -u)"
-          [ -n "$required" ] || refuse "the branch has no required status checks"
+          [ -n "$required" ] || refuse "the branch has no required status check pinned to GitHub Actions"
           [ -n "$listed" ] || refuse "required-checks.txt is empty"
-          [ -n "$jobs" ] || refuse "found no job in ci.yml"
+          [ -n "$jobs_base" ] && [ -n "$jobs_head" ] || refuse "found no job in ci.yml"
+          case "$jobs" in *'${{'*) refuse "a job name in ci.yml is an expression" ;; esac
           unlisted="$(comm -13 <(printf '%s\n' "$listed") <(printf '%s\n' "$jobs"))"
           [ -z "$unlisted" ] || refuse "CI job not in required-checks.txt: $(printf '%s' "$unlisted" | tr '\n' ',')"
           unrequired="$(comm -13 <(printf '%s\n' "$required") <(printf '%s\n' "$listed"))"
-          [ -z "$unrequired" ] || refuse "listed check is not a required check on ${BASE_REF}: $(printf '%s' "$unrequired" | tr '\n' ',')"
+          [ -z "$unrequired" ] || refuse "listed check is not a required check pinned to GitHub Actions on ${BASE_REF}: $(printf '%s' "$unrequired" | tr '\n' ',')"
 
       # Condition 3 (every required check green) is enforced by GitHub's native auto-merge
       # itself, not by this workflow: `gh pr merge --auto` only completes the merge once
@@ -132,25 +189,34 @@ jobs:
       # before that. This job does not poll checks; it only decides whether the PR is
       # ALLOWED to wait for them with auto-merge armed.
       - name: Enable auto-merge
+        id: arm
         if: env.STOP != '1'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
         run: |
           set -euo pipefail
-          echo "::notice::update-type $UPDATE_TYPE, manifest-only, verified Dependabot commit: arming auto-merge"
-          gh pr merge --auto --merge "$PR_URL"
+          echo "::notice::update-type ${UPDATE_TYPE:-unknown}, pom-only, verified Dependabot commit: arming auto-merge"
+          gh pr merge --auto --merge --match-head-commit "$HEAD_SHA" "$PR_URL"
 
-      # Any refusal also disarms: an auto-merge armed earlier must not survive a later
-      # change that fails a condition. Nothing armed is not an error.
+      # Anything but a successful arm also disarms: a refusal, an error in any step, a skipped
+      # arm. An auto-merge armed earlier must not survive a run that could not decide.
+      # A failed disarm is red.
       - name: Disarm auto-merge after a refusal
-        if: always() && env.STOP == '1'
+        if: always() && steps.arm.outcome != 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge --disable-auto "$PR_URL" || true
+          set -uo pipefail
+          armed="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" || { echo "::error::could not read the auto-merge state"; exit 1; }
+          if [ "$armed" = "true" ]; then
+            gh pr merge --disable-auto "$PR_URL" || { echo "::error::could not disarm auto-merge"; exit 1; }
+            armed="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" || { echo "::error::could not re-read the auto-merge state"; exit 1; }
+            [ "$armed" = "false" ] || { echo "::error::auto-merge is still armed after disarming"; exit 1; }
+          fi
 
   # A person pushing onto a Dependabot branch triggers this event with a different actor, so
   # the job above is skipped. This job disarms whatever was armed. It can only disarm.
@@ -164,4 +230,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr merge --disable-auto "$PR_URL" || true
+          set -uo pipefail
+          armed="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" || { echo "::error::could not read the auto-merge state"; exit 1; }
+          if [ "$armed" = "true" ]; then
+            gh pr merge --disable-auto "$PR_URL" || { echo "::error::could not disarm auto-merge"; exit 1; }
+            armed="$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" || { echo "::error::could not re-read the auto-merge state"; exit 1; }
+            [ "$armed" = "false" ] || { echo "::error::auto-merge is still armed after disarming"; exit 1; }
+          fi

@@ -41,32 +41,6 @@ step_body() { # step_body <step name>
 
 # A fake `gh` on PATH so a step's real `gh api` calls can be exercised without the network.
 # GH_FAKE_FILES_JSON / GH_FAKE_COMMIT_JSON drive the two calls this workflow makes.
-make_fake_gh() { # make_fake_gh <dir>
-  local dir="$1"
-  cat > "$dir/gh" <<'FAKE'
-#!/usr/bin/env bash
-if [ "$1" = "api" ]; then
-  [ -z "${GH_FAKE_API_FAIL:-}" ] || exit 1
-  for a in "$@"; do
-    case "$a" in
-      # The real call pipes through --jq '.[].filename'; the fake applies the same
-      # transform with the real jq binary so the step's own parsing runs as in production.
-      */pulls/*/files) printf '%s' "${GH_FAKE_FILES_JSON:-[]}" | jq -r '.[]'; exit 0 ;;
-      */contents/.github/required-checks.txt*) printf '%s\n' "${GH_FAKE_LISTED-}"; exit 0 ;;
-      */contents/.github/workflows/ci.yml*) printf '%s\n' "${GH_FAKE_CI-}"; exit 0 ;;
-      */rules/branches/*) printf '%s' "${GH_FAKE_RULES:-[]}"; exit 0 ;;
-      */commits/*) printf '%s' "${GH_FAKE_COMMIT_JSON:-\{\}}"; exit 0 ;;
-    esac
-  done
-  echo '{}'; exit 0
-elif [ "$1" = "pr" ] && [ "$2" = "merge" ]; then
-  echo "$*" >> "${GH_FAKE_MERGE_LOG:-/dev/null}"
-  exit 0
-fi
-exit 0
-FAKE
-  chmod +x "$dir/gh"
-}
 
 # ---------------------------------------------------------------------------
 # major refused - fails closed: only semver-patch and semver-minor pass.
@@ -98,83 +72,13 @@ probe_patch_update_is_wrongly_refused() {
 # ---------------------------------------------------------------------------
 # foreign path refused
 # ---------------------------------------------------------------------------
-probe_a_foreign_path_passes_the_manifest_gate() {
-  local body work rc
-  body="$(step_body 'Refuse a PR that touches anything but a manifest')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_FILES_JSON='["pom.xml","src/main/java/Evil.java"]' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard PR_NUMBER=1 GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  rc=0
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null || rc=1
-  rm -rf "$work"
-  [ "$rc" -eq 1 ]   # a non-manifest path did not stop the merge: weak
-}
 
-probe_manifest_only_pr_is_wrongly_refused() {
-  local body work
-  body="$(step_body 'Refuse a PR that touches anything but a manifest')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_FILES_JSON='["pom.xml","agent-guard-core/pom.xml"]' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard PR_NUMBER=1 GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  local blocked=1
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null && blocked=0
-  rm -rf "$work"
-  [ "$blocked" -eq 0 ]   # a manifest-only PR was refused: also a defect, reported as weak
-}
 
 # ---------------------------------------------------------------------------
 # non-Dependabot actor / unverified commit refused
 # ---------------------------------------------------------------------------
-probe_a_non_dependabot_head_commit_passes() {
-  local body work rc
-  body="$(step_body 'Refuse an unverified or non-Dependabot head commit')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_COMMIT_JSON='{"author":{"login":"a-human"},"commit":{"verification":{"verified":true}}}' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard HEAD_SHA=deadbeef GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  rc=0
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null || rc=1
-  rm -rf "$work"
-  [ "$rc" -eq 1 ]   # a human-authored head commit did not stop the merge: weak
-}
 
-probe_an_unverified_dependabot_commit_passes() {
-  local body work rc
-  body="$(step_body 'Refuse an unverified or non-Dependabot head commit')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_COMMIT_JSON='{"author":{"login":"dependabot[bot]"},"commit":{"verification":{"verified":false}}}' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard HEAD_SHA=deadbeef GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  rc=0
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null || rc=1
-  rm -rf "$work"
-  [ "$rc" -eq 1 ]   # an unverified signature did not stop the merge: weak
-}
 
-probe_a_verified_dependabot_commit_is_wrongly_refused() {
-  local body work
-  body="$(step_body 'Refuse an unverified or non-Dependabot head commit')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_COMMIT_JSON='{"author":{"login":"dependabot[bot]"},"commit":{"verification":{"verified":true}}}' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard HEAD_SHA=deadbeef GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  local blocked=1
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null && blocked=0
-  rm -rf "$work"
-  [ "$blocked" -eq 0 ]   # a legitimate Dependabot commit was refused: also a defect, weak
-}
 
 # ---------------------------------------------------------------------------
 # cooldown present and >= 7 in every ecosystem
@@ -232,91 +136,19 @@ probe_permissions_are_not_exactly_the_two() {
 # condition 4, strict: a workflow or dependabot.yml change is NOT a manifest. A bump that
 # could rewrite its own gate must wait for a human.
 # ---------------------------------------------------------------------------
-probe_a_github_path_passes_the_manifest_gate() {
-  local body work rc
-  body="$(step_body 'Refuse a PR that touches anything but a manifest')"
-  [ -n "$body" ] || return 0
-  work="$(mktemp -d)"
-  make_fake_gh "$work"
-  GH_FAKE_FILES_JSON='["pom.xml",".github/workflows/ci.yml"]' \
-    PATH="$work:$PATH" REPO=1of1Canopus/agent-guard PR_NUMBER=1 GITHUB_ENV="$work/env" \
-    bash -c "$body" >/dev/null 2>&1
-  rc=0
-  grep -q '^STOP=1$' "$work/env" 2>/dev/null || rc=1
-  rm -rf "$work"
-  [ "$rc" -eq 1 ]
-}
 
 # ---------------------------------------------------------------------------
 # condition 7: arming needs every CI gate job to be a required check, live. Runs the real
 # step against synthetic rules. Returns the step's STOP result: 0 = STOP set, 1 = not set.
 # ---------------------------------------------------------------------------
-GOOD_LISTED=$'Build & test\nDCO sign-off'
-GOOD_CI=$'name: CI\njobs:\n  a:\n    name: Build & test\n    steps:\n      - name: not a job\n  b:\n    name: DCO sign-off'
-GOOD_RULES='[{"type":"pull_request"},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"Build & test"},{"context":"DCO sign-off"}]}}]'
 
-run_required_checks_step() { # env GH_FAKE_* set by caller; echoes "stop" or "go"
-  local body work out
-  body="$(step_body 'Refuse unless every CI gate job is a required check')"
-  [ -n "$body" ] || { echo "nostep"; return; }
-  work="$(mktemp -d)"; make_fake_gh "$work"
-  PATH="$work:$PATH" REPO=1of1Canopus/agent-guard BASE_REF=main HEAD_SHA=deadbeef \
-    GITHUB_ENV="$work/env" bash -c "$body" >/dev/null 2>&1
-  if grep -q '^STOP=1$' "$work/env" 2>/dev/null; then out=stop; else out=go; fi
-  rm -rf "$work"; echo "$out"
-}
 
-probe_an_ordinary_green_setup_is_wrongly_refused() {
-  [ "$(GH_FAKE_LISTED="$GOOD_LISTED" GH_FAKE_CI="$GOOD_CI" GH_FAKE_RULES="$GOOD_RULES" run_required_checks_step)" != go ]
-}
-probe_a_ci_job_that_is_not_a_required_check_passes() {
-  local ci="$GOOD_CI"$'\n  c:\n    name: Extra gate'
-  [ "$(GH_FAKE_LISTED="$GOOD_LISTED"$'\nExtra gate' GH_FAKE_CI="$ci" GH_FAKE_RULES="$GOOD_RULES" run_required_checks_step)" != stop ]
-}
-probe_a_ci_job_missing_from_the_list_passes() {
-  local ci="$GOOD_CI"$'\n  c:\n    name: Extra gate'
-  [ "$(GH_FAKE_LISTED="$GOOD_LISTED" GH_FAKE_CI="$ci" GH_FAKE_RULES="$GOOD_RULES" run_required_checks_step)" != stop ]
-}
-probe_a_rules_api_error_passes() {
-  [ "$(GH_FAKE_API_FAIL=1 GH_FAKE_LISTED="$GOOD_LISTED" GH_FAKE_CI="$GOOD_CI" GH_FAKE_RULES="$GOOD_RULES" run_required_checks_step)" != stop ]
-}
-probe_a_branch_with_no_required_checks_passes() {
-  [ "$(GH_FAKE_LISTED="$GOOD_LISTED" GH_FAKE_CI="$GOOD_CI" GH_FAKE_RULES='[{"type":"pull_request"}]' run_required_checks_step)" != stop ]
-}
 
 # ---------------------------------------------------------------------------
 # disarm: a refusal and a non-Dependabot push both turn auto-merge off.
 # ---------------------------------------------------------------------------
-probe_a_refusal_does_not_disarm() {
-  local body work rc
-  body="$(step_body 'Disarm auto-merge after a refusal')"
-  [ -n "$body" ] || return 0
-  # the step must be gated on a refusal having happened (STOP=1), and must run even after a failure
-  awk '/- name: Disarm auto-merge after a refusal/{f=1;next} f&&/run:/{exit} f' "$WF" | grep -q "always() && env.STOP == '1'" || return 0
-  work="$(mktemp -d)"; make_fake_gh "$work"
-  GH_FAKE_MERGE_LOG="$work/log" PATH="$work:$PATH" PR_URL=https://example/pr/1 bash -c "$body" >/dev/null 2>&1
-  rc=0; grep -q -- '--disable-auto' "$work/log" 2>/dev/null || rc=1
-  rm -rf "$work"; [ "$rc" -eq 1 ]
-}
-probe_a_foreign_push_does_not_disarm() {
-  local body work rc
-  body="$(step_body 'Disarm')"
-  [ -n "$body" ] || return 0
-  grep -q "github.actor != 'dependabot\[bot\]'" "$WF" || return 0
-  work="$(mktemp -d)"; make_fake_gh "$work"
-  GH_FAKE_MERGE_LOG="$work/log" PATH="$work:$PATH" PR_URL=https://example/pr/1 bash -c "$body" >/dev/null 2>&1
-  rc=0; grep -q -- '--disable-auto' "$work/log" 2>/dev/null || rc=1
-  rm -rf "$work"; [ "$rc" -eq 1 ]
-}
 
 # The committed list must match reality right now (the live check the workflow does at run time).
-probe_required_checks_txt_drifted_from_ci_yml() {
-  local jobs listed
-  jobs="$(sed -n 's/^    name: //p' .github/workflows/ci.yml | sort -u)"
-  listed="$(sed -e '/^#/d' -e '/^$/d' .github/required-checks.txt 2>/dev/null | sort -u)"
-  [ -n "$listed" ] || return 0
-  [ "$jobs" != "$listed" ]
-}
 
 # ===========================================================================
 # Review probes, PR 44 (DM2-01 .. DM2-07). They run step bodies by job id and exact step name
@@ -474,10 +306,68 @@ mut_survives() { # <perl expr> <shipped probe name>
 probe_shipped_probes_survive_mutations() {
   [ -z "${AM_PROBE_NESTED:-}" ] || return 1
   mut_survives "s/(\n  disarm-on-foreign-push:\n.*?\n    if: )/\${1}false \&\& /s" probe_a_foreign_push_does_not_disarm && return 0
-  mut_survives 's/(\n  disarm-on-foreign-push:\n.*?run: \|\n)[^\n]*\n/${1}          true\n/s' probe_a_foreign_push_does_not_disarm && return 0
+  mut_survives 's/(\n  disarm-on-foreign-push:\n.*?run: \|\n).*\z/${1}          true\n/s' probe_a_foreign_push_does_not_disarm && return 0
   mut_survives "s/(- name: Disarm auto-merge after a refusal\n        if: [^\n]*)/\${1} \&\& false/" probe_a_refusal_does_not_disarm && return 0
   return 1; }
 
+
+
+# ---------------------------------------------------------------------------
+# Conditions 4, 5, 7 and the disarm steps, on the shared fake gh (run_step).
+# ---------------------------------------------------------------------------
+PODS='[{"filename":"pom.xml","status":"modified"},{"filename":"X","status":"modified"}]'
+probe_a_foreign_path_passes_the_manifest_gate() {
+  [ "$(FK_FILES="${PODS/X/src\/main\/java\/Evil.java}" FK_PULL='{"changed_files":2}' run_step $J "$PATHS")" != stop ]; }
+probe_a_github_path_passes_the_manifest_gate() {
+  [ "$(FK_FILES="${PODS/X/.github\/workflows\/ci.yml}" FK_PULL='{"changed_files":2}' run_step $J "$PATHS")" != stop ]; }
+probe_manifest_only_pr_is_wrongly_refused() {
+  [ "$(FK_FILES="${PODS/X/agent-guard-core\/pom.xml}" FK_PULL='{"changed_files":2}' run_step $J "$PATHS")" != go ]; }
+probe_a_non_dependabot_head_commit_passes() {
+  [ "$(FK_COMMIT='{"author":{"login":"a-human"},"commit":{"verification":{"verified":true}}}' run_step $J "$COMMIT")" != stop ]; }
+probe_an_unverified_dependabot_commit_passes() {
+  [ "$(FK_COMMIT='{"author":{"login":"dependabot[bot]"},"commit":{"verification":{"verified":false}}}' run_step $J "$COMMIT")" != stop ]; }
+probe_a_verified_dependabot_commit_is_wrongly_refused() {
+  [ "$(FK_COMMIT='{"author":{"login":"dependabot[bot]"},"commit":{"verification":{"verified":true}}}' run_step $J "$COMMIT")" != go ]; }
+probe_an_ordinary_green_setup_is_wrongly_refused() {
+  [ "$(FK_LISTED="$L_OK" FK_CI_BASE="$CI_OK" FK_CI_HEAD="$CI_OK" FK_RULES="$R_PIN" run_step $J "$GATES")" != go ]; }
+probe_a_ci_job_that_is_not_a_required_check_passes() {
+  local ci="$CI_OK"$'\n  c:\n    name: Extra gate'
+  [ "$(FK_LISTED="$L_OK"$'\nExtra gate' FK_CI_BASE="$ci" FK_CI_HEAD="$ci" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
+probe_a_ci_job_missing_from_the_list_passes() {
+  local ci="$CI_OK"$'\n  c:\n    name: Extra gate'
+  [ "$(FK_LISTED="$L_OK" FK_CI_BASE="$ci" FK_CI_HEAD="$ci" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
+probe_a_rules_api_error_passes() {
+  [ "$(FK_API_FAIL=1 FK_LISTED="$L_OK" FK_CI_BASE="$CI_OK" FK_CI_HEAD="$CI_OK" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
+probe_a_branch_with_no_required_checks_passes() {
+  [ "$(FK_LISTED="$L_OK" FK_CI_BASE="$CI_OK" FK_CI_HEAD="$CI_OK" FK_RULES='[{"type":"pull_request"}]' run_step $J "$GATES")" != stop ]; }
+
+# Every workflow that runs on pull_request (except this one) must have its jobs in
+# required-checks.txt. Same yq expression as the workflow's condition 7 step.
+probe_required_checks_txt_drifted_from_ci_yml() {
+  command -v yq >/dev/null 2>&1 || return 0   # unverifiable counts as weak
+  local jobs="" f listed
+  for f in .github/workflows/*.yml; do
+    [ "$f" = "$WF" ] && continue
+    if [ "$(yq '.on | (tag == "!!map" and has("pull_request")) or (tag == "!!seq" and contains(["pull_request"])) or (. == "pull_request")' "$f")" = true ]; then
+      jobs+="$(yq -r '.jobs | to_entries | .[] | (.value.name // .key)' "$f")"$'\n'
+    fi
+  done
+  jobs="$(printf '%s' "$jobs" | sed '/^$/d' | sort -u)"
+  listed="$(sed -e '/^#/d' -e '/^$/d' .github/required-checks.txt 2>/dev/null | sort -u)"
+  [ -n "$listed" ] && [ -n "$jobs" ] || return 0
+  [ "$jobs" != "$listed" ]
+}
+
+# Disarm steps: whole-line if: assertions, and the body is run by job id and exact step name.
+job_if() { awk -v job="  $1:" '$0 == job { injob=1; next } injob && /^  [a-zA-Z0-9_-]+:/ { exit } injob && /^    if: / { sub(/^    if: /, ""); print; exit }' "$WF"; }
+probe_a_refusal_does_not_disarm() {
+  [ "$(step_if $J "$DISARM")" != "always() && steps.arm.outcome != 'success'" ] && return 0
+  local l; l="$(mktemp)"; FK_ARMED=1 FK_LOG="$l" run_step $J "$DISARM" >/dev/null
+  ! grep -q -- '--disable-auto' "$l"; local r=$?; rm -f "$l"; return $r; }
+probe_a_foreign_push_does_not_disarm() {
+  [ "$(job_if $FJ)" != "github.actor != 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/')" ] && return 0
+  local l; l="$(mktemp)"; FK_ARMED=1 FK_LOG="$l" run_step $FJ "$FDISARM" >/dev/null
+  ! grep -q -- '--disable-auto' "$l"; local r=$?; rm -f "$l"; return $r; }
 
 echo "the Dependabot auto-merge probes  (WEAK = condition not yet enforced)"
 echo
@@ -487,20 +377,6 @@ probe probe_cooldown_missing_or_short_in_dependabot_yml     "2 cooldown missing 
 probe probe_trigger_is_pull_request_target                  "6 pull_request_target is used"                    probe_trigger_is_pull_request_target
 probe probe_workflow_checks_out_the_pr_head                 "6 the workflow checks out the PR head"            probe_workflow_checks_out_the_pr_head
 probe probe_permissions_are_not_exactly_the_two              "6 permissions are not exactly contents+PR write"  probe_permissions_are_not_exactly_the_two
-probe probe_a_foreign_path_passes_the_manifest_gate          "4 a non-manifest path passes the gate"            probe_a_foreign_path_passes_the_manifest_gate
-probe probe_manifest_only_pr_is_wrongly_refused              "4 a manifest-only PR is wrongly refused"          probe_manifest_only_pr_is_wrongly_refused
-probe probe_a_non_dependabot_head_commit_passes              "5 a human-authored head commit passes"            probe_a_non_dependabot_head_commit_passes
-probe probe_an_unverified_dependabot_commit_passes           "5 an unverified signature passes"                 probe_an_unverified_dependabot_commit_passes
-probe probe_a_verified_dependabot_commit_is_wrongly_refused   "5 a verified Dependabot commit is wrongly refused" probe_a_verified_dependabot_commit_is_wrongly_refused
-probe probe_a_github_path_passes_the_manifest_gate           "4 a .github path passes the manifest gate"        probe_a_github_path_passes_the_manifest_gate
-probe probe_an_ordinary_green_setup_is_wrongly_refused        "7 a consistent setup is wrongly refused"          probe_an_ordinary_green_setup_is_wrongly_refused
-probe probe_a_ci_job_that_is_not_a_required_check_passes      "7 a CI job that is not required passes"           probe_a_ci_job_that_is_not_a_required_check_passes
-probe probe_a_ci_job_missing_from_the_list_passes             "7 a CI job missing from the list passes"          probe_a_ci_job_missing_from_the_list_passes
-probe probe_a_rules_api_error_passes                          "7 an API error passes"                            probe_a_rules_api_error_passes
-probe probe_a_branch_with_no_required_checks_passes           "7 a branch with no required checks passes"        probe_a_branch_with_no_required_checks_passes
-probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks.txt differs from ci.yml jobs"   probe_required_checks_txt_drifted_from_ci_yml
-probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
-probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
 
 probe probe_a_rerun_by_a_person_can_arm                 "DM2-01 a person's re-run arms"                    probe_a_rerun_by_a_person_can_arm
 probe probe_a_moved_head_can_arm                        "DM2-01 a head moved after the event arms"         probe_a_moved_head_can_arm
@@ -525,6 +401,21 @@ probe probe_a_name_only_required_check_passes           "DM2-05 context without 
 probe probe_auto_merge_off_still_proceeds               "DM2-06 setting off does not stop the run"         probe_auto_merge_off_still_proceeds
 probe probe_auto_merge_on_is_wrongly_refused            "DM2-06 good case refused"                         probe_auto_merge_on_is_wrongly_refused
 probe probe_shipped_probes_survive_mutations            "DM2-07 shipped probes survive mutations"          probe_shipped_probes_survive_mutations
+
+probe probe_a_foreign_path_passes_the_manifest_gate           "4 a non-manifest path passes the gate"            probe_a_foreign_path_passes_the_manifest_gate
+probe probe_manifest_only_pr_is_wrongly_refused              "4 a manifest-only PR is wrongly refused"          probe_manifest_only_pr_is_wrongly_refused
+probe probe_a_github_path_passes_the_manifest_gate           "4 a .github path passes the manifest gate"        probe_a_github_path_passes_the_manifest_gate
+probe probe_a_non_dependabot_head_commit_passes              "5 a human-authored head commit passes"            probe_a_non_dependabot_head_commit_passes
+probe probe_an_unverified_dependabot_commit_passes           "5 an unverified signature passes"                 probe_an_unverified_dependabot_commit_passes
+probe probe_a_verified_dependabot_commit_is_wrongly_refused  "5 a verified Dependabot commit is wrongly refused" probe_a_verified_dependabot_commit_is_wrongly_refused
+probe probe_an_ordinary_green_setup_is_wrongly_refused        "7 a consistent setup is wrongly refused"          probe_an_ordinary_green_setup_is_wrongly_refused
+probe probe_a_ci_job_that_is_not_a_required_check_passes      "7 a CI job that is not required passes"           probe_a_ci_job_that_is_not_a_required_check_passes
+probe probe_a_ci_job_missing_from_the_list_passes             "7 a CI job missing from the list passes"          probe_a_ci_job_missing_from_the_list_passes
+probe probe_a_rules_api_error_passes                          "7 an API error passes"                            probe_a_rules_api_error_passes
+probe probe_a_branch_with_no_required_checks_passes           "7 a branch with no required checks passes"        probe_a_branch_with_no_required_checks_passes
+probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks.txt differs from PR workflows"  probe_required_checks_txt_drifted_from_ci_yml
+probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
+probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
 
 echo
 echo "still weak: $pass    fixed: $flipped"

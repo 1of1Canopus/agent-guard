@@ -220,3 +220,74 @@ RED, then GREEN, in the pull request body. The DM2-03 good case needs `yq` local
 DM2-01 and DM2-06 (new steps, step order: provenance, setting, `fetch-metadata`, the four
 conditions, arm, disarm), then DM2-02, DM2-04, DM2-03, DM2-05, DM2-07. Maintainer, after
 merge: pin the five contexts to GitHub Actions, then turn "Allow auto-merge" on.
+
+## 2026-10-15 - second pass, head `ff1bd6d`
+
+Scope: the fix commits `5fdaa7a` (probes first) and `ff1bd6d` (workflow, CHANGELOG,
+`required-checks.txt`), plus two new angles: the `allow_auto_merge` read through the
+default token, and the concurrency group.
+
+**Verdict: MERGE.** DM2-01 to DM2-07 are closed. Each one was closed by its probe turning
+green on this head and by a mutation of its control turning it red again. The two new angles
+gave no finding.
+
+### Numbers
+
+| What | Result |
+|---|---|
+| CI on `ff1bd6d` | all 5 gates pass |
+| Build & test | 206 + 98 + 3 run, 0 failures; 1 skipped (`CipherProbeFinalSpringAiTest`, as on main) |
+| Release-pipeline probe suite (CI) | 74 fixed, 0 weak |
+| Dependabot probe suite (CI and here, yq v4.47.1, checksum checked) | 43 fixed, 0 weak |
+| The 23 probes of pass 1, re-run here | 23 fixed, 0 weak |
+| Mutations of the new controls | 15 run; 13 caught by the probe named for them; 2 caught by the next layer (below) |
+
+### Closure, finding by finding
+
+| Id | Probe green on `ff1bd6d` | Mutation that turns it red |
+|---|---|---|
+| DM2-01 | `probe_a_rerun_by_a_person_can_arm`, `probe_a_moved_head_can_arm`, `probe_a_fork_pr_is_not_refused`, `probe_arm_is_not_bound_to_the_event_head`, `probe_two_runs_on_one_pr_are_not_serialised`, good case | triggering-actor check removed; live-head check removed; `--match-head-commit` removed; `concurrency:` removed |
+| DM2-02 | `probe_an_api_error_in_the_*_gate_leaves_it_armed`, `probe_the_disarm_step_skips_when_a_step_errored`, `probe_a_failed_disarm_is_green`, `probe_a_failed_foreign_push_disarm_is_green`, good case | disarm `if:` back to `env.STOP == '1'` |
+| DM2-03 | `probe_a_ci_job_without_a_name_is_not_checked`, `probe_a_job_only_on_the_base_ci_is_not_checked`, `probe_a_second_pr_workflow_escapes_the_drift_probe`, good case | union reduced to the head `ci.yml` |
+| DM2-04 | `probe_a_rename_into_a_pom_passes`, `probe_a_truncated_file_list_passes`, good case | status and previous-name checks removed; count and cap checks removed |
+| DM2-05 | `probe_a_name_only_required_check_passes` | `select(.integration_id == 15368)` removed |
+| DM2-06 | `probe_auto_merge_off_still_proceeds`, good case | setting check removed |
+| DM2-07 | `probe_shipped_probes_survive_mutations` (shipped) | foreign-push job `if:` prefixed `false &&`; its whole body replaced with `true`; refusal disarm `if:` suffixed `&& false` |
+
+Two mutations did not turn the probe named for them red, and that is correct.
+(1) Removing the `--disable-auto` call from the foreign-push disarm: the re-read finds it
+still armed and the step goes red; `probe_a_foreign_push_does_not_disarm` catches it.
+(2) Making the disarm call `|| true`: the same re-read goes red. In both cases the
+behaviour stays correct, because the second check catches what the first one lost.
+
+### New angle (a): `allow_auto_merge` through the default token
+
+The REST reference for "Get a repository" says: "To view merge-related settings, you must
+have the contents:read and contents:write permissions." This workflow's token has
+`contents: write`, so the field is returned. If GitHub ever omits it, `jq` prints `null`,
+and the step refuses with a notice (run here with a fake `gh` that prints `null`: `STOP=1`
+written). Either way it fails safe. Not observed with the real token yet: the first live
+Dependabot run must show the notice while the setting is off (it is off today).
+
+### New angle (b): can a cancelled run leave auto-merge armed?
+
+The group is per pull request with `cancel-in-progress: true`, so the newer event always
+wins, and that newer run decides again from scratch:
+- A person pushes twice. The second disarm run cancels the first, then disarms.
+- A Dependabot run is cancelled after arming by a person's push. The disarm run that
+  cancelled it disarms. A Dependabot run cancelled before arming has armed nothing. Its
+  refusal disarm step runs on cancel anyway, because `always()` runs on cancellation.
+- A person re-runs an old Dependabot run, and that cancels a disarm run. The re-run is
+  refused by the provenance step (`triggering_actor`), and its disarm step disarms.
+- A newer Dependabot push cancels a disarm run. Dependabot pushes replace the branch, so
+  the person's commit is gone, and the newer run checks the new head on its own merits.
+The one way to leave a person's commit armed is for a person with write access to cancel
+the disarm run by hand (`gh run cancel`). The approved design names this as accepted:
+against a write collaborator the disarm is defence in depth, and the control is the
+ruleset on the new head (required checks pinned to GitHub Actions; DM2-05). Not a finding.
+
+### Before auto-merge can do anything (maintainer, after merge)
+
+1. Pin the five required checks of ruleset 22670337 to GitHub Actions. Until then every
+   Dependabot run refuses at condition 7.
+2. Then turn "Allow auto-merge" on. Until then every run refuses with a notice.

@@ -127,7 +127,7 @@ class CipherProbeRc012ReverifyStartupTest {
     return (AgentGuardException) t;
   }
 
-  // ---- B-RC12-1 re-verification probes (Cipher, 2026-10-11) ----
+  // ---- B-RC12-1 re-verification probes (security review, 2026-10-11) ----
 
   /** A decorator an application puts around every audit sink (metrics, tracing). */
   static final class WrappingPostProcessor implements BeanPostProcessor, Ordered {

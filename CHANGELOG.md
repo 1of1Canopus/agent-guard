@@ -17,6 +17,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   workflow refuses with a notice. After merge, the five required checks must be pinned to
   GitHub Actions in the branch ruleset, or nothing arms.
 
+### Build
+- The reference guard (`tools/check-private-references.sh`) now also refuses the first names of the studio's agents
+  in the tree, the main jar and the sources jar, so public text keeps to roles. Case-sensitive and whole-word; the
+  script's header lists each name left out and why. The jar scan now reads class files as text, so a string
+  length byte cannot read as a name on GNU grep.
+- After the security review of that change: a tab, form feed, vertical tab or carriage return before a name no longer
+  hides it; only the JDK cipher class may follow a dot or a slash; the check-name exception is the exact word
+  "probes"; an agent's lower-case address is refused; a jar member that is itself an archive is refused (fail
+  closed); the guard job and both jar steps must be wired unconditionally, checked by exact command.
+
 ## [0.1.2] - 2026-10-12
 
 ### Security

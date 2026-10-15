@@ -1805,6 +1805,25 @@ probe_reference_guard_misses_a_machine_path_family() {
   return 1
 }
 
+# B-DC-036, C-DC-1, D-DC-1: public review documents named the agents who wrote them. The
+# pattern must refuse every agent first name the guard lists (assembled from fragments so
+# this file stays clean), and must leave the crypto word, the required check name and the
+# qualified JDK class alone, or the guard would be red on an honest tree.
+probe_reference_guard_misses_an_agent_first_name() {
+  [ -f "$RG" ] || return 0
+  local pat n
+  pat="$(sed -n "s/^pattern='\(.*\)'\$/\1/p" "$RG")"
+  [ -n "$pat" ] || return 0
+  for n in "Th""or" "Ci""pher" "Is""is" "R""a" "Ath""ena" "Od""in" "Her""mes" "Har""vey" \
+           "Dol""lar" "Br""ain" "Br""ainus" "Lo""ki"; do
+    printf 'reviewed by %s.\n' "$n" | grep -qE "$pat" || return 0
+  done
+  for n in "a cipher suite" "Ci""pher probes" "javax.crypto.Ci""pher" "Maximum" "Th""orough"; do
+    printf '%s\n' "$n" | grep -qE "$pat" && return 0
+  done
+  return 1
+}
+
 probe_reference_guard_calls_a_scanner_error_clean() {
   [ -f "$RG" ] || return 0
   local work out1 out2 rc1=0 rc2=0
@@ -1867,6 +1886,7 @@ probe probe_reference_guard_pattern_matches_own_source    "the guard pattern mat
 probe probe_reference_guard_tree_scan_not_text            "the tree scan is not git grep --text"                probe_reference_guard_tree_scan_is_not_text_forced
 probe probe_reference_guard_has_an_exemption              "the guard has a path or marker exemption"            probe_reference_guard_has_a_path_or_marker_exemption
 probe probe_reference_guard_misses_a_path_family          "the guard misses one of the four machine path families"  probe_reference_guard_misses_a_machine_path_family
+probe probe_reference_guard_misses_an_agent_name      "the guard misses an agent first name, or flags a non-name"  probe_reference_guard_misses_an_agent_first_name
 probe probe_reference_guard_calls_a_scanner_error_clean   "a scanner error is read as clean"                    probe_reference_guard_calls_a_scanner_error_clean
 probe probe_reference_guard_self_test_is_red              "the guard's own self-test is not green"              probe_reference_guard_self_test_is_red
 probe probe_jar_guard_not_run_on_the_jars                 "the jar scan is not run on built and released jars"  probe_jar_guard_is_not_run_on_the_jars

@@ -214,6 +214,14 @@ trade-off does not go unnoticed after whoever set it has moved on. Keep the secr
 credentials' store — it is a second factor only where database write access cannot also reach it; a deployment
 that keeps both in the same place has, in effect, an unkeyed chain.
 
+Every audit sink bean must match that setting, checked at startup. A sink that is unkeyed while the secret is set,
+or unkeyed without the opt-out, is refused with `AG-AUDIT-003`. The check sees the starter's sinks and an
+application's own `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy. To declare your own
+`JdbcAuditSink`, build it with the `AuditChain` bean: `new JdbcAuditSink(dataSource, auditChain)`; the one-argument
+constructor is unkeyed. A sink class the starter does not know starts with a WARN at every startup that names the
+bean. On 0.1.0 to 0.1.2 the default sink was unkeyed even with the secret set: see the advisory in
+SECURITY-NOTES.md.
+
 Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (it cannot change after that: the
 same trigger that protects `head_hash`/`row_count` refuses the update). Every later append — from this instance or any
 other — must agree with it, or is refused with `AG-AUDIT-001`, naming the property and the remedy. This is what
@@ -294,6 +302,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-GUARD-001` | the guard's own infrastructure failed; the call was not run |
 | `AG-AUDIT-001` | this instance's audit key state (keyed/unkeyed) does not match the trail's; append refused |
 | `AG-AUDIT-002` | the trail has rows but no anchor row; append refused rather than re-anchored by a guess |
+| `AG-AUDIT-003` | startup refused: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, or unkeyed without `agentguard.audit.unkeyed=true` |
 | `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance, `UNLOGGED` or not an ordinary table) |
 | `AG-SCHEMA-005` | startup refused: the guard check could not complete; unverifiable is never treated as clean |
 | `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |

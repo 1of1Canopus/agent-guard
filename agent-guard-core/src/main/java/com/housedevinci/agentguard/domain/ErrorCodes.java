@@ -83,6 +83,14 @@ public final class ErrorCodes {
   public static final String AUDIT_ANCHOR_MISSING = "AG-AUDIT-002";
 
   /**
+   * An audit sink bean of the context is unkeyed while {@code agentguard.audit.hmac-secret} is set,
+   * or is unkeyed without the explicit {@code agentguard.audit.unkeyed=true} opt-out (B-SMP-1).
+   * Checked at startup on every sink bean the starter can see into ({@code JdbcAuditSink}, {@code
+   * InMemoryAuditSink}, and either behind a Spring AOP proxy). Refused; no property downgrades it.
+   */
+  public static final String AUDIT_SINK_UNKEYED = "AG-AUDIT-003";
+
+  /**
    * The audit trail's guards do not hold in the schema the application uses: one of the five
    * bundled triggers is missing, extra, disabled, not {@code ENABLE ALWAYS}, carries a {@code WHEN}
    * clause or a column list, or points at the wrong function; a guard body differs from the bundled

@@ -4,7 +4,23 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Security
+- Keyed audit trail with the default store (B-SMP-1, affects 0.1.0, 0.1.1 and 0.1.2; see [the advisory](SECURITY-NOTES.md#advisory-unkeyed-audit-trail-with-the-default-store-on-010-to-012)):
+  the auto-configured `JdbcAuditSink` (`agentguard.store=JDBC`, the default) was built without the audit chain, so it
+  wrote an unkeyed trail even with `agentguard.audit.hmac-secret` set. Rows carried `key_id=none`, the verifier
+  reported `INTACT_UNKEYED`, and nothing warned. The starter now passes the keyed `AuditChain` bean to the sink.
+- New startup refusal `AG-AUDIT-003`: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, or
+  unkeyed without `agentguard.audit.unkeyed=true`. It covers the starter's sinks and an application's own
+  `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy. No property turns it into a warning.
+  A sink type the starter does not know starts with a WARN at every startup naming the bean.
+- The `agentguard.audit.unkeyed=true` WARN now fires at every startup also when the application declares its own
+  `AuditChain` bean.
+- Upgrade: a trail that 0.1.x wrote unkeyed stays unkeyed. With the secret still set, the fixed starter refuses to
+  start on it with `AG-AUDIT-001`. Start a new trail, or run unkeyed on purpose; the advisory says how to tell and
+  what to do.
+
 ### Added
+- `JdbcAuditSink.isKeyed()` and `InMemoryAuditSink.isKeyed()`.
 - Dependabot patch and minor bumps merge themselves after the 7-day cooldown when every
   condition holds: the run was raised by Dependabot for the PR's current head (a re-run by a
   person, a fork, or a moved head is refused); only plain `pom.xml` modifications (no renames,

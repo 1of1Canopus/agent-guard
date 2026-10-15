@@ -121,10 +121,8 @@ public class AgentGuardAutoConfiguration {
                 + " for local development only, set agentguard.audit.unkeyed=true to start unkeyed"
                 + " (a database writer can then rewrite the trail undetected).");
       }
-      log.warn(
-          "agentguard.audit.unkeyed=true: the audit trail is unkeyed; a database writer can rewrite"
-              + " it undetected. Local development only; set agentguard.audit.hmac-secret in"
-              + " production.");
+      // the WARN for this opt-out is AuditSinkKeyCheck's, so it also fires with an application
+      // AuditChain bean
       return AuditChain.unkeyed();
     }
     byte[] key = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -245,8 +243,11 @@ public class AgentGuardAutoConfiguration {
       name = "store",
       havingValue = "JDBC",
       matchIfMissing = true)
-  public JdbcAuditSink jdbcAuditSink(ObjectProvider<AgentGuardSchemaGate> schemaGate) {
-    return new JdbcAuditSink(schemaGate.getObject().dataSource());
+  public JdbcAuditSink jdbcAuditSink(
+      ObjectProvider<AgentGuardSchemaGate> schemaGate, AuditChain chain) {
+    // the chain built from agentguard.audit.hmac-secret; the one-argument constructor is unkeyed
+    // (B-SMP-1)
+    return new JdbcAuditSink(schemaGate.getObject().dataSource(), chain);
   }
 
   @Bean
@@ -306,6 +307,17 @@ public class AgentGuardAutoConfiguration {
   static JdbcAuditSinkDataSourceCheck agentGuardJdbcAuditSinkCheck(
       ObjectProvider<AgentGuardSchemaGate> schemaGate) {
     return new JdbcAuditSinkDataSourceCheck(schemaGate);
+  }
+
+  /**
+   * Refuses startup ({@code AG-AUDIT-003}) when an audit sink bean is unkeyed while {@code
+   * agentguard.audit.hmac-secret} is set, or unkeyed without {@code agentguard.audit.unkeyed=true};
+   * WARNs at every startup under that opt-out (B-SMP-1). Static, like the store check, so it sees
+   * every sink bean. Not replaceable.
+   */
+  @Bean
+  static AuditSinkKeyCheck agentGuardAuditSinkKeyCheck() {
+    return new AuditSinkKeyCheck();
   }
 
   /**

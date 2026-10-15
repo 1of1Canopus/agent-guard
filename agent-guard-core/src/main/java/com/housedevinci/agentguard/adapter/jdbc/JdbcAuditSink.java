@@ -44,6 +44,15 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
   private final DataSource dataSource;
   private final AuditChain chain;
 
+  /**
+   * An <b>unkeyed</b> sink: rows carry {@code key_id=none} and the verifier reports {@code
+   * INTACT_UNKEYED}, never {@code INTACT}. For a keyed trail use {@link #JdbcAuditSink(DataSource,
+   * AuditChain)} with the {@code AuditChain} built from {@code agentguard.audit.hmac-secret}. The
+   * Spring Boot starter refuses this sink at startup ({@code AG-AUDIT-003}) when the secret is set,
+   * or when {@code agentguard.audit.unkeyed=true} is not.
+   *
+   * @param dataSource where the trail is written
+   */
   public JdbcAuditSink(DataSource dataSource) {
     this(dataSource, AuditChain.unkeyed());
   }
@@ -69,6 +78,16 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
    */
   public DataSource dataSource() {
     return dataSource;
+  }
+
+  /**
+   * Whether this sink signs its rows with a secret key. The Spring Boot starter checks it at
+   * startup against {@code agentguard.audit.hmac-secret} (B-SMP-1).
+   *
+   * @return {@code true} when built with a keyed {@link AuditChain}
+   */
+  public boolean isKeyed() {
+    return chain.isKeyed();
   }
 
   /**

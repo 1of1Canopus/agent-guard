@@ -221,7 +221,7 @@ application's own `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spr
 `JdbcAuditSink`, build it with the `AuditChain` bean: `new JdbcAuditSink(dataSource, auditChain)`; the one-argument
 constructor is unkeyed. A sink the starter cannot read (your own sink class, or a scoped proxy) is refused with
 `AG-AUDIT-003` unless its bean name is listed in `agentguard.audit.unverified-sinks`; a listed sink starts and WARNs
-at every startup. A sink is decided as it is created, before any other bean can write a row with it. On 0.1.0 to 0.1.2 the default sink was unkeyed even with the secret set: see the advisory in
+at every startup. A sink is decided as it is created, before any other bean can write a row with it. Not covered: a sink created before the check is registered (a dependency of another priority-ordered post-processor) is decided only at the end of startup. On 0.1.0 to 0.1.2 the default sink was unkeyed even with the secret set: see the advisory in
 SECURITY-NOTES.md.
 
 Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (it cannot change after that: the

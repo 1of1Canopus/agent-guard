@@ -12,7 +12,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - New startup refusal `AG-AUDIT-003`: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, or
   unkeyed without `agentguard.audit.unkeyed=true`. It covers the starter's sinks and an application's own
   `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy or a wrapper. Each sink is decided as
-  it is created, so no other bean can write a row with an unkeyed sink first. No property turns it into a warning.
+  it is created, so no other bean can write a row with an unkeyed sink first. No property turns it into a warning. Not covered: a sink created before the check is registered (a dependency of another priority-ordered post-processor) is decided only at the end of startup.
 - A sink the starter cannot read (an application's own sink class, or a scoped proxy) is refused with `AG-AUDIT-003`
   too. **Action on upgrade if you declare your own `AuditSink` class:** list its bean name in the new property
   `agentguard.audit.unverified-sinks`; a listed sink starts and WARNs at every startup.

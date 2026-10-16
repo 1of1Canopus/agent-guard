@@ -14,6 +14,7 @@ import com.housedevinci.agentguard.domain.AuditReader;
 import com.housedevinci.agentguard.domain.AuditSink;
 import com.housedevinci.agentguard.domain.ErrorCodes;
 import com.housedevinci.agentguard.domain.Principal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -36,6 +38,8 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.Ordered;
+import org.springframework.core.PriorityOrdered;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -329,7 +333,10 @@ class AuditSinkKeyCheckTest {
             ctx -> {
               var e = refusal(ctx);
               assertThat(e.code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED);
-              assertThat(e.getMessage()).contains("'memSink'").contains("InMemoryAuditSink");
+              assertThat(e.getMessage())
+                  .contains("'memSink'")
+                  .contains("InMemoryAuditSink")
+                  .contains("is unkeyed");
             });
   }
 
@@ -372,21 +379,251 @@ class AuditSinkKeyCheckTest {
 
   // ---- path 6: any other AuditSink implementation ---------------------------------------------
 
-  /** The starter cannot see inside a sink it does not know: it starts and says so at every boot. */
+  /** Secure default (B-KS-2): a sink the starter cannot read is refused, secret set or not. */
   @Test
-  void an_unknown_sink_type_with_a_secret_starts_and_warns_it_cannot_be_verified(
-      CapturedOutput output) {
+  void an_unknown_sink_type_is_refused_by_default() {
     runner()
         .withPropertyValues("agentguard.store=MEMORY", "agentguard.audit.hmac-secret=" + SECRET)
-        .withBean("customSink", AuditSink.class, () -> new CustomSink())
+        .withBean("customSink", AuditSink.class, CustomSink::new)
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED);
+              assertThat(e.getMessage())
+                  .contains("'customSink'")
+                  .contains("cannot verify")
+                  .contains("agentguard.audit.unverified-sinks")
+                  .doesNotContain(SECRET);
+            });
+  }
+
+  @Test
+  void an_unknown_sink_type_is_refused_also_under_the_unkeyed_opt_out() {
+    runner()
+        .withPropertyValues("agentguard.store=MEMORY", "agentguard.audit.unkeyed=true")
+        .withBean("customSink", AuditSink.class, CustomSink::new)
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED));
+  }
+
+  /** The explicit opt-out: a listed bean starts and WARNs at every startup, naming the bean. */
+  @Test
+  void a_listed_unknown_sink_starts_and_warns_at_every_startup(CapturedOutput output) {
+    var listed =
+        runner()
+            .withPropertyValues(
+                "agentguard.store=MEMORY",
+                "agentguard.audit.hmac-secret=" + SECRET,
+                "agentguard.audit.unverified-sinks=customSink")
+            .withBean("customSink", AuditSink.class, CustomSink::new);
+    listed.run(ctx -> assertThat(ctx).hasNotFailed());
+    listed.run(ctx -> assertThat(ctx).hasNotFailed());
+    assertThat(output.getAll().split("'customSink'", -1).length - 1).isGreaterThanOrEqualTo(2);
+    assertThat(output).contains("cannot verify").doesNotContain(SECRET);
+  }
+
+  /** Listing a known sink does not weaken it: its mode is still read and enforced. */
+  @Test
+  void listing_a_known_unkeyed_sink_does_not_let_it_start() {
+    runner()
+        .withPropertyValues(
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=" + SECRET,
+            "agentguard.audit.unverified-sinks=memSink")
+        .withBean("memSink", AuditSink.class, InMemoryAuditSink::new)
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED));
+  }
+
+  /** A listed name that matches no unreadable sink is a stale entry: said at every startup. */
+  @Test
+  void a_listed_name_that_is_no_unknown_sink_warns(CapturedOutput output) {
+    runner()
+        .withPropertyValues(
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=" + SECRET,
+            "agentguard.audit.unverified-sinks=goneSink")
         .run(
             ctx -> {
               assertThat(ctx).hasNotFailed();
-              assertThat(output)
-                  .contains("'customSink'")
-                  .contains("cannot verify")
-                  .doesNotContain(SECRET);
+              assertThat(output).contains("'goneSink'");
             });
+  }
+
+  // ---- B-KS-1: decided before the sink can be used ------------------------------------------
+
+  /** A bean that audits from its init callback must not reach an unkeyed sink. */
+  @Test
+  void an_unkeyed_sink_is_refused_before_an_init_callback_can_write_with_it() throws Exception {
+    DataSource ds = freshDatabase();
+    jdbc(ds)
+        .withPropertyValues("agentguard.audit.hmac-secret=" + SECRET)
+        .withUserConfiguration(UnkeyedUserJdbcSink.class, EarlyAuditor.class)
+        .run(ctx -> assertThat(refusal(ctx).code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED));
+    try (Connection c = ds.getConnection();
+        Statement st = c.createStatement();
+        ResultSet rs =
+            st.executeQuery(
+                "SELECT CASE WHEN to_regclass('agentguard_audit') IS NULL THEN 0"
+                    + " ELSE (SELECT pg_catalog.count(*) FROM agentguard_audit) END")) {
+      rs.next();
+      assertThat(rs.getLong(1)).as("rows written before the refusal").isZero();
+    }
+  }
+
+  @Configuration(proxyBeanMethods = false)
+  static class EarlyAuditor {
+    @Bean
+    InitializingBean earlyAuditor(AuditRecorder recorder) {
+      return () ->
+          recorder.record(
+              new Principal("orders-agent", Set.of("AGENT"), Set.of(), null),
+              "get_order",
+              "{}",
+              "ok",
+              1,
+              AuditDecision.ALLOWED,
+              "corr-early",
+              null);
+    }
+  }
+
+  // ---- B-KS-3: contradictory properties, whoever built the chain -----------------------------
+
+  @Test
+  void secret_and_unkeyed_opt_out_with_an_unkeyed_application_chain_are_refused() {
+    runner()
+        .withPropertyValues(
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=" + SECRET,
+            "agentguard.audit.unkeyed=true")
+        .withBean(AuditChain.class, AuditChain::unkeyed)
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .isInstanceOf(AgentGuardConfigurationException.class)
+                  .hasMessageContaining("contradicts");
+            });
+  }
+
+  @Test
+  void secret_and_unkeyed_opt_out_with_a_keyed_application_chain_are_refused(
+      CapturedOutput output) {
+    runner()
+        .withPropertyValues(
+            "agentguard.store=MEMORY",
+            "agentguard.audit.hmac-secret=" + SECRET,
+            "agentguard.audit.unkeyed=true")
+        .withBean(
+            AuditChain.class, () -> AuditChain.keyed(SECRET.getBytes(StandardCharsets.UTF_8), "k1"))
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .isInstanceOf(AgentGuardConfigurationException.class)
+                  .hasMessageContaining("contradicts");
+              assertThat(output).doesNotContain("audit trail is unkeyed");
+            });
+  }
+
+  // ---- B-KS-5: keyed application chain without a secret ---------------------------------------
+
+  @Test
+  void keyed_application_chain_without_a_secret_names_the_property() {
+    runner()
+        .withPropertyValues("agentguard.store=MEMORY")
+        .withBean(
+            AuditChain.class, () -> AuditChain.keyed(SECRET.getBytes(StandardCharsets.UTF_8), "k1"))
+        .run(
+            ctx -> {
+              assertThat(ctx).hasFailed();
+              assertThat(ctx.getStartupFailure())
+                  .rootCause()
+                  .isInstanceOf(AgentGuardConfigurationException.class)
+                  .hasMessageContaining("agentguard.audit.hmac-secret");
+            });
+  }
+
+  // ---- B-KS-7: lazy sink, and a wrapper ordered before the check -----------------------------
+
+  /**
+   * Only the end-of-start pass creates this sink: nothing injects it (the main sink is primary).
+   */
+  @Test
+  void a_lazy_unkeyed_sink_is_refused_at_startup() {
+    runner()
+        .withPropertyValues("agentguard.store=MEMORY", "agentguard.audit.hmac-secret=" + SECRET)
+        .withBean(
+            "mainSink",
+            InMemoryAuditSink.class,
+            () ->
+                new InMemoryAuditSink(
+                    AuditChain.keyed(SECRET.getBytes(StandardCharsets.UTF_8), "k1")),
+            bd -> bd.setPrimary(true))
+        .withBean(
+            "lazySink", InMemoryAuditSink.class, InMemoryAuditSink::new, bd -> bd.setLazyInit(true))
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED);
+              assertThat(e.getMessage()).contains("'lazySink'");
+            });
+  }
+
+  /**
+   * The same rule with the check alone in the context (no store check, which also creates lazy port
+   * beans): the check's own end-of-start pass must create the lazy sink.
+   */
+  @Test
+  void the_check_alone_creates_and_refuses_a_lazy_unkeyed_sink() {
+    var props = new AgentGuardProperties();
+    props.getAudit().setHmacSecret(SECRET);
+    new ApplicationContextRunner()
+        .withBean(AgentGuardProperties.class, () -> props)
+        .withBean(AuditSinkKeyCheck.class, AuditSinkKeyCheck::new)
+        .withBean(
+            "lazySink", InMemoryAuditSink.class, InMemoryAuditSink::new, bd -> bd.setLazyInit(true))
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED);
+              assertThat(e.getMessage()).contains("'lazySink'");
+            });
+  }
+
+  /**
+   * An application post-processor that runs before the check (added to the bean factory directly,
+   * so it is ahead of every post-processor declared as a bean) wraps the sink in its after-hook.
+   * The check's after-hook only sees the wrapper; its before-hook still sees the raw unkeyed sink.
+   */
+  @Test
+  void a_wrapper_ordered_before_the_check_does_not_hide_an_unkeyed_sink() {
+    runner()
+        .withPropertyValues("agentguard.store=MEMORY", "agentguard.audit.hmac-secret=" + SECRET)
+        .withBean("memSink", AuditSink.class, InMemoryAuditSink::new)
+        .withInitializer(ctx -> ctx.getBeanFactory().addBeanPostProcessor(new EarlyWrapper()))
+        .run(
+            ctx -> {
+              var e = refusal(ctx);
+              assertThat(e.code()).isEqualTo(ErrorCodes.AUDIT_SINK_UNKEYED);
+              assertThat(e.getMessage())
+                  .contains("'memSink'")
+                  .contains("InMemoryAuditSink")
+                  .contains("is unkeyed");
+            });
+  }
+
+  static final class EarlyWrapper implements BeanPostProcessor, PriorityOrdered {
+    @Override
+    public int getOrder() {
+      return Ordered.HIGHEST_PRECEDENCE;
+    }
+
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String beanName) {
+      return bean instanceof InMemoryAuditSink inner ? new DelegatingSink(inner) : bean;
+    }
   }
 
   /** The 0.1.2 trap: the one-argument constructor, which is unkeyed. */

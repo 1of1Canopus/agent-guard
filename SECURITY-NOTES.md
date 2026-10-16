@@ -187,6 +187,9 @@ does about it, and what still needs a reviewer's eye.
   the parse cost, so that payload is refused as oversized on the canonical check too, not silently allowed through.
 
 ## Advisory: unkeyed audit trail with the default store on 0.1.0 to 0.1.2
+Severity: High. CVSS 3.1 `AV:N/AC:L/PR:H/UI:N/S:U/C:N/I:H/A:N` (4.9); graded High because the control was off by
+default while documented as on.
+
 Affects 0.1.0, 0.1.1 and 0.1.2 with `agentguard.store=JDBC` (the default) and the starter's own audit sink. Not
 affected: `agentguard.store=MEMORY`, and an application that declares its own `JdbcAuditSink` bean with the
 `AuditChain` bean. Fixed in the next release (see the CHANGELOG).
@@ -195,7 +198,8 @@ What went wrong. The starter built the default `JdbcAuditSink` with its one-argu
 set `agentguard.audit.hmac-secret` was used by the verifier but never by the sink. Every row carries `key_id=none`,
 the anchor records the trail as unkeyed, and the verifier reports `INTACT_UNKEYED`. No startup message said so.
 
-What it means. The trail is still hash-chained and still behind the 0.1.2 guard triggers. But its integrity rests
+What it means. The trail is still hash-chained. It is behind the guard triggers on 0.1.2, and on 0.1.0 or 0.1.1 only if
+the guard triggers are present (see the advisory "audit trail guards on 0.1.0 and 0.1.1"). But its integrity rests
 only on database privileges, not on a secret: a role that can write the tables and switch off the triggers can
 rewrite rows and recompute every hash, and the verifier will not see it. That is the protection of an unkeyed trail,
 not of a keyed one.
@@ -213,10 +217,11 @@ A key applied today to old rows would only prove what the rows say today, not wh
 After the upgrade, with the secret still set, the starter builds a keyed sink. The sink sees the unkeyed anchor and
 refuses to start with `AG-AUDIT-001`, before any traffic. Choose one:
 
-1. Keep the old trail and start a new keyed one. Run the verifier on the old trail and keep its output. Archive
-   `agentguard_audit` and `agentguard_audit_anchor`, then let the schema step create an empty pair (docs/index.md,
+1. Keep the old trail and start a new keyed one. Run the verifier on the old trail and keep its output. Rename
+   `agentguard_audit` and `agentguard_audit_anchor` and keep them; never delete them, they are the audit record. Then
+   let the schema step create an empty pair (docs/index.md,
    "Starting a new trail", including its trigger check). The new trail is keyed from row 1. The archived trail stays
-   unkeyed and verifies as `INTACT_UNKEYED`.
+   unkeyed and verifies as `INTACT_UNKEYED`. The `AG-AUDIT-001` message on such a trail points to this advisory.
 2. Keep running unkeyed, on purpose. Remove `agentguard.audit.hmac-secret` and set `agentguard.audit.unkeyed=true`.
    The application WARNs at every startup. Only for a deployment that accepts an unkeyed trail.
 
@@ -224,10 +229,14 @@ If the trail is used to evidence a control to an auditor, disclose the period in
 secret was configured.
 
 The fix also adds a startup check, `AG-AUDIT-003`. It refuses an audit sink bean that is unkeyed while the secret is
-set, or unkeyed without `agentguard.audit.unkeyed=true`. It sees the starter's sinks and an application's own
-`JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy. It cannot see into a sink class it does
-not know: such a sink starts, with a WARN at every startup that names the bean. It cannot see a sink built inside
-another bean and never exposed as a bean.
+set, or unkeyed without `agentguard.audit.unkeyed=true`. It reads the starter's sinks and an application's own
+`JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy or a wrapper. A sink it cannot read (an
+application's own sink class, or a scoped proxy) is refused too, unless its bean name is listed in
+`agentguard.audit.unverified-sinks`; a listed sink starts and WARNs at every startup. Each sink is decided as it is
+created, before another bean can write a row with it. It also refuses `agentguard.audit.hmac-secret` together with
+`agentguard.audit.unkeyed=true` when the application declares its own `AuditChain`. Not covered: a sink built inside
+another bean and never exposed as a bean, and a sink created before the check is registered (decided at the end of
+startup only).
 
 ## Advisory: audit trail guards on 0.1.0 and 0.1.1
 In 0.1.0 and 0.1.1 the bundled `schema-postgresql.sql` creates each of its five trigger guards inside a condition that

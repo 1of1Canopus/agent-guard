@@ -105,13 +105,7 @@ public class AgentGuardAutoConfiguration {
   @ConditionalOnMissingBean
   public AuditChain auditChain(AgentGuardProperties props) {
     String secret = props.getAudit().getHmacSecret();
-    if (secret != null && !secret.isBlank() && props.getAudit().isUnkeyed()) {
-      throw new AgentGuardConfigurationException(
-          "agentguard.audit.unkeyed=true contradicts agentguard.audit.hmac-secret (set): a trail is"
-              + " keyed from row 1 or unkeyed forever, so both cannot be asked for at once. Remove"
-              + " agentguard.audit.hmac-secret to run unkeyed, or remove agentguard.audit.unkeyed to"
-              + " run keyed.");
-    }
+    AuditSinkKeyCheck.refuseContradiction(props.getAudit());
     if (secret == null || secret.isBlank()) {
       if (!props.getAudit().isUnkeyed()) {
         throw new AgentGuardConfigurationException(
@@ -143,6 +137,14 @@ public class AgentGuardAutoConfiguration {
   public java.util.Map<String, byte[]> auditKeyring(
       AgentGuardProperties props, AuditChain auditChain) {
     var keyring = new java.util.LinkedHashMap<String, byte[]>();
+    String appendingSecret = props.getAudit().getHmacSecret();
+    if (auditChain.isKeyed() && (appendingSecret == null || appendingSecret.isBlank())) {
+      // B-KS-5: an application AuditChain bean that is keyed, with no secret for the verifier
+      throw new AgentGuardConfigurationException(
+          "the AuditChain bean is keyed but agentguard.audit.hmac-secret is not set, so the"
+              + " verifier cannot hold its key. Set agentguard.audit.hmac-secret to the key the"
+              + " AuditChain bean signs with.");
+    }
     if (auditChain.isKeyed()) {
       keyring.put(
           auditChain.keyId(),

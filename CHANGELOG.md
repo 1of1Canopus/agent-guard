@@ -11,8 +11,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   reported `INTACT_UNKEYED`, and nothing warned. The starter now passes the keyed `AuditChain` bean to the sink.
 - New startup refusal `AG-AUDIT-003`: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, or
   unkeyed without `agentguard.audit.unkeyed=true`. It covers the starter's sinks and an application's own
-  `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy. No property turns it into a warning.
-  A sink type the starter does not know starts with a WARN at every startup naming the bean.
+  `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy or a wrapper. Each sink is decided as
+  it is created, so no other bean can write a row with an unkeyed sink first. No property turns it into a warning.
+- A sink the starter cannot read (an application's own sink class, or a scoped proxy) is refused with `AG-AUDIT-003`
+  too. **Action on upgrade if you declare your own `AuditSink` class:** list its bean name in the new property
+  `agentguard.audit.unverified-sinks`; a listed sink starts and WARNs at every startup.
+- `agentguard.audit.hmac-secret` together with `agentguard.audit.unkeyed=true` is refused also when the application
+  declares its own `AuditChain` bean. A keyed application `AuditChain` with no secret set now fails with a message
+  that names `agentguard.audit.hmac-secret`, not a `NullPointerException`.
+- The `AG-AUDIT-001` refusal on an unkeyed trail under a keyed instance points to the advisory, and both trail
+  refusals (`AG-AUDIT-001`, `AG-AUDIT-002`) say to rename the old pair and keep it, never to delete it.
 - The `agentguard.audit.unkeyed=true` WARN now fires at every startup also when the application declares its own
   `AuditChain` bean.
 - Upgrade: a trail that 0.1.x wrote unkeyed stays unkeyed. With the secret still set, the fixed starter refuses to
@@ -21,6 +29,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ### Added
 - `JdbcAuditSink.isKeyed()` and `InMemoryAuditSink.isKeyed()`.
+- Property `agentguard.audit.unverified-sinks` (list of bean names, default empty).
 - Dependabot patch and minor bumps merge themselves after the 7-day cooldown when every
   condition holds: the run was raised by Dependabot for the PR's current head (a re-run by a
   person, a fork, or a moved head is refused); only plain `pom.xml` modifications (no renames,

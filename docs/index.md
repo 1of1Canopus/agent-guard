@@ -100,7 +100,8 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.audit.hmac-secret` | – (required) | Keyed chain (`ag2h`): rewrites by anyone without the key become detectable. **Required by default** — missing and without `agentguard.audit.unkeyed=true`, startup fails naming this property and the remedy (`openssl rand -base64 32`). |
 | `agentguard.audit.hmac-key-id` | `k1` | Id of the key above, baked into every row's hashed material from row 1. Change it when rotating to a new secret. |
 | `agentguard.audit.hmac-keys.<id>` | – | Retired keys the verifier must still accept (`agentguard.audit.hmac-keys.k1=...`), by id — never used for appending, only for verifying rows signed under a rotated-away id. |
-| `agentguard.audit.unkeyed` | `false` | Explicit local-dev opt-out: start unkeyed instead of requiring `hmac-secret`. Warns at every startup. |
+| `agentguard.audit.unkeyed` | `false` | Explicit local-dev opt-out: start unkeyed instead of requiring `hmac-secret`. Warns at every startup. Refused together with `hmac-secret`, whoever built the `AuditChain`. |
+| `agentguard.audit.unverified-sinks` | – (empty) | Bean names of audit sinks whose keyed mode the starter cannot read (your own sink class, or a scoped proxy). Such a sink is refused with `AG-AUDIT-003` unless listed here; a listed sink starts and WARNs at every startup. Listing a `JdbcAuditSink` or `InMemoryAuditSink` does not weaken its check. |
 | `agentguard.errors.include-tool-message` | `false` | Forward the tool's exception message to the model (default: class + correlation id). |
 | `agentguard.endpoints.tenant-scoped` | `true` | Approvers only see and decide their own tenant's decisions. |
 | `agentguard.redis.pool.platform-threads` | `true` | JDK 21-23: Redis calls on a bounded platform-thread pool. |
@@ -218,8 +219,9 @@ Every audit sink bean must match that setting, checked at startup. A sink that i
 or unkeyed without the opt-out, is refused with `AG-AUDIT-003`. The check sees the starter's sinks and an
 application's own `JdbcAuditSink` or `InMemoryAuditSink` bean, also behind a Spring AOP proxy. To declare your own
 `JdbcAuditSink`, build it with the `AuditChain` bean: `new JdbcAuditSink(dataSource, auditChain)`; the one-argument
-constructor is unkeyed. A sink class the starter does not know starts with a WARN at every startup that names the
-bean. On 0.1.0 to 0.1.2 the default sink was unkeyed even with the secret set: see the advisory in
+constructor is unkeyed. A sink the starter cannot read (your own sink class, or a scoped proxy) is refused with
+`AG-AUDIT-003` unless its bean name is listed in `agentguard.audit.unverified-sinks`; a listed sink starts and WARNs
+at every startup. A sink is decided as it is created, before any other bean can write a row with it. On 0.1.0 to 0.1.2 the default sink was unkeyed even with the secret set: see the advisory in
 SECURITY-NOTES.md.
 
 Which mode a trail is in is recorded once, at its first append, on `agentguard_audit_anchor.keyed` (it cannot change after that: the
@@ -242,7 +244,7 @@ signing with a different id, which the keyring covers.
 
 **Starting a new trail.** Changing a trail's keyed/unkeyed mode, or recovering from a lost anchor row on a
 non-empty trail, is an owner-run procedure, not something an application instance does for itself: archive
-`agentguard_audit` and `agentguard_audit_anchor` (rename or drop them) and re-run the schema step so it creates a
+`agentguard_audit` and `agentguard_audit_anchor` (rename the pair and keep it; never delete it, it is the audit record) and re-run the schema step so it creates a
 fresh, empty pair; the chain restarts at GENESIS. Then check, by schema name, that the fresh pair carries its own five guards, all
 `ENABLE ALWAYS` (`A`):
 
@@ -302,7 +304,7 @@ The hash bound to a decision is over the canonical arguments (sorted keys, no wh
 | `AG-GUARD-001` | the guard's own infrastructure failed; the call was not run |
 | `AG-AUDIT-001` | this instance's audit key state (keyed/unkeyed) does not match the trail's; append refused |
 | `AG-AUDIT-002` | the trail has rows but no anchor row; append refused rather than re-anchored by a guess |
-| `AG-AUDIT-003` | startup refused: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, or unkeyed without `agentguard.audit.unkeyed=true` |
+| `AG-AUDIT-003` | startup refused: an audit sink bean is unkeyed while `agentguard.audit.hmac-secret` is set, unkeyed without `agentguard.audit.unkeyed=true`, or not readable and not listed in `agentguard.audit.unverified-sinks` |
 | `AG-SCHEMA-003` | startup refused: the audit trail's guards do not hold (missing, extra, disabled or not `ENABLE ALWAYS` trigger, `WHEN` clause, column list, wrong function or body, rule, row level security, policy, inheritance, `UNLOGGED` or not an ordinary table) |
 | `AG-SCHEMA-005` | startup refused: the guard check could not complete; unverifiable is never treated as clean |
 | `AG-SCHEMA-006` | startup refused: `initialize-schema=true` and the bundled script failed as the application's role (SQLState only) |

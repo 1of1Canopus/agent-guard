@@ -84,9 +84,10 @@ public final class ErrorCodes {
 
   /**
    * An audit sink bean of the context is unkeyed while {@code agentguard.audit.hmac-secret} is set,
-   * or is unkeyed without the explicit {@code agentguard.audit.unkeyed=true} opt-out (B-SMP-1).
-   * Checked at startup on every sink bean the starter can see into ({@code JdbcAuditSink}, {@code
-   * InMemoryAuditSink}, and either behind a Spring AOP proxy). Refused; no property downgrades it.
+   * is unkeyed without the explicit {@code agentguard.audit.unkeyed=true} opt-out, or is a sink the
+   * starter cannot read (its own class, or a scoped proxy) that is not listed in {@code
+   * agentguard.audit.unverified-sinks} (B-SMP-1, B-KS-2). Decided as each sink is created, before
+   * another bean can write with it. Refused; no property downgrades a readable unkeyed sink.
    */
   public static final String AUDIT_SINK_UNKEYED = "AG-AUDIT-003";
 

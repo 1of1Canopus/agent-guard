@@ -119,13 +119,21 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
           "agentguard_audit_anchor has no row but agentguard_audit is not empty. The schema seed"
               + " never invents a keyed value for rows it did not write, so this is refused rather"
               + " than guessed: either a restore lost the anchor row, or a role that can disable"
-              + " triggers removed it. Remedy: start a new trail (archive agentguard_audit and"
-              + " agentguard_audit_anchor — rename or drop them — and re-run the schema step so it"
-              + " re-seeds an empty pair). Then check, by schema name, that the fresh pair carries"
+              + " triggers removed it. Remedy: start a new trail (rename agentguard_audit and"
+              + " agentguard_audit_anchor and keep both, never delete them: they are the audit"
+              + " record; then re-run the schema step so it re-seeds an empty pair). Then check, by schema name, that the fresh pair carries"
               + " its five agentguard_* guard triggers, all ENABLE ALWAYS (docs, \"Starting a new"
               + " trail\"); this application refuses to start with AG-SCHEMA-003 until it does.");
     }
     if (state.anchored() && state.keyed() != chain.isKeyed()) {
+      // B-SMP-1: the most likely cause of an unkeyed trail under a keyed instance is a trail
+      // written by 0.1.0 to 0.1.2, whose default sink ignored the secret
+      String likelyCause =
+          !state.keyed() && chain.isKeyed()
+              ? " If this trail was written by agent-guard 0.1.0 to 0.1.2 with"
+                  + " agentguard.audit.hmac-secret set, it was never keyed: see SECURITY-NOTES.md,"
+                  + " advisory 'unkeyed audit trail with the default store'."
+              : "";
       throw new AgentGuardException(
           ErrorCodes.AUDIT_KEY_MISMATCH,
           "agentguard_audit is "
@@ -134,11 +142,13 @@ public final class JdbcAuditSink implements AuditSink, AuditReader, AuditAnchor 
               + (chain.isKeyed() ? "keyed" : "unkeyed")
               + " (agentguard.audit.hmac-secret "
               + (chain.isKeyed() ? "is set" : "is not set, or agentguard.audit.unkeyed=true")
-              + "). A trail is keyed from row 1 or unkeyed forever; it cannot switch. During a"
-              + " rolling restart that changes agentguard.audit.hmac-secret, stop every instance"
-              + " before starting the first one with the new setting. To change the audit mode for"
-              + " real, start a new trail: archive agentguard_audit and agentguard_audit_anchor (a"
-              + " new table, or a renamed/dropped one, so the schema step re-seeds it empty).");
+              + "). A trail is keyed from row 1 or unkeyed forever; it cannot switch."
+              + likelyCause
+              + " During a rolling restart that changes agentguard.audit.hmac-secret, stop every"
+              + " instance before starting the first one with the new setting. To change the audit"
+              + " mode for real, start a new trail: rename agentguard_audit and"
+              + " agentguard_audit_anchor and keep both, never delete them: they are the audit"
+              + " record. The schema step then re-seeds an empty pair.");
     }
   }
 

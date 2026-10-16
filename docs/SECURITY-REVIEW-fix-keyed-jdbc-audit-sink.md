@@ -202,3 +202,145 @@ PR body.
 
 Fix pass on every finding above, probes added first. Pass 2 re-runs the six probes, the three
 mutants and the harness on the new head.
+
+## 2026-10-16, pass 2
+
+**Verdict: FIX LIST.** No HIGH, no MEDIUM open. All seven code fixes hold: every pass-1 probe is
+green and every mutant is caught. Three text items remain: one LOW from pass 1 (B-KS-7, the PR
+body) and two new ones (B-KS-8 LOW, B-KS-9 INFO). None needs a code change. A third review pass
+is not needed: the verifier confirms that the new probe goes green and the PR body is updated.
+
+Reviewed tree: `e57ff2c` (two commits on top of pass 1: `6066826` adds the pass-1 probe class
+before the fix, `e57ff2c` is the fix). The PR body and its mutation table were not updated by the
+fix pass, so the branch itself was taken as the claim and each finding was checked on it.
+
+### Numbers
+
+| Check | Result |
+|---|---|
+| `./mvnw -B clean verify` (Docker up, local snapshot jars removed first, run once) | exit 0; core 206, starter 130 (1 skipped), sample 4; 0 failures, 0 errors; Spotless and JaCoCo gates met |
+| Skipped test | `CipherProbeFinalSpringAiTest.real_spring_ai_tool_autoconfiguration_limits_apply_with_the_guard_on`, same as pass 1 (needs an extra Spring AI jar; skipped, not passing) |
+| Existing `CipherProbe*` classes | all green. Two gained one property each, `agentguard.audit.unverified-sinks=brokenAudit` (`CipherProbeMcpTest`, `CipherProbeSpringAiTest`): their broken test sink is a class the starter cannot read, now refused by default (B-KS-2). Assertions unchanged; accepted |
+| Pass-1 probe class `CipherProbePr45StartupTest` | 7 of 7 green; identical to the internal probe file except formatter line wraps |
+| `AuditSinkKeyCheckTest` | 25 green (14 at pass 1, 11 added) |
+| Sample module, no sink workaround bean | 4 green |
+| Builder mutations 1 and 2 | both caught (4 and 21 red) |
+| Pass-1 mutants M2, M3, M4 | all caught (3, 1, 1 red) |
+| New mutants on the fix, N1 to N7 | all caught (see below) |
+| Reference guard `--tree` | clean |
+| New probes this pass | 1 `probe_` test, red on `e57ff2c`, green with the prescribed text; 1 `attempt_` test, green by design |
+
+Mutants: each applied alone, then `AuditSinkKeyCheckTest` and `CipherProbePr45StartupTest` run
+(32 tests), then restored.
+
+| Mutant | Change | Red |
+|---|---|---|
+| B1 | default JDBC sink built with the one-argument constructor | 4 |
+| B2 | B1, and the check reads every sink as keyed | 21 |
+| M2 | `secretSet` always false | 3 |
+| M3 | lazy sinks not created at the end of start | 1 |
+| M4 | before-init hook decides nothing | 1 |
+| N1 | both hooks decide nothing (end-of-start pass only) | 7 |
+| N2 | an unreadable sink is never refused | 4 |
+| N3 | the check never refuses the secret plus `unkeyed=true` | 3 |
+| N4 | no named refusal for a keyed chain without a secret | 2 |
+| N5 | no advisory pointer in the `AG-AUDIT-001` message | 1 |
+| N6 | no WARN for a listed unreadable sink | 1 |
+| N7 | no WARN under `unkeyed=true` | 2 |
+
+### Pass-1 findings
+
+| Id | Severity | Status | Evidence |
+|---|---|---|---|
+| B-KS-1 | MEDIUM | closed | probe green: refused, zero rows; N1 red. The residual (a sink created before the check is registered) is stated in SECURITY-NOTES and the class doc, not in docs/index.md or CHANGELOG: B-KS-8 |
+| B-KS-2 | MEDIUM | closed in code | both probes green; N2 and B2 red; `agentguard.audit.unverified-sinks` WARNs per listed sink at every start; listing a known sink does not weaken it (test). The QUESTIONS entry was not rewritten: B-KS-9 |
+| B-KS-3 | LOW | closed | probe green; M2 and N3 red; tested with a keyed and an unkeyed application chain |
+| B-KS-4 | LOW | closed | probe green; N5 red. Text checked: the message names the advisory; both mismatch branches and docs/index.md say rename and keep, never delete; advisory option 1 says rename |
+| B-KS-5 | INFO | closed | probe green; N4 red; the refusal names `agentguard.audit.hmac-secret` |
+| B-KS-6 | LOW | closed | text check: the severity line with the CVSS vector and the reason is present; the trigger sentence is qualified for 0.1.0 and 0.1.1 and names the other advisory by its heading |
+| B-KS-7 | LOW | open (PR body only) | tests (a), (b), (c) exist and M2, M3, M4 are red. The fix asked for each mutant shown red in the PR body; the body still shows pass-1 numbers (14 of 14, starter 112) and no mutant |
+
+### New findings
+
+| Id | Severity | Class | Probe | Status |
+|---|---|---|---|---|
+| B-KS-8 | LOW | docs vs code | `probe_docs_claim_no_write_before_the_decision_but_a_post_processor_dependency_writes` | open |
+| B-KS-9 | INFO | docs vs code | text check, internal file | open |
+
+The probe class is `CipherProbePr45Pass2Test` (internal probe folder). The fix pass adds it to
+`agent-guard-spring-boot-starter/src/test/java/com/housedevinci/agentguard/autoconfigure/`
+before it touches the text.
+
+#### B-KS-8, LOW: two pages say no bean can write first; one kind of bean can
+
+docs/index.md (audit sink paragraph) says "A sink is decided as it is created, before any other
+bean can write a row with it." CHANGELOG says "Each sink is decided as it is created, so no other
+bean can write a row with an unkeyed sink first." Both are absolute.
+
+Repro: the secret is set and the schema exists with zero rows. The application declares a
+priority-ordered post-processor that takes an `AuditSink` bean and appends one event in its own
+init callback. The sink is the one-argument, unkeyed `JdbcAuditSink`. Spring creates that sink
+while it registers post-processors, before the check is registered, so neither hook sees it. The
+post-processor writes one row with `key_id=none`. `AG-AUDIT-003` comes only at the end of startup,
+and the anchor is now fixed unkeyed. This is the residual named in pass 1, and SECURITY-NOTES and
+the class doc state it correctly. The two pages users read first do not.
+
+The path is narrow: an application post-processor that depends on an audit sink, and Spring logs
+that such a bean is "not eligible for getting processed by all BeanPostProcessors". So the text
+is fixed, not the mechanism. Closing the window in code would need a new registration path, which
+is a design page, not a fix line.
+
+Fix: in docs/index.md, after "before any other bean can write a row with it.", and in
+CHANGELOG.md, after "so no other bean can write a row with an unkeyed sink first.", add: "Not
+covered: a sink created before the check is registered (a dependency of another priority-ordered
+post-processor) is decided only at the end of startup." The probe is green with this text
+(checked on a scratch copy, then restored).
+
+#### B-KS-9, INFO: the internal question on custom sinks describes the old behaviour
+
+The internal QUESTIONS entry 45 still says "A custom `AuditSink` class gets a WARN, not a
+refusal, under a secret" and recommends turning the WARN into a refusal in 0.2.0. Since this fix
+a custom sink is already refused unless listed. Pass 1 asked for this entry to carry the 0.2.0
+design item instead.
+
+Fix (QUESTIONS 45, internal): rewrite it as follows. A custom sink is refused with `AG-AUDIT-003`
+unless it is listed in `agentguard.audit.unverified-sinks`. In 0.2.0, `boolean isKeyed()` on the
+`AuditSink` port would let the starter read every sink, so the list could go. That is a design
+page that comes to the security review before any code.
+
+#### B-KS-7, still open: the PR body
+
+Fix (PR 45 body): replace the "Mutation before review" section with the current evidence: the
+two builder mutations and M2, M3, M4 each shown red, with test names. Replace the local numbers
+with core 206, starter 130 (1 skipped), sample 4. Name the 11 added tests. The mutant table
+above can be copied.
+
+### Attacks on the new surfaces that did not break
+
+- **FactoryBean product** (`attempt_factory_bean_product_unkeyed_sink_is_refused`): Spring runs
+  only the after-init hook on a FactoryBean's object. An unkeyed memory sink made this way is
+  still refused. Green by design.
+- **Listing a known unkeyed sink** in `unverified-sinks`: still refused (builder's test). The
+  list only affects sinks the starter cannot read.
+- **A wrong or stale entry** in `unverified-sinks` (typo, spaces, a name that is no sink): an
+  unreadable sink whose name does not match exactly is refused, which fails closed. A stale entry
+  WARNs "remove the entry".
+- **Scoped proxy of a keyed sink, listed**: the proxy starts with the WARN. Each target instance
+  goes through the hooks under its own name and is decided as it is created. An unkeyed target is
+  refused when it is created.
+- **Early reference through a circular dependency**: Spring Boot refuses circular references by
+  default, and neither known sink has an injection point that could need one. Not reachable.
+- **An earlier application post-processor that swaps the sink in its after-hook**: the
+  before-hook reads the keyed raw sink and records its name; the swapped wrapper is then not
+  read again. Not run as a test. Reasoned from the code, this is a sink built inside another bean
+  and never exposed as a bean. That case is already listed as not covered, in SECURITY-NOTES and
+  in the class doc. Not a new finding.
+- **Concurrent creation of prototype sinks after startup**: shared state is behind one lock, and
+  each instance with a readable mode is decided again as it is created.
+
+### Next
+
+Text-only fix pass: B-KS-7 (PR body), B-KS-8 (two sentences plus the probe class), B-KS-9
+(internal QUESTIONS). The verifier then runs the full verify and `CipherProbePr45Pass2Test` and
+reports the numbers. When the probe is green and the PR body matches, the security review has no
+open finding on this PR. No third review pass is needed for text items.

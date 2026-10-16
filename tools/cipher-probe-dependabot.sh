@@ -371,8 +371,42 @@ probe_a_foreign_push_does_not_disarm() {
 
 echo "the Dependabot auto-merge probes  (WEAK = condition not yet enforced)"
 echo
+# ---------------------------------------------------------------------------
+# B-DM3-1 workflow validity. A workflow file GitHub rejects records a failed run with zero
+# jobs and never runs on a pull request: the gate fails closed but the mechanism is dead.
+# Two probes: the structural one needs no tool (it flags an opener that is not a well-formed
+# expression, comments and run scripts included); the other runs the pinned actionlint, and a
+# missing actionlint is a failure (unverifiable is not clean). Shellcheck is off: this probe
+# is about workflow syntax and expressions, and info-level shell style in other files is
+# not its business.
+# ---------------------------------------------------------------------------
+probe_a_run_block_holds_a_literal_expression_opener() {
+  local f hits=0
+  for f in .github/workflows/*.yml; do
+    # GitHub scans every line (run scripts and comments included) for the opener and fails the
+    # whole file when one is not a well-formed expression. Strip each well-formed one
+    # (opener, a name, closer); any opener left over is a literal that will break the file.
+    if awk '
+      { line = $0; gsub(/\$\{\{[[:space:]]*[A-Za-z_][^{}]*\}\}/, "", line)
+        if (index(line, "${{") > 0) bad = 1 }
+      END { exit bad ? 0 : 1 }' "$f"; then
+      echo "  $f: a literal expression opener that is not a well-formed expression" >&2
+      hits=$((hits + 1))
+    fi
+  done
+  [ "$hits" -gt 0 ]
+}
+
+probe_a_workflow_file_fails_actionlint() {
+  command -v actionlint >/dev/null 2>&1 || { echo "  actionlint is not on PATH" >&2; return 0; }
+  actionlint -shellcheck= .github/workflows/*.yml >&2 || return 0
+  return 1
+}
+
 probe probe_major_update_is_not_refused                    "1 a semver-major update passes the gate"          probe_major_update_is_not_refused
 probe probe_patch_update_is_wrongly_refused                 "1 a semver-patch update is wrongly refused"       probe_patch_update_is_wrongly_refused
+probe probe_a_run_block_holds_a_literal_expression_opener  "B-DM3-1 a run block or comment has a literal opener" probe_a_run_block_holds_a_literal_expression_opener
+probe probe_a_workflow_file_fails_actionlint                "B-DM3-1 a workflow file fails actionlint"         probe_a_workflow_file_fails_actionlint
 probe probe_cooldown_missing_or_short_in_dependabot_yml     "2 cooldown missing or under 7 days somewhere"     probe_cooldown_missing_or_short_in_dependabot_yml
 probe probe_trigger_is_pull_request_target                  "6 pull_request_target is used"                    probe_trigger_is_pull_request_target
 probe probe_workflow_checks_out_the_pr_head                 "6 the workflow checks out the PR head"            probe_workflow_checks_out_the_pr_head

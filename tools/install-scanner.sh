@@ -5,6 +5,7 @@
 #
 #   tools/install-scanner.sh osv-scanner "$RUNNER_TEMP/bin"
 #   tools/install-scanner.sh grype       "$RUNNER_TEMP/bin"
+#   tools/install-scanner.sh actionlint  "$RUNNER_TEMP/bin"
 #   tools/install-scanner.sh --print-versions
 #
 # Why a pinned binary and not the vendors' GitHub Actions (the deviation from "pin the
@@ -41,17 +42,23 @@ GRYPE_SHA256_linux_amd64="1d444c5e7360471815f7158f71935fcecc68a3c417d85c7344f770
 GRYPE_SHA256_linux_arm64="32aceeb8ee837244775fcb522372c8b3a47914986385f3148f4ee2c930482a84"
 GRYPE_SHA256_darwin_arm64="938f050bb5076c8aa761867b39843abad2414dfe4cc82b7d36886e634f49c640"
 
+ACTIONLINT_VERSION="1.7.12"
+ACTIONLINT_SHA256_linux_amd64="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+ACTIONLINT_SHA256_linux_arm64="325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+ACTIONLINT_SHA256_darwin_arm64="aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f"
+
 fail() { echo "install-scanner: $1" >&2; exit 1; }
 
 if [ "${1:-}" = "--print-versions" ]; then
   echo "osv-scanner ${OSV_VERSION}"
   echo "grype ${GRYPE_VERSION}"
+  echo "actionlint ${ACTIONLINT_VERSION}"
   exit 0
 fi
 
 tool="${1:-}"
 dest="${2:-}"
-[ -n "$tool" ] && [ -n "$dest" ] || fail "usage: install-scanner.sh <osv-scanner|grype> <directory>"
+[ -n "$tool" ] && [ -n "$dest" ] || fail "usage: install-scanner.sh <osv-scanner|grype|actionlint> <directory>"
 
 case "$(uname -s)" in
   Linux)  os=linux ;;
@@ -102,6 +109,20 @@ case "$tool" in
     install -m 0755 "$work/grype" "$dest/grype"
     "$dest/grype" version >/dev/null || fail "the installed grype does not run"
     echo "install-scanner: grype ${GRYPE_VERSION} verified and installed in $dest"
+    ;;
+  actionlint)
+    var="ACTIONLINT_SHA256_${os}_${arch}"
+    want="${!var:-}"
+    [ -n "$want" ] || fail "no pinned actionlint checksum for ${os}_${arch}"
+    url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_${os}_${arch}.tar.gz"
+    curl -fsSL --retry 3 --retry-delay 5 -o "$work/actionlint.tar.gz" "$url" \
+      || fail "could not download $url - a workflow check that cannot run is a failed check, never a clean one"
+    got="$(sha256_of "$work/actionlint.tar.gz")"
+    [ "$got" = "$want" ] || fail "actionlint checksum mismatch: expected $want, got $got"
+    tar -xzf "$work/actionlint.tar.gz" -C "$work" actionlint || fail "the actionlint archive does not contain the binary"
+    install -m 0755 "$work/actionlint" "$dest/actionlint"
+    "$dest/actionlint" -version >/dev/null || fail "the installed actionlint does not run"
+    echo "install-scanner: actionlint ${ACTIONLINT_VERSION} verified and installed in $dest"
     ;;
   *) fail "unknown scanner '$tool'" ;;
 esac

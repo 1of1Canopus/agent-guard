@@ -4,6 +4,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Fixed
+- Dependabot auto-merge workflow rejected by GitHub (B-DM3-1, unreleased tooling, not in any published artifact):
+  a shell line held the literal two-character expression opener, which GitHub scans for in run scripts and
+  comments. Every push recorded a failed run with no jobs and the workflow never ran on a pull request. The
+  marker is now built at run time.
+- The Cipher probe job now installs a pinned, checksum-verified actionlint (`tools/install-scanner.sh actionlint`)
+  and fails when any workflow file is invalid, or when a literal expression opener is not a well-formed
+  expression. The required checks did not cover workflow validity before.
+
 ## [0.1.3] - 2026-10-16
 
 ### Fixed

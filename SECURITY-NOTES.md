@@ -192,7 +192,7 @@ default while documented as on.
 
 Affects 0.1.0, 0.1.1 and 0.1.2 with `agentguard.store=JDBC` (the default) and the starter's own audit sink. Not
 affected: `agentguard.store=MEMORY`, and an application that declares its own `JdbcAuditSink` bean with the
-`AuditChain` bean. Fixed in the next release (see the CHANGELOG).
+`AuditChain` bean. Fixed in 0.1.3 (see the CHANGELOG).
 
 What went wrong. The starter built the default `JdbcAuditSink` with its one-argument constructor, which is unkeyed. A
 set `agentguard.audit.hmac-secret` was used by the verifier but never by the sink. Every row carries `key_id=none`,

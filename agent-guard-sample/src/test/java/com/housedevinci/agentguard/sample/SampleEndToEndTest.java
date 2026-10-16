@@ -117,6 +117,8 @@ class SampleEndToEndTest {
   @LocalServerPort int port;
   @Autowired MockMvc mvc;
   @Autowired AuditChainVerifier verifier;
+  @Autowired com.housedevinci.agentguard.domain.AuditSink auditSink;
+  @Autowired com.housedevinci.agentguard.autoconfigure.AgentGuardProperties agentGuardProperties;
 
   private McpSyncClient clientAs(String user, String password) {
     var basic =
@@ -266,6 +268,21 @@ class SampleEndToEndTest {
    * GET .../arguments returns 200, and POST .../approve with the same credentials and no CSRF token
    * also returns 200. Before the fix, that last call came back a bare 401.
    */
+  /**
+   * B-SMP-1: the sample runs unkeyed on purpose, and says so. The opt-out stays explicit in
+   * application.yml, no secret is set, and the auto-configured sink is the unkeyed one the startup
+   * check allows only under that opt-out (it WARNs at every startup).
+   */
+  @Test
+  void sample_runs_unkeyed_only_by_the_explicit_opt_out() {
+    assertThat(agentGuardProperties.getAudit().isUnkeyed()).isTrue();
+    assertThat(agentGuardProperties.getAudit().getHmacSecret()).isNull();
+    assertThat(auditSink)
+        .isInstanceOfSatisfying(
+            com.housedevinci.agentguard.adapter.jdbc.JdbcAuditSink.class,
+            s -> assertThat(s.isKeyed()).isFalse());
+  }
+
   @Test
   void documented_approve_flow_works_for_a_stateless_basic_client() throws Exception {
     CLOCK.advance(Duration.ofMinutes(5)); // a fresh budget window, independent of test order

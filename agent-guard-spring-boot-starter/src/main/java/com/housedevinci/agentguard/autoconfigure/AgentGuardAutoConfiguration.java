@@ -105,13 +105,7 @@ public class AgentGuardAutoConfiguration {
   @ConditionalOnMissingBean
   public AuditChain auditChain(AgentGuardProperties props) {
     String secret = props.getAudit().getHmacSecret();
-    if (secret != null && !secret.isBlank() && props.getAudit().isUnkeyed()) {
-      throw new AgentGuardConfigurationException(
-          "agentguard.audit.unkeyed=true contradicts agentguard.audit.hmac-secret (set): a trail is"
-              + " keyed from row 1 or unkeyed forever, so both cannot be asked for at once. Remove"
-              + " agentguard.audit.hmac-secret to run unkeyed, or remove agentguard.audit.unkeyed to"
-              + " run keyed.");
-    }
+    AuditSinkKeyCheck.refuseContradiction(props.getAudit());
     if (secret == null || secret.isBlank()) {
       if (!props.getAudit().isUnkeyed()) {
         throw new AgentGuardConfigurationException(
@@ -121,10 +115,8 @@ public class AgentGuardAutoConfiguration {
                 + " for local development only, set agentguard.audit.unkeyed=true to start unkeyed"
                 + " (a database writer can then rewrite the trail undetected).");
       }
-      log.warn(
-          "agentguard.audit.unkeyed=true: the audit trail is unkeyed; a database writer can rewrite"
-              + " it undetected. Local development only; set agentguard.audit.hmac-secret in"
-              + " production.");
+      // the WARN for this opt-out is AuditSinkKeyCheck's, so it also fires with an application
+      // AuditChain bean
       return AuditChain.unkeyed();
     }
     byte[] key = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -145,6 +137,14 @@ public class AgentGuardAutoConfiguration {
   public java.util.Map<String, byte[]> auditKeyring(
       AgentGuardProperties props, AuditChain auditChain) {
     var keyring = new java.util.LinkedHashMap<String, byte[]>();
+    String appendingSecret = props.getAudit().getHmacSecret();
+    if (auditChain.isKeyed() && (appendingSecret == null || appendingSecret.isBlank())) {
+      // B-KS-5: an application AuditChain bean that is keyed, with no secret for the verifier
+      throw new AgentGuardConfigurationException(
+          "the AuditChain bean is keyed but agentguard.audit.hmac-secret is not set, so the"
+              + " verifier cannot hold its key. Set agentguard.audit.hmac-secret to the key the"
+              + " AuditChain bean signs with.");
+    }
     if (auditChain.isKeyed()) {
       keyring.put(
           auditChain.keyId(),
@@ -245,8 +245,11 @@ public class AgentGuardAutoConfiguration {
       name = "store",
       havingValue = "JDBC",
       matchIfMissing = true)
-  public JdbcAuditSink jdbcAuditSink(ObjectProvider<AgentGuardSchemaGate> schemaGate) {
-    return new JdbcAuditSink(schemaGate.getObject().dataSource());
+  public JdbcAuditSink jdbcAuditSink(
+      ObjectProvider<AgentGuardSchemaGate> schemaGate, AuditChain chain) {
+    // the chain built from agentguard.audit.hmac-secret; the one-argument constructor is unkeyed
+    // (B-SMP-1)
+    return new JdbcAuditSink(schemaGate.getObject().dataSource(), chain);
   }
 
   @Bean
@@ -306,6 +309,17 @@ public class AgentGuardAutoConfiguration {
   static JdbcAuditSinkDataSourceCheck agentGuardJdbcAuditSinkCheck(
       ObjectProvider<AgentGuardSchemaGate> schemaGate) {
     return new JdbcAuditSinkDataSourceCheck(schemaGate);
+  }
+
+  /**
+   * Refuses startup ({@code AG-AUDIT-003}) when an audit sink bean is unkeyed while {@code
+   * agentguard.audit.hmac-secret} is set, or unkeyed without {@code agentguard.audit.unkeyed=true};
+   * WARNs at every startup under that opt-out (B-SMP-1). Static, like the store check, so it sees
+   * every sink bean. Not replaceable.
+   */
+  @Bean
+  static AuditSinkKeyCheck agentGuardAuditSinkKeyCheck() {
+    return new AuditSinkKeyCheck();
   }
 
   /**

@@ -81,6 +81,14 @@ public class AgentGuardProperties {
      */
     private boolean unkeyed = false;
 
+    /**
+     * Bean names of audit sinks whose keyed or unkeyed mode the starter cannot read (a class other
+     * than {@code JdbcAuditSink} and {@code InMemoryAuditSink}, or a scoped proxy). Such a sink is
+     * refused at startup with {@code AG-AUDIT-003} unless its bean name is listed here; a listed
+     * sink starts with a WARN at every startup. Listing a known sink does not weaken its check.
+     */
+    private java.util.List<String> unverifiedSinks = new java.util.ArrayList<>();
+
     public String getHmacSecret() {
       return hmacSecret;
     }
@@ -111,6 +119,14 @@ public class AgentGuardProperties {
 
     public void setUnkeyed(boolean v) {
       this.unkeyed = v;
+    }
+
+    public java.util.List<String> getUnverifiedSinks() {
+      return unverifiedSinks;
+    }
+
+    public void setUnverifiedSinks(java.util.List<String> v) {
+      this.unverifiedSinks = v;
     }
   }
 

@@ -35,6 +35,16 @@ public final class InMemoryAuditSink implements AuditSink, AuditReader, AuditAnc
     this.chain = chain;
   }
 
+  /**
+   * Whether this sink signs its rows with a secret key. The Spring Boot starter checks it at
+   * startup against {@code agentguard.audit.hmac-secret} (B-SMP-1).
+   *
+   * @return {@code true} when built with a keyed {@link AuditChain}
+   */
+  public boolean isKeyed() {
+    return chain.isKeyed();
+  }
+
   @Override
   public synchronized AuditEvent append(AuditEvent event) {
     String prev = events.isEmpty() ? AuditChain.GENESIS : events.get(events.size() - 1).hash();

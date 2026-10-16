@@ -235,6 +235,8 @@ class CipherProbeMcpTest {
   void guard_infrastructure_failure_is_a_structured_error_result() {
     runner
         .withUserConfiguration(BrokenAuditConfig.class)
+        // a sink class the starter cannot read: listed explicitly (AG-AUDIT-003 otherwise)
+        .withPropertyValues("agentguard.audit.unverified-sinks=brokenAudit")
         .run(
             ctx -> {
               var weather = spec(ctx.getBean("toolSpecs", List.class), "get_weather");

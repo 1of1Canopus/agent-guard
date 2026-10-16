@@ -228,6 +228,8 @@ class CipherProbeSpringAiTest {
   void guard_infrastructure_failure_is_a_structured_error_without_internal_details() {
     runner
         .withUserConfiguration(BrokenAuditConfig.class)
+        // a sink class the starter cannot read: listed explicitly (AG-AUDIT-003 otherwise)
+        .withPropertyValues("agentguard.audit.unverified-sinks=brokenAudit")
         .run(
             ctx -> {
               REFUNDS.set(0);

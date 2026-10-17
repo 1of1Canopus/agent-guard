@@ -236,3 +236,159 @@ can hit it); it gets one in PR 50 after the merge (B-NG-27).
 The probe file `cipher-probe-guard-file-names-pr49.sh` goes into the suite first (WEAK), as for
 the earlier groups. Pass 2 checks each probe FIXED (B-NG-22 stays WEAK until its own PR) and
 attacks the new checks.
+
+## Pass 2 (2026-10-17)
+
+**Verdict: MERGE WITH FIXES.** No HIGH, no MEDIUM. The five fixed findings (B-NG-19, 20, 21, 23,
+24) are confirmed: each probe flips to FIXED on BSD and GNU grep, and the eight builder
+mutations go red by the case the PR body names. The attack on the new one-to-one check finds
+three new findings: one LOW in older jar code (B-NG-29, routed with B-NG-22 to the B-NG-14
+pull request as a design stop), and two INFO in this diff (B-NG-30, B-NG-31). Both INFO items
+are fixed in this PR before merge. B-NG-22 and B-NG-28 stay deferred as agreed.
+
+Reviewed tree: `b3349e3` (`fix/guard-file-names`, PR 49 head; `main` at `b714620` merged in).
+Fix commits `f1d299e` (probes) and `4f52d97` (fix). macOS: BSD grep 2.6.0, Apple unzip 6.00.
+Linux: a Debian trixie container with GNU grep 3.11 and Debian unzip 6.00. Every attack ran
+against the real script with its real exit code. No Maven run (not needed by the brief).
+
+### Numbers
+
+| Check | Result |
+|---|---|
+| `--self-test`, BSD grep | exit 0, 115 OK |
+| `--self-test`, GNU grep | exit 0, 115 OK |
+| `--tree` on `b3349e3` | clean (content and names) |
+| Pass 1 probes on `b3349e3` | 5 FIXED (B-NG-19, 20, 21, 23, 24); B-NG-22 WEAK as planned |
+| Builder mutations N1 to N8, rerun by the review, both greps | 8 of 8 red, each by the named case (N1: 3 FAIL) |
+| Reviewer mutations | 2 run: byte half removed is red; file-count half removed survives (B-NG-31) |
+| Attack jars | 30 built: 20 refused for the right reason on both systems; 2 Unicode-path jars refused on Debian and green on macOS (the field is ignored there and the content is clean); 4 clean controls green; 4 pass with text outside member data (B-NG-29) |
+| Copies: gdpr-shredding #39 `1f4cd01`, stripe-einvoice #34 `a4f52c1` | `diff` against this head: one line each, the runner-path line (`h=...`), nothing else |
+| New probes this pass | 3, all WEAK on `b3349e3` (same internal probe file) |
+
+### Prior findings
+
+| id | probe | result |
+|---|---|---|
+| B-NG-19 | `probe_jar_member_normalised_path_hides_content` | FIXED, both greps; mutation N1 red (3 rows) |
+| B-NG-20 | `probe_jar_symlink_member_target_passes` | FIXED; N3 red |
+| B-NG-21 | `probe_jar_directory_entry_data_passes` | FIXED; N2 red |
+| B-NG-23 | `probe_content_hit_replays_a_carriage_return_command` | FIXED; N4 and N5 red. The remainder (hit line that starts with `::`) is B-NG-30 |
+| B-NG-24 | `probe_self_test_misses_three_name_checks` | FIXED; N6, N7, N8 red |
+| B-NG-22 | `probe_nested_archive_with_a_prefix_passes` | WEAK, deferred to the B-NG-14 PR as agreed |
+
+### Attacks on the new check that held
+
+Same result on both systems unless stated.
+
+* Size lies in the central directory (the zip index at the end of the file). Uncompressed size
+  raised or lowered in the central directory and the local header, or in the central
+  directory only: refused, `listing mismatch`. unzip inflates the real stream and ignores the
+  stated size, so the byte total no longer matches.
+* Two lies that balance (one member under-stated, another over-stated by the same amount),
+  deflated and stored: the byte total matches, but every real byte is extracted and the hit
+  is found (`content`). A lie alone hides nothing. With a fold it does: see B-NG-31.
+* Zip64 (`force_zip64`) and data descriptors (sizes after the data, local header sizes zero):
+  clean jars stay green, dirty jars are refused by content. The `unzip -Zt` line parses on
+  both unzip builds; the guard exports `LC_ALL=C` first and Info-ZIP prints no locale-dependent
+  digits. An archive comment does not add a line to `-Zt`.
+* Empty member with a dirty name: refused, `name`. Two empty members only: green, correct.
+* Directory on one side, file on the other: `d/` then `d`, `d` then `d/`, `d` then `d/x.txt`:
+  unzip exits non-zero, refused, `cannot list`. A directory mode on a name without `/`,
+  carrying data: unzip writes a regular file, the hit is found.
+* Duplicate names with equal sizes and different content: refused, `duplicate member`, before
+  any extraction.
+* Symlink to a directory under the home folder: refused, `symlink`. Symlink then a member
+  written through it (`l` then `l/x.txt`): unzip defers the link and exits non-zero, refused;
+  nothing was written outside the extraction folder.
+* Hard-link-like entries: Info-ZIP has no hard links. FIFO and character-device modes are
+  written as regular files and scanned.
+* The Info-ZIP Unicode path field (a second, UTF-8 name inside the entry). Apple's unzip
+  ignores it for both the list and the extraction. Debian's unzip uses it for both: a clean
+  stored name with a dirty Unicode name is refused (`name`), a `../` or `./` Unicode name is
+  refused (`dot segment`). The list and the disk agree on each build.
+* Encrypted flag: unzip cannot extract without a password, refused.
+* Prefix bytes before the first entry: unzip warns and exits 1, refused.
+* Escaping: a hit holding `\r::warning::`, `\x1b[2K` and `\` prints as `\x0D::warning::`,
+  `\x1B[2K` and `\x5C`. A hit line cannot hold `\n`. The escape runs on output only; the scan
+  runs first on the raw bytes, so escaping cannot hide a hit. The escaped form is never
+  scanned again; the script's own text stays clean under `--tree`.
+
+### Findings
+
+| id | severity | class | probe | fixed in |
+|---|---|---|---|---|
+| B-NG-29 | LOW | copy/leak paths | `probe_jar_bytes_outside_member_data_pass` | B-NG-14 PR (older code), design stop |
+| B-NG-30 | INFO | boundary validation | `probe_tree_hit_path_starts_a_runner_command` | this PR |
+| B-NG-31 | INFO | false completion | `probe_self_test_misses_the_file_count_half` | this PR |
+
+#### B-NG-29 (LOW): bytes outside every member's data are never scanned
+
+The content scan reads only the extracted files. A jar can hold text in four places that
+unzip never writes to disk: the archive comment, a member comment, an extra field (a typed
+binary block inside an entry header), and a gap before the central directory. Each passes the
+guard, exit 0, on both systems and on `main` (the jar content scan is older than PR 49).
+`unzip -z`, `zipinfo -v` and `strings` show the text.
+
+Example: a jar with one clean `a.txt` and an archive comment `see <private document name>`
+prints "every built jar is clean". `unzip -z x.jar` prints the comment.
+
+Why LOW: Maven's jar plugin writes none of these places, so an accidental leak needs an odd
+build step; but the bytes ship in the published artifact. A raw `grep -a` of the jar is not
+the fix: compressed data gives random matches of the short agent-name alternatives.
+
+DESIGN STOP. Property: every byte of the jar file is either member data that the content scan
+reads, or zip structure that the guard has parsed and found free of text (no archive comment,
+no member comment, only known extra fields, no gap: the parsed structure accounts for the
+file size). Paths it must cover: archive comment, member comments, extra fields in local and
+central headers, gaps between entries and before the central directory, trailing bytes. Same
+mechanism as B-NG-14 and B-NG-22 (bytes the content scan cannot read), so one design page in
+the B-NG-14 PR covers all three. Before the module's next tag.
+
+#### B-NG-30 (INFO): a tree hit line starts with the file path, so a path can start a runner command
+
+B-NG-23 escaped the bytes inside a hit, but a tree hit line is `path:line:text`, and the path
+comes first. A tracked file named `::stop-commands::tok` (or ` ::warning::spoofed`, leading
+blank) with a hit prints a line that starts with `::`. The Actions runner reads that line as a
+workflow command. `stop-commands` hides every later annotation of the job; `add-mask` can mask
+the evidence in the log. The job still fails on the exit code, so nothing passes.
+
+Example: the line `::stop-commands::tok:1:see <private document name>` reaches the log
+unchanged after the guard's own `::error::` line (reproduced to the output bytes, not run on a
+hosted runner).
+
+Fix (fix pass, same place as B-NG-23): in `scan_tree_content` and in `scan_jars`, after
+`escape_lines`, put a fixed prefix that is not blank and not `:` before every hit line (for
+example `hit: `), so no line made of data can start with `::` even after the runner trims
+blanks. Self-test row: a tree file named `::warning::<x>` with a hit; assert that, split on CR
+and LF, every line that starts with blanks then `::` is the guard's own
+`::error::check-private-references:` line. Mutation: drop the prefix, the row goes red. Apply
+to the two copies.
+
+#### B-NG-31 (INFO): the file-count half of the one-to-one check has no self-test row
+
+`extracted_matches_listing` compares the file count and the byte total. Removing the file-count
+half keeps the self-test green (115 OK) on both greps. That half is load-bearing: with the
+name rule mutated away (N1), a jar with a dirty `./a.txt`, a clean `a.txt`, and the central
+directory size of `./a.txt` set to 0 has equal bytes (6 listed, 6 extracted) and unequal files
+(2 listed, 1 extracted). Only the file-count half refuses it. With both removed, the jar
+prints "every built jar is clean".
+
+Example: `if [ "$have_bytes" != "$want_bytes" ]; then` instead of the two-part test; self-test
+115 OK, no row red.
+
+Fix (fix pass): one self-test row that calls `extracted_matches_listing` on a synthetic folder,
+as the "listed, not extracted" row does: a list of two members, one file on disk, and a `-Zt`
+line whose byte figure equals that one file. Expected red, `listing mismatch`. Mutation: drop
+the file half, the row goes red. Apply to the two copies.
+
+### Fix list for this PR
+
+| id | who | change | proof |
+|---|---|---|---|
+| B-NG-30 | fix pass | fixed non-blank prefix on every content-hit line, tree and jar | self-test row; mutation; probe FIXED |
+| B-NG-31 | fix pass | self-test row on `extracted_matches_listing` with equal bytes, unequal files | row; mutation; probe FIXED |
+| B-NG-29 | B-NG-14 PR | design page first (property and paths above) | its probe flips there |
+
+The probes go into the suite before the code changes. Both changes also go to the two copies,
+identical except the runner-path line. A third pass is not needed for these two: the verifier
+reports the self-test count, the two probes FIXED on both greps, and the two mutations red.

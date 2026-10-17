@@ -4,6 +4,11 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Build
+- The reference guard now refuses the moved-private document names in any letter case (for
+  example a lower-case copy of a private document), in content and in file names. The bare
+  review and release words stay upper case only, because in lower case they are plain English.
+
 ## [0.1.3] - 2026-10-16
 
 ### Fixed

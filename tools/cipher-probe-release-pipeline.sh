@@ -1800,7 +1800,7 @@ probe_reference_guard_pattern_is_not_defined_exactly_once() {
   [ -f "$RG" ] || return 0
   [ "$(grep -c '^pattern=' "$RG")" -eq 1 ] || return 0
   # no second copy of the pattern in any workflow
-  grep -rqE "docs\[/\]plans" .github/ 2>/dev/null && return 0
+  grep -rqE "docs\[/\]plans|\[Dd\]\[Oo\]\[Cc\]\[Ss\]\[/\]" .github/ 2>/dev/null && return 0
   return 1
 }
 

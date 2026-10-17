@@ -272,7 +272,7 @@ probe_a_job_only_on_the_base_ci_is_not_checked() {
   [ "$(FK_LISTED="$L_OK" FK_CI_BASE="$base" FK_CI_HEAD="$CI_OK" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
 probe_a_second_pr_workflow_escapes_the_drift_probe() {
   [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # no recursion: the nested run skips the meta probes   # mutation of the shipped drift probe
-  local d; d="$(mktemp -d)"; mkdir -p "$d/tools"; cp -R .github "$d/"; cp tools/cipher-probe-dependabot.sh "$d/tools/"
+  local d; d="$(mktemp -d)"; mkdir -p "$d/tools"; cp -R .github "$d/"; cp tools/cipher-probe-dependabot.sh tools/install-scanner.sh "$d/tools/"
   printf 'name: Extra\non:\n  pull_request:\njobs:\n  x:\n    name: Sneaky gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n' > "$d/.github/workflows/extra.yml"
   local o; o="$(AM_PROBE_NESTED=1 bash "$d/tools/cipher-probe-dependabot.sh")"; grep -qE '^FIXED +probe_required_checks_txt_drifted_from_ci_yml' <<<"$o"; local r=$?; rm -rf "$d"; return $r; }
 probe_an_app_pinned_setup_is_wrongly_refused() {   # good case for DM2-03 and DM2-05
@@ -300,7 +300,7 @@ probe_auto_merge_on_is_wrongly_refused() {
 
 # ---- DM2-07 (INFO) shipped probes that survive the mutation they claim to cover -----------------
 mut_survives() { # <perl expr> <shipped probe name>
-  local d; d="$(mktemp -d)"; mkdir -p "$d/tools"; cp -R .github "$d/"; cp tools/cipher-probe-dependabot.sh "$d/tools/"
+  local d; d="$(mktemp -d)"; mkdir -p "$d/tools"; cp -R .github "$d/"; cp tools/cipher-probe-dependabot.sh tools/install-scanner.sh "$d/tools/"
   perl -0pi -e "$1" "$d/$WF"
   local o; o="$(AM_PROBE_NESTED=1 bash "$d/tools/cipher-probe-dependabot.sh")"; grep -qE "^FIXED +$2( |\$)" <<<"$o"; local r=$?; rm -rf "$d"; return $r; }
 probe_shipped_probes_survive_mutations() {
@@ -371,8 +371,173 @@ probe_a_foreign_push_does_not_disarm() {
 
 echo "the Dependabot auto-merge probes  (WEAK = condition not yet enforced)"
 echo
+# ---------------------------------------------------------------------------
+# B-DM3-1 workflow validity. A workflow file GitHub rejects records a failed run with zero
+# jobs and never runs on a pull request: the gate fails closed but the mechanism is dead.
+# Two probes. The structural one needs no tool: it flags a line (comments and run scripts
+# included) that still holds an expression opener after every opener-to-closer pair on that
+# line is removed, that is, an opener with no closer on the same line. It does not judge the
+# grammar between the braces; valid expressions such as `!cancelled()` or `format('{0}', x)`
+# are not flagged. The other probe runs the pinned actionlint on every workflow file, and
+# that is where the grammar is checked. An actionlint that is missing, or that is not the
+# pinned version, is a failure (unverifiable is not clean). Shellcheck is off: this probe is
+# about workflow syntax and expressions, and info-level shell style in other files is not its
+# business. Both probes read *.yml and *.yaml.
+# ---------------------------------------------------------------------------
+probe_a_run_block_holds_a_literal_expression_opener() {
+  local f hits=0
+  shopt -s nullglob
+  for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+    if awk '
+      { line = $0; gsub(/\$\{\{([^}]|\}[^}])*\}\}/, "", line)
+        if (index(line, "${{") > 0) bad = 1 }
+      END { exit bad ? 0 : 1 }' "$f"; then
+      echo "  $f: an expression opener with no closer on the same line" >&2
+      hits=$((hits + 1))
+    fi
+  done
+  shopt -u nullglob
+  [ "$hits" -gt 0 ]
+}
+
+probe_a_workflow_file_fails_actionlint() {
+  command -v actionlint >/dev/null 2>&1 || { echo "  actionlint is not on PATH" >&2; return 0; }
+  local want have files
+  want="$(tools/install-scanner.sh --print-versions | awk '$1 == "actionlint" { print $2 }')"
+  have="$(actionlint -version 2>/dev/null | head -1)"
+  if [ -z "$want" ] || [ "$have" != "$want" ]; then
+    echo "  actionlint on PATH reports '$have', the pin is '$want'" >&2; return 0
+  fi
+  shopt -s nullglob; files=(.github/workflows/*.yml .github/workflows/*.yaml); shopt -u nullglob
+  [ "${#files[@]}" -gt 0 ] || { echo "  no workflow file found" >&2; return 0; }
+  actionlint -shellcheck= "${files[@]}" >&2 || return 0
+  return 1
+}
+
+# Meta probes for the two above (same style as DM2-07): run the suite on a scratch copy.
+# A valid workflow that uses `!cancelled()` and `format('{0}', ...)` must not be flagged, and a
+# fake actionlint that reports another version must not satisfy the actionlint probe.
+nested_suite() { # nested_suite <dir> : run the copied suite, print its output
+  ( cd "$1" && AM_PROBE_NESTED=1 bash tools/cipher-probe-dependabot.sh 2>/dev/null ); }
+scratch_copy() { local d; d="$(mktemp -d)"; mkdir -p "$d/tools"; cp -R .github "$d/"; cp tools/*.sh "$d/tools/"; printf '%s' "$d"; }
+probe_a_valid_expression_is_flagged_or_an_unpinned_actionlint_passes() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local d o weak=1; d="$(scratch_copy)"; mkdir -p "$d/fakebin"
+  printf '#!/bin/sh\ncase "$1" in -version) echo 0.0.1 ;; *) exit 0 ;; esac\n' > "$d/fakebin/actionlint"; chmod +x "$d/fakebin/actionlint"
+  printf 'name: v\non: push\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{ !cancelled() }}\n        run: echo "${{ format('"'"'{0}-x'"'"', github.sha) }}"\n' > "$d/.github/workflows/valid-extra.yml"
+  o="$(PATH="$d/fakebin:$PATH" nested_suite "$d")"
+  grep -qE '^WEAK +probe_a_run_block_holds_a_literal_expression_opener' <<<"$o" && weak=0
+  grep -qE '^FIXED +probe_a_workflow_file_fails_actionlint' <<<"$o" && weak=0
+  rm -rf "$d"; return "$weak"
+}
+probe_a_broken_yaml_workflow_is_not_checked() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local d o weak=1; d="$(scratch_copy)"
+  printf 'name: b\non: push\npermissions: {}\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: case "$x" in *'"'"'${{'"'"'*) echo hit ;; esac\n' > "$d/.github/workflows/broken.yaml"
+  o="$(nested_suite "$d")"
+  grep -qE '^FIXED +probe_a_run_block_holds_a_literal_expression_opener' <<<"$o" && weak=0
+  grep -qE '^FIXED +probe_a_workflow_file_fails_actionlint' <<<"$o" && weak=0
+  rm -rf "$d"; return "$weak"
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F2. The actionlint branch of tools/install-scanner.sh must refuse a tampered download.
+# Runs the REAL installer on a copy whose download URL points at a local file:// tar.gz (the
+# production script has no such switch, on purpose) and whose "does it run" check is a no-op.
+# The honest payload (matching the recorded checksum) installs; a tampered one with the same
+# recorded checksum must not. Weak while a tampered payload installs.
+# ---------------------------------------------------------------------------
+probe_a_tampered_actionlint_download_installs() {
+  local work script good rc
+  work="$(mktemp -d)"; mkdir -p "$work/src"
+  printf 'not really actionlint\n' > "$work/src/actionlint"
+  tar -czf "$work/payload.tgz" -C "$work/src" actionlint
+  if command -v sha256sum >/dev/null 2>&1; then good="$(sha256sum "$work/payload.tgz" | cut -d' ' -f1)"
+  else good="$(shasum -a 256 "$work/payload.tgz" | cut -d' ' -f1)"; fi
+  script="$work/install-scanner.sh"
+  sed -e "s#url=\"https://github.com/rhysd/actionlint/releases/download/[^\"]*\"#url=\"file://$work/payload.tgz\"#" \
+      -e 's#"\$dest/actionlint" -version >/dev/null#true#' \
+      -e "s/^ACTIONLINT_SHA256_\([a-z0-9_]*\)=.*/ACTIONLINT_SHA256_\1=\"$good\"/" \
+      tools/install-scanner.sh > "$script"
+  chmod +x "$script"
+  if ! "$script" actionlint "$work/bin" >/dev/null 2>&1 || [ ! -f "$work/bin/actionlint" ]; then
+    rm -rf "$work"; return 0     # the honest case did not install: the probe cannot judge, weak
+  fi
+  printf 'tampered\n' > "$work/src/actionlint"
+  tar -czf "$work/payload.tgz" -C "$work/src" actionlint
+  "$script" actionlint "$work/bin2" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || [ -e "$work/bin2/actionlint" ]; rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F4. Condition 7 refuses a job name in ci.yml that is an expression. Runs the step body
+# with a head ci.yml whose job name is an expression, and with required-checks.txt and the
+# branch rules both holding that literal. Weak unless the step stops (writes STOP=1).
+# ---------------------------------------------------------------------------
+probe_an_expression_job_name_can_arm() {
+  local lit='${{ github.event.pull_request.title }}' ci rules
+  ci=$'name: CI\njobs:\n  a:\n    name: '"$lit"
+  rules='[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"'"$lit"'","integration_id":15368}]}}]'
+  [ "$(FK_LISTED="$lit" FK_CI_BASE="$ci" FK_CI_HEAD="$ci" FK_RULES="$rules" run_step $J "$GATES")" != stop ]
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F5. A secret is interpolated into a run script (argv, and the rendered script on
+# disk). Weak while any step's run value in any workflow mentions `secrets.`; a secret goes in
+# through an env: value. Unverifiable (no yq) counts as weak.
+# ---------------------------------------------------------------------------
+probe_a_secret_is_interpolated_into_a_run_script() {
+  command -v yq >/dev/null 2>&1 || { echo "  yq is not on PATH" >&2; return 0; }
+  local f hit=1 runs
+  shopt -s nullglob
+  for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+    runs="$(yq -r '.jobs[].steps[]? | .run // ""' "$f")" || { echo "  $f: yq failed" >&2; hit=0; continue; }
+    if grep -qiE '\$\{\{([^}]*[^A-Za-z0-9_])?secrets([^A-Za-z0-9_]|$)' <<<"$runs"; then echo "  $f: a run script references secrets" >&2; hit=0; fi
+  done
+  shopt -u nullglob
+  return "$hit"
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F7. probe_a_secret_is_interpolated_into_a_run_script grepped `secrets\.` only, and the
+# release-scan probe did the same. GitHub and actionlint also accept `secrets['X']`,
+# `toJSON(secrets)` and `SECRETS.X` (context names are not case-sensitive). Weak while any of
+# the three spellings in a run script leaves the secret probe FIXED, or while an upper-case
+# secret in the release scan step's env leaves the release-scan probe FIXED.
+# ---------------------------------------------------------------------------
+probe_a_secret_reaches_a_run_script_by_another_spelling() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local d s o weak=1 f
+  for s in "secrets['NVD_API_KEY']" 'toJSON(secrets)' 'SECRETS.NVD_API_KEY'; do
+    d="$(scratch_copy)"; f="$d/.github/workflows/security-scan.yml"
+    S="$s" perl -0pi -e 's/run: \.\/mvnw -B -Psecurity-scan -DskipTests verify/run: .\/mvnw -B -Psecurity-scan -DskipTests -Dnvd.api.key=\$\{\{ $ENV{S} \}\} verify/' "$f"
+    if ! grep -qF "$s" "$f"; then echo "  spelling $s did not apply" >&2; weak=0; rm -rf "$d"; continue; fi
+    o="$(nested_suite "$d")"
+    grep -qE '^FIXED +probe_a_secret_is_interpolated_into_a_run_script' <<<"$o" && { echo "  $s: not seen" >&2; weak=0; }
+    rm -rf "$d"
+  done
+  # second site, same gap: the release scan step's env
+  d="$(scratch_copy)"; f="$d/.github/workflows/release.yml"
+  perl -0pi -e 's/(      - name: Scan the artifacts this release is about to sign\n        id: vulnscan\n        env:\n)/$1          LEAK: \$\{\{ SECRETS.GPG_PASSPHRASE \}\}\n/' "$f"
+  if grep -qF 'SECRETS.GPG_PASSPHRASE' "$f"; then
+    o="$( cd "$d" && bash tools/cipher-probe-release-pipeline.sh 2>/dev/null )"
+    grep -qE '^FIXED +probe_release_signs_without_a_vulnerability_scan( |$)' <<<"$o" && { echo "  release scan step: SECRETS.GPG_PASSPHRASE not seen" >&2; weak=0; }
+  else echo "  release scan mutation did not apply" >&2; weak=0; fi
+  rm -rf "$d"
+  return "$weak"
+}
+
 probe probe_major_update_is_not_refused                    "1 a semver-major update passes the gate"          probe_major_update_is_not_refused
 probe probe_patch_update_is_wrongly_refused                 "1 a semver-patch update is wrongly refused"       probe_patch_update_is_wrongly_refused
+probe probe_a_run_block_holds_a_literal_expression_opener  "B-DM3-1 a run block or comment has a literal opener" probe_a_run_block_holds_a_literal_expression_opener
+probe probe_a_workflow_file_fails_actionlint                "B-DM3-1 a workflow file fails actionlint"         probe_a_workflow_file_fails_actionlint
+probe probe_a_valid_expression_is_flagged_or_an_unpinned_actionlint_passes "B-DM3-F1/F3 valid file flagged, unpinned linter ok" probe_a_valid_expression_is_flagged_or_an_unpinned_actionlint_passes
+probe probe_a_broken_yaml_workflow_is_not_checked           "B-DM3-F3 a .yaml workflow is never checked"       probe_a_broken_yaml_workflow_is_not_checked
+probe probe_a_tampered_actionlint_download_installs         "B-DM3-F2 a tampered actionlint download installs" probe_a_tampered_actionlint_download_installs
+probe probe_an_expression_job_name_can_arm                  "B-DM3-F4 an expression job name can arm"          probe_an_expression_job_name_can_arm
+probe probe_a_secret_is_interpolated_into_a_run_script      "B-DM3-F5 a secret is interpolated into a run"     probe_a_secret_is_interpolated_into_a_run_script
 probe probe_cooldown_missing_or_short_in_dependabot_yml     "2 cooldown missing or under 7 days somewhere"     probe_cooldown_missing_or_short_in_dependabot_yml
 probe probe_trigger_is_pull_request_target                  "6 pull_request_target is used"                    probe_trigger_is_pull_request_target
 probe probe_workflow_checks_out_the_pr_head                 "6 the workflow checks out the PR head"            probe_workflow_checks_out_the_pr_head
@@ -416,6 +581,7 @@ probe probe_a_branch_with_no_required_checks_passes           "7 a branch with n
 probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks.txt differs from PR workflows"  probe_required_checks_txt_drifted_from_ci_yml
 probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
 probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
+probe probe_a_secret_reaches_a_run_script_by_another_spelling "B-DM3-F7 bracket, toJSON, upper-case secrets unseen" probe_a_secret_reaches_a_run_script_by_another_spelling
 
 echo
 echo "still weak: $pass    fixed: $flipped"

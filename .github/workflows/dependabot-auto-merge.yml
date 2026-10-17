@@ -177,7 +177,10 @@ jobs:
           [ -n "$required" ] || refuse "the branch has no required status check pinned to GitHub Actions"
           [ -n "$listed" ] || refuse "required-checks.txt is empty"
           [ -n "$jobs_base" ] && [ -n "$jobs_head" ] || refuse "found no job in ci.yml"
-          case "$jobs" in *'${{'*) refuse "a job name in ci.yml is an expression" ;; esac
+          # The marker is built at run time: GitHub scans run blocks, comments included, for the
+          # two-character expression opener and rejects the whole file if one is not valid.
+          open='$'; open="${open}{{"
+          case "$jobs" in *"$open"*) refuse "a job name in ci.yml is an expression" ;; esac
           unlisted="$(comm -13 <(printf '%s\n' "$listed") <(printf '%s\n' "$jobs"))"
           [ -z "$unlisted" ] || refuse "CI job not in required-checks.txt: $(printf '%s' "$unlisted" | tr '\n' ',')"
           unrequired="$(comm -13 <(printf '%s\n' "$required") <(printf '%s\n' "$listed"))"

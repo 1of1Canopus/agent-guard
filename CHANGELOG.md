@@ -4,6 +4,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Build
+- The reference guard (`tools/check-private-references.sh`) now reads file names as well as file content, with the
+  same pattern: every tracked path in the tree, every member name and the file name of each built jar. One shape
+  is admitted by name only, a security review document at the root of `docs/`; its text is still scanned. The
+  tree listing is read NUL-separated, and a control byte in a path, a symlink and a submodule entry are refused.
+  In a jar, a member name holding a control byte, a `..` segment or a leading `/`, two members with one name
+  (also after case folding), an empty jar and a listing that does not match the jar's entry count are refused
+  before extraction. The guard runs in the C locale, so a byte that is not valid UTF-8 no longer hides a name, and
+  a refused name is printed with every non-printable byte escaped.
+
 ## [0.1.3] - 2026-10-16
 
 ### Fixed

@@ -509,7 +509,7 @@ jobs:
       # Reference guard, jar half: every jar the release just built (main, sources, javadoc)
       # is scanned by the same script and pattern as the tree scan in ci.yml. The deployment
       # waits for a human on the Portal, so a red step here means: do not press Publish.
-      - name: Refuse a moved-private document reference, a machine-local path or an agent first name inside a published jar
+      - name: Refuse a moved-private document reference, a machine-local path or an agent first name in the content or file names of a published jar
         if: success()
         run: tools/check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter
 

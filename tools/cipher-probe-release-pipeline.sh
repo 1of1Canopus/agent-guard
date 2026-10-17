@@ -148,7 +148,10 @@ probe_release_does_not_verify_tag_signature() { ! grep -qE 'verify-tag|--verify-
 # M7 - Apache-2.0 is declared in the POM and there is no licence text anywhere.
 # ---------------------------------------------------------------------------
 probe_no_licence_file_in_the_repository() {
-  ! git ls-files | grep -qiE '^(LICENSE|LICENCE|NOTICE)(\..*)?$'
+  # B-DM3-F8: read the list first. `git ls-files | grep -q` under pipefail fails at random:
+  # grep -q exits at the first match and git gets SIGPIPE (141).
+  local f; f="$(git ls-files)"
+  ! grep -qiE '^(LICENSE|LICENCE|NOTICE)(\..*)?$' <<<"$f"
 }
 
 # ---------------------------------------------------------------------------
@@ -470,13 +473,25 @@ probe_gpg_arguments_comment_still_credits_the_wrong_actor() {
 #       `continue-on-error: true` anywhere in that step.
 # ---------------------------------------------------------------------------
 probe_probe_suite_is_not_run_by_ci() {
-  local wf
-  for wf in .github/workflows/*.yml; do
-    [ -f "$wf" ] || continue
-    if _probe_suite_wired_unconditionally_in "$wf"; then
-      return 1   # a workflow runs the suite unconditionally: FIXED
+  local wf wants
+  # B-DM3-F1: the auto-merge suite and the pinned actionlint it needs are part of the same
+  # required check. All three commands must be present, string-equal, in one unguarded job.
+  wants='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
+tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"
+PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh'
+  # B-DM3-F6: the suite's own probe-skipping switch must not be set anywhere under .github/
+  if grep -rqs 'AM_PROBE_NESTED' .github; then return 0; fi
+  shopt -s nullglob
+  for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+    # B-DM3-F6: a workflow-level `defaults:` or `env:` (shell override, BASH_ENV) falls before
+    # the first job, where the per-job split does not look. Refuse the file.
+    if grep -vE '^[[:space:]]*#' "$wf" | grep -qE '^(defaults|env):'; then continue; fi
+    if _probe_suite_wired_unconditionally_in "$wf" "$wants"; then
+      shopt -u nullglob
+      return 1   # a workflow runs the suites unconditionally: FIXED
     fi
   done
+  shopt -u nullglob
   return 0   # no such job anywhere: WEAK
 }
 
@@ -489,6 +504,12 @@ probe_probe_suite_is_not_run_by_ci() {
 # `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
 # value, since a skipped/soft-failed job is exactly as blind as a deleted one.
 #
+# B-DM3-F9: so do any mention of GITHUB_ENV or GITHUB_PATH and a `needs:` key. The probes job
+# has none today (the pinned install puts its directory on PATH in the suite line, not through
+# GITHUB_PATH), so there is no exception.
+# B-DM3-F6: `shell:`, `env:` and `defaults:` count as guards too (a custom shell such as
+# `true {0}` runs nothing; BASH_ENV runs a file first; both leave the step green).
+#
 # N14: a substring/regex match on the `run:` line is still fooled by a trailing comment -
 # `run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` runs `true` and
 # reports the probe suite FIXED. Same belt as the MAVEN_OPTS guard elsewhere in this file:
@@ -496,12 +517,13 @@ probe_probe_suite_is_not_run_by_ci() {
 # the exact command. No YAML parser - this is still line-oriented - but equality instead of
 # substring match refuses any decoration (comment, prefix, substitution) without needing one.
 _probe_suite_wired_unconditionally_in() {
-  local wf="$1"
-  local want='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh'
-  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' -v want="$want" '
+  local wf="$1" want="$2"
+  # the wanted commands travel in the environment: awk -v refuses a newline on some awks
+  grep -vE '^[[:space:]]*#' "$wf" | WANTS="$want" awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' '
+      BEGIN { nw = split(ENVIRON["WANTS"], wants, "\n") }
       {
         n = split($0, lines, "\n")
-        matched = 0
+        delete seen
         guarded = 0
         for (i = 1; i <= n; i++) {
           line = lines[i]
@@ -509,15 +531,37 @@ _probe_suite_wired_unconditionally_in() {
             val = substr(line, RLENGTH + 1)
             gsub(/^[[:space:]]+/, "", val)
             gsub(/[[:space:]]+$/, "", val)
-            if (val == want) { matched = 1 }
+            for (k = 1; k <= nw; k++) if (val == wants[k]) { seen[k] = 1 }
           }
-          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
+          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error|shell|env|defaults):/) { guarded = 1 }
+          # B-DM3-F9: a step that writes GITHUB_ENV or GITHUB_PATH (any spelling, any redirect or
+          # tee) changes what every later step runs; `needs:` hides a second job from this check.
+          if (toupper(line) ~ /GITHUB_(ENV|PATH)/ || line ~ /^[[:space:]]*needs:/) { guarded = 1 }
         }
+        matched = 1
+        for (k = 1; k <= nw; k++) if (!seen[k]) { matched = 0 }
         if (matched && !guarded) { found = 1 }
       }
       END { exit(found ? 0 : 1) }
     '
 }
+
+# B-DM3-F1: mutate the single `run:` step that holds exactly <cmd>, in a copy of ci.yml.
+# modes: delete (drop the line), comment (# run: ...), trailing (run: true # cmd),
+# ortrue (cmd || true), stepif (if: false before it), block (run: | true, then cmd).
+_mutate_ci_run_line() { # _mutate_ci_run_line <src> <dst> <mode> <cmd>
+  MODE="$3" CMD="$4" perl -pe '
+    if (/^(\s*)run: \Q$ENV{CMD}\E$/) {
+      my $i = $1; my $c = $ENV{CMD}; my $m = $ENV{MODE};
+      if    ($m eq "delete")   { $_ = "" }
+      elsif ($m eq "comment")  { $_ = "$i# run: $c\n" }
+      elsif ($m eq "trailing") { $_ = "${i}run: true # $c\n" }
+      elsif ($m eq "ortrue")   { $_ = "${i}run: $c || true\n" }
+      elsif ($m eq "stepif")   { $_ = "${i}if: false\n${i}run: $c\n" }
+      elsif ($m eq "block")    { $_ = "${i}run: |\n${i}  true\n${i}  $c\n" }
+    }' "$1" > "$2"
+}
+_F1_CMDS=('tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"' 'PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh')
 
 # ---------------------------------------------------------------------------
 # N13 - the N12 probe above split ci.yml into per-STEP blocks and only refused
@@ -563,6 +607,18 @@ probe_suite_probe_accepts_a_disabled_probes_job() {
     [ "$rc" -eq 0 ] || overall=1
   done
 
+  # B-DM3-F1: the same disabled forms on the actionlint install step and the auto-merge suite
+  # step: line deleted, commented out, step-level `if: false`.
+  local c m
+  for c in "${_F1_CMDS[@]}"; do
+    for m in delete comment stepif; do
+      d="$base/f1-$m-${#c}"; mkdir -p "$d/.github/workflows"
+      _mutate_ci_run_line "$base/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml" "$m" "$c"
+      ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); rc=$?
+      [ "$rc" -eq 0 ] || overall=1
+    done
+  done
+
   rm -rf "$base"
   [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
 }
@@ -601,8 +657,83 @@ probe_suite_probe_accepts_a_trailing_comment_disable() {
     [ "$rc" -eq 0 ] || overall=1
   done
 
+  # B-DM3-F1: trailing comment, `|| true` and the multi-line form on the two new steps.
+  local c m
+  for c in "${_F1_CMDS[@]}"; do
+    for m in trailing ortrue block; do
+      d="$base/f1-$m-${#c}"; mkdir -p "$d/.github/workflows"
+      _mutate_ci_run_line "$base/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml" "$m" "$c"
+      ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); rc=$?
+      [ "$rc" -eq 0 ] || overall=1
+    done
+  done
+
   rm -rf "$base"
   [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F6 - the not-disabled check refused `if:` and `continue-on-error:` but not the keys
+#       that stop a run script from running or that switch the suite's own probes off:
+#       `shell: true {0}` (GitHub runs `true <script>`, exit 0), `defaults: run: shell` on the
+#       job or the workflow, `env: BASH_ENV` (bash sources it first) on the job or the
+#       workflow, and `env: AM_PROBE_NESTED` (the auto-merge suite then skips its meta
+#       probes), also set from an extra step through GITHUB_ENV. B-DM3-F9: a step that writes
+#       BASH_ENV or PATH through GITHUB_ENV or GITHUB_PATH (plain, braced, tee), and a `needs:`
+#       on the probes job (the check cannot see the job it needs). Applies fourteen mutations to a scratch copy of ci.yml and asserts
+#       probe_probe_suite_is_not_run_by_ci reports WEAK (returns 0) for each. WEAK before the
+#       fix, FIXED after.
+# ---------------------------------------------------------------------------
+probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
+  local base d m ci overall=0
+  base="$(mktemp -d)"
+  for m in step-shell-release step-shell-install step-shell-dependabot job-defaults wf-defaults \
+           step-env-nested job-env-bashenv wf-env-bashenv step-github-env \
+           step-bashenv-via-github-env step-path-via-github-path step-path-via-github-env \
+           step-github-env-braced step-github-env-tee job-needs; do
+    d="$base/$m"; mkdir -p "$d/.github/workflows"; ci="$d/.github/workflows/ci.yml"
+    cp .github/workflows/ci.yml "$ci"
+    case "$m" in
+      step-shell-release)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
+      step-shell-install)    perl -0pi -e 's/(      - name: Install the pinned actionlint\n)/$1        shell: true {0}\n/' "$ci" ;;
+      step-shell-dependabot) perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
+      job-defaults)          perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    defaults:\n      run:\n        shell: true {0}\n/' "$ci" ;;
+      wf-defaults)           perl -0pi -e 's/^(jobs:\n)/defaults:\n  run:\n    shell: true {0}\n$1/m' "$ci" ;;
+      step-env-nested)       perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        env:\n          AM_PROBE_NESTED: "1"\n/' "$ci" ;;
+      job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
+      wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
+      step-github-env)       perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-bashenv-via-github-env) perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-path-via-github-path)   perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "\/tmp\/evil" >> "\$GITHUB_PATH"\n$1/' "$ci" ;;
+      step-path-via-github-env)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "PATH=\/tmp\/evil:\$PATH" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-github-env-braced)      perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$\{GITHUB_ENV\}"\n$1/' "$ci" ;;
+      step-github-env-tee)         perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" | tee -a "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      job-needs)                   perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    needs: dco\n/' "$ci" ;;
+    esac
+    # a mutation that did not apply proves nothing: count it as a miss
+    if cmp -s "$ci" .github/workflows/ci.yml; then echo "  mutation $m did not apply" >&2; overall=1; continue; fi
+    ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); [ "$?" -eq 0 ] || { echo "  $m: the not-disabled check still reports FIXED" >&2; overall=1; }
+  done
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F8 - probe_no_licence_file_in_the_repository was `! git ls-files | grep -q ...` under
+#       `set -o pipefail`. grep -q exits at the first match (LICENSE sorts early), git
+#       ls-files gets SIGPIPE (141), pipefail fails the pipeline and `!` turned that into a
+#       false WEAK, at random. Weak while any of 300 runs of the shipped function reports
+#       WEAK on a tree that has LICENSE and NOTICE.
+# ---------------------------------------------------------------------------
+probe_licence_probe_flakes_under_pipefail() {
+  local fn i bad=0
+  fn="$(sed -n '/^probe_no_licence_file_in_the_repository()/,/^}/p' tools/cipher-probe-release-pipeline.sh)"
+  [ -n "$fn" ] || { echo "  shipped M7 probe not found" >&2; return 0; }
+  for i in $(seq 1 300); do
+    bash -c "set -uo pipefail; $fn"$'\n'"probe_no_licence_file_in_the_repository" && bad=$((bad + 1))
+  done
+  [ "$bad" -eq 0 ] || echo "  $bad false WEAK in 300 runs" >&2
+  [ "$bad" -gt 0 ]
 }
 
 
@@ -930,6 +1061,8 @@ probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never c
 probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
 probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
 probe probe_suite_probe_accepts_a_trailing_comment_disable      "N14 a trailing comment still hides a disabled job"   probe_suite_probe_accepts_a_trailing_comment_disable
+probe probe_a_custom_shell_or_env_switch_disables_a_suite_step "B-DM3-F6 a shell or env switch disables a suite step" probe_a_custom_shell_or_env_switch_disables_a_suite_step
+probe probe_licence_probe_flakes_under_pipefail             "B-DM3-F8 M7 probe false WEAK under pipefail"         probe_licence_probe_flakes_under_pipefail
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url
@@ -1080,7 +1213,28 @@ probe_scanner_downloads_are_installed_without_verification() {
   "$script" osv-scanner "$work/bin" >/dev/null 2>&1
   rc=$?
   rm -rf "$work"
-  [ "$rc" -eq 0 ]   # a tampered payload installed: weak
+  [ "$rc" -eq 0 ] && return 0   # a tampered payload installed: weak
+  # B-DM3-F2: the same for grype, which ships as a tar.gz holding a file named `grype`.
+  work="$(mktemp -d)"; mkdir -p "$work/src"
+  printf 'not really grype\n' > "$work/src/grype"
+  tar -czf "$work/payload.tgz" -C "$work/src" grype
+  if command -v sha256sum >/dev/null 2>&1; then good_sha="$(sha256sum "$work/payload.tgz" | cut -d" " -f1)"
+  else good_sha="$(shasum -a 256 "$work/payload.tgz" | cut -d" " -f1)"; fi
+  script="$work/install-scanner.sh"
+  sed -e "s#url=\"https://github.com/anchore/grype/releases/download/[^\"]*\"#url=\"file://$work/payload.tgz\"#" \
+      -e 's#"\$dest/grype" version >/dev/null#true#' \
+      -e "s/^GRYPE_SHA256_\([a-z0-9_]*\)=.*/GRYPE_SHA256_\1=\"$good_sha\"/" \
+      tools/install-scanner.sh > "$script"
+  chmod +x "$script"
+  if ! "$script" grype "$work/bin" >/dev/null 2>&1 || [ ! -f "$work/bin/grype" ]; then
+    rm -rf "$work"; return 0
+  fi
+  printf 'tampered\n' > "$work/src/grype"
+  tar -czf "$work/payload.tgz" -C "$work/src" grype
+  "$script" grype "$work/bin2" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || [ -e "$work/bin2/grype" ]; rc=$?
+  rm -rf "$work"
+  return "$rc"   # 0 = a tampered grype payload installed: weak
 }
 
 probe probe_high_severity_dep_passes_pr_gate                 "S5 a HIGH-severity dependency passes the PR gate"    probe_a_high_severity_dependency_passes_the_pull_request_gate
@@ -1186,6 +1340,9 @@ _uncommented() { grep -vE '^[[:space:]]*#' ; }
 #      probed by running the gate, below.
 #      Weak while any of that is missing.
 # ---------------------------------------------------------------------------
+# B-DM3-F7: the secrets context in any spelling (secrets.X, SECRETS.X, secrets['X'],
+# toJSON(secrets), fromJSON-wrapped), inside an expression.
+_SECRETS_CTX='\$\{\{([^}]*[^A-Za-z0-9_])?secrets([^A-Za-z0-9_]|$)'
 probe_release_signs_without_a_vulnerability_scan() {
   local install selftest scan sign repro setup
   install="$(_line_of_step "$INSTALL_STEP")"
@@ -1199,8 +1356,8 @@ probe_release_signs_without_a_vulnerability_scan() {
   [ "$repro" -lt "$selftest" ] && [ "$selftest" -lt "$scan" ] && [ "$scan" -lt "$sign" ] || return 0
   # the self-test is the step IMMEDIATELY before the scan (F-3: "immediately before the gate")
   [ "$(awk -v s="$scan" 'NR < s && /^      - name:/ { l=NR } END { print l }' "$WF")" = "$selftest" ] || return 0
-  _step_block "$SCAN_STEP" | grep -q 'secrets\.' && return 0     # checklist 8: no secret reaches the scan
-  _step_block "$INSTALL_STEP" | grep -q 'secrets\.' && return 0
+  _step_block "$SCAN_STEP" | grep -qiE "$_SECRETS_CTX" && return 0     # checklist 8: no secret reaches the scan
+  _step_block "$INSTALL_STEP" | grep -qiE "$_SECRETS_CTX" && return 0
   _step_block "$SCAN_STEP" | _uncommented | grep -q -- '--fail-on high' || return 0
   return 1
 }

@@ -502,7 +502,7 @@
             <version>${dependency-check.version}</version>
             <configuration>
               <failBuildOnCVSS>7</failBuildOnCVSS>
-              <nvdApiKey>${nvd.api.key}</nvdApiKey>
+              <nvdApiKeyEnvironmentVariable>NVD_API_KEY</nvdApiKeyEnvironmentVariable>
               <skipTestScope>true</skipTestScope>
             </configuration>
             <executions>

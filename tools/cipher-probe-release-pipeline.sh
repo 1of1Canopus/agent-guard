@@ -1860,8 +1860,8 @@ probe_reference_guard_misses_an_agent_first_name() {
 # Security review of the agent-name group, pass 1 (B-NG-1 to B-NG-8). Each probe runs the
 # REAL guard (--tree or --jars, real exit code) against a planted scratch input, never a copy
 # of the regex. Planted names are assembled from fragments so this file stays clean.
-# B-NG-7 (names in file paths are never scanned) is a design stop with its own PR; its probe
-# stays in the internal review folder until then, because a WEAK probe here fails CI.
+# B-NG-7 (names in file paths are never scanned) was a design stop with its own PR; its
+# probes are in the file-name block below.
 # ---------------------------------------------------------------------------
 _ng_tree_red() { # _ng_tree_red <case> <printf %b content>; 0 when the guard refuses the line
   local base d rc=0
@@ -2017,6 +2017,97 @@ probe_jar_guard_is_not_run_on_the_jars() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# Security review of the file-name scan (B-NG-7, B-NG-9, B-NG-10, B-NG-11, B-NG-13). Each
+# probe runs the REAL guard against a planted scratch input. Tree paths go straight into the
+# index (`git update-index --cacheinfo`), never to disk, so a newline or a byte the macOS disk
+# refuses is planted the same way on a laptop and on a runner.
+# ---------------------------------------------------------------------------
+_ng_index_red() { # _ng_index_red <out-file> <path>; 0 when the guard refuses the planted path
+  local base d rc=0 blob
+  base="$(mktemp -d)"; d="$base/r"; mkdir -p "$d"
+  ( cd "$d" && git init -q . && printf 'clean\n' > ok.txt && git add ok.txt ) || { rm -rf "$base"; return 1; }
+  blob="$( cd "$d" && printf 'clean\n' | git hash-object -w --stdin )"
+  ( cd "$d" && git update-index --add --cacheinfo "100644,$blob,$2" ) || { rm -rf "$base"; return 1; }
+  CHECK_PRIVATE_REFERENCES_ROOT="$d" LC_ALL="${NG_UTF8_LOCALE:-C.UTF-8}" bash "$PWD/$RG" --tree > "$1" 2>&1 || rc=1
+  rm -rf "$base"
+  [ "$rc" -eq 1 ]
+}
+_ng_jar_red() { # _ng_jar_red <member> <text> [<member> <text>]...; 0 when the guard refuses the jar
+  local m rc=0
+  m="$(mktemp -d)"; mkdir -p "$m/target"
+  python3 -I -W ignore -c 'import sys, zipfile
+a = sys.argv[2:]
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for n, t in zip(a[0::2], a[1::2]): z.writestr(n, t)' "$m/target/x.jar" "$@" || { rm -rf "$m"; return 1; }
+  bash "$RG" --jars "$m" >/dev/null 2>&1 || rc=1
+  rm -rf "$m"
+  [ "$rc" -eq 1 ]
+}
+
+# B-NG-7: a name in a file path, in the tree or as a jar member, was never scanned.
+probe_reference_guard_name_in_a_path_passes() {
+  [ -f "$RG" ] || return 0
+  local t="Th""or" o
+  o="$(mktemp)"
+  _ng_index_red "$o" "docs/review-by-$t.md" || { rm -f "$o"; return 0; }
+  _ng_index_red "$o" "QUESTION""S.md" || { rm -f "$o"; return 0; }
+  rm -f "$o"
+  _ng_jar_red "META-INF/review-by-$t.txt" "clean" || return 0
+  return 1
+}
+
+# B-NG-9: a byte that is not valid UTF-8 before a name hid it in a UTF-8 locale.
+probe_reference_guard_non_utf8_byte_hides_a_name() {
+  [ -f "$RG" ] || return 0
+  local o d rc=0
+  o="$(mktemp)"
+  _ng_index_red "$o" "x/$(printf '\377')Th""or.md" || { rm -f "$o"; return 0; }
+  rm -f "$o"
+  d="$(mktemp -d)"
+  ( cd "$d" && git init -q . && printf '\377Th''or wrote this\n' > doc.md && git add -A )
+  CHECK_PRIVATE_REFERENCES_ROOT="$d" LC_ALL="${NG_UTF8_LOCALE:-C.UTF-8}" bash "$PWD/$RG" --tree >/dev/null 2>&1 || rc=1
+  rm -rf "$d"
+  [ "$rc" -eq 1 ] && return 1
+  return 0
+}
+
+# B-NG-10: two members with one name (or one name after case folding) let extraction keep
+# the clean one, so the dirty one was never scanned.
+probe_reference_guard_duplicate_member_hides_content() {
+  [ -f "$RG" ] || return 0
+  _ng_jar_red "a.txt" "see QUESTION""S.md" "a.txt" "clean" || return 0
+  _ng_jar_red "b/X.txt" "see QUESTION""S.md" "b/x.txt" "clean" || return 0
+  return 1
+}
+
+# B-NG-11: `unzip -Z1` prints a control byte as ^J, so a newline split a refused name.
+probe_reference_guard_escaped_member_name_passes() {
+  [ -f "$RG" ] || return 0
+  _ng_jar_red "QUEST"$'\n'"IONS.md" "clean" || return 0
+  _ng_jar_red "t"$'\t'"ab.txt" "clean" || return 0
+  return 1
+}
+
+# B-NG-13: a refused path with a raw newline would start an output line the runner reads as
+# a workflow command. Weak while the path is not refused, or a line starts with `::warning::`.
+probe_reference_guard_replays_a_hostile_path() {
+  [ -f "$RG" ] || return 0
+  local o
+  o="$(mktemp)"
+  if _ng_index_red "$o" "a"$'\n'"::warning::x.md" && ! grep -aq '^::warning::' "$o"; then
+    rm -f "$o"; return 1
+  fi
+  rm -f "$o"
+  return 0
+}
+
+# B-NG-7: the step names say what the guard reads; file names are now part of it.
+probe_reference_guard_step_names_omit_file_names() {
+  grep -hE 'name: Refuse .*moved-private' "$CI" "$WF" | grep -qv 'file names' && return 0
+  return 1
+}
+
 probe_grype_negligible_is_listed_not_blocking() {
   # B-RC12-3. A Grype match of severity Negligible must be listed as LOW, not read as UNRATED.
   # Weak (return 0) while the gate blocks on it or does not list it.
@@ -2064,6 +2155,12 @@ probe probe_reference_guard_step_names_old_scope          "B-NG-8 the CI step na
 probe probe_reference_guard_calls_a_scanner_error_clean   "a scanner error is read as clean"                    probe_reference_guard_calls_a_scanner_error_clean
 probe probe_reference_guard_self_test_is_red              "the guard's own self-test is not green"              probe_reference_guard_self_test_is_red
 probe probe_jar_guard_not_run_on_the_jars                 "the jar scan is not run on built and released jars"  probe_jar_guard_is_not_run_on_the_jars
+probe probe_reference_guard_name_in_a_path            "B-NG-7 a name in a file path or jar member name passes"  probe_reference_guard_name_in_a_path_passes
+probe probe_reference_guard_non_utf8_byte_hides_name     "B-NG-9 a non-UTF-8 byte before a name hides it"      probe_reference_guard_non_utf8_byte_hides_a_name
+probe probe_reference_guard_duplicate_member_hides       "B-NG-10 a duplicate jar member hides its content"    probe_reference_guard_duplicate_member_hides_content
+probe probe_reference_guard_escaped_member_name          "B-NG-11 a control byte in a jar member name hides it"  probe_reference_guard_escaped_member_name_passes
+probe probe_reference_guard_replays_a_hostile_path       "B-NG-13 a refused path is replayed raw"              probe_reference_guard_replays_a_hostile_path
+probe probe_reference_guard_step_names_omit_file_names   "B-NG-7 the CI step names do not say file names"      probe_reference_guard_step_names_omit_file_names
 probe probe_grype_negligible_is_listed_not_blocking       "a Grype Negligible match blocks the release as UNRATED"  probe_grype_negligible_is_listed_not_blocking
 
 echo

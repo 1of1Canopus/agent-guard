@@ -690,6 +690,7 @@ run_self_test() {
   _name_case "name-lower-case-private-document"    red:name       100644 "notes/question""s.md"
   _name_case "name-review-doc-slug-rescan"         red:name       100644 "docs/SECURITY""-REVIEW-statu""s.md.md"
   _name_case "name-lower-case-review-word"         red:name       100644 "securit""y-review.md"
+  _name_case "name-mixed-case-review-word-dash"    red:name       100644 "docs/Securit""y-Review-pr12.md"
   _name_case "name-mixed-case-release-word"        red:name       100644 "docs/Releasin""g.txt"
   _name_case "name-review-doc-upper-case-slug"     red:name       100644 "docs/SECURITY""-REVIEW-Feat.md"
   _name_case "name-review-doc-not-markdown"        red:name       100644 "docs/$sr.txt"

@@ -10,8 +10,17 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   comments. Every push recorded a failed run with no jobs and the workflow never ran on a pull request. The
   marker is now built at run time.
 - The security probe job now installs a pinned, checksum-verified actionlint (`tools/install-scanner.sh actionlint`)
-  and fails when any workflow file is invalid, or when a literal expression opener is not a well-formed
-  expression. The required checks did not cover workflow validity before.
+  and fails when any workflow file (`*.yml` or `*.yaml`) is invalid, or when a line holds an expression opener with
+  no closer on the same line. The required checks did not cover workflow validity before. The structural check does
+  not judge the grammar between the braces; actionlint does.
+- The probe suite now fails if the Dependabot auto-merge probe step or the actionlint install step is deleted,
+  commented out, made conditional or made soft in `ci.yml` (B-DM3-F1). The workflow probe also refuses an actionlint
+  that is not the pinned version.
+- Probes now prove that the installer refuses a tampered actionlint or grype download (B-DM3-F2), and that the
+  condition 7 refusal of an expression job name is in place (B-DM3-F4).
+- The weekly OWASP Dependency-Check step now passes the NVD key through an `env:` value and the plugin's
+  `nvdApiKeyEnvironmentVariable`, not on the Maven command line (B-DM3-F5). A probe refuses any `secrets.` reference
+  inside a `run` script.
 
 ## [0.1.3] - 2026-10-16
 

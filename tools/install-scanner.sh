@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Installs one vulnerability scanner at a pinned version, verified byte for byte against a
-# checksum recorded in THIS file, into a directory the caller names.
+# Installs one pinned tool (a vulnerability scanner or the workflow linter) at a pinned
+# version, verified byte for byte against a checksum recorded in THIS file, into a directory
+# the caller names.
 #
 #   tools/install-scanner.sh osv-scanner "$RUNNER_TEMP/bin"
 #   tools/install-scanner.sh grype       "$RUNNER_TEMP/bin"
@@ -26,8 +27,9 @@
 # platform, a missing tool: all refuse with a non-zero exit and a reason. A scan that could
 # not run is never reported as a scan that found nothing.
 #
-# Upgrading: bump the version and BOTH checksums from the release's own published checksum
-# file (osv-scanner_SHA256SUMS, grype_<version>_checksums.txt). The weekly security duty
+# Upgrading: bump the version and ALL THREE platform checksums of the tool from the release's
+# own published checksum file (osv-scanner_SHA256SUMS, grype_<version>_checksums.txt,
+# actionlint_<version>_checksums.txt). The weekly security duty
 # includes checking whether a newer scanner exists.
 #
 set -euo pipefail

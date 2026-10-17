@@ -470,13 +470,20 @@ probe_gpg_arguments_comment_still_credits_the_wrong_actor() {
 #       `continue-on-error: true` anywhere in that step.
 # ---------------------------------------------------------------------------
 probe_probe_suite_is_not_run_by_ci() {
-  local wf
-  for wf in .github/workflows/*.yml; do
-    [ -f "$wf" ] || continue
-    if _probe_suite_wired_unconditionally_in "$wf"; then
-      return 1   # a workflow runs the suite unconditionally: FIXED
+  local wf wants
+  # B-DM3-F1: the auto-merge suite and the pinned actionlint it needs are part of the same
+  # required check. All three commands must be present, string-equal, in one unguarded job.
+  wants='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
+tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"
+PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh'
+  shopt -s nullglob
+  for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+    if _probe_suite_wired_unconditionally_in "$wf" "$wants"; then
+      shopt -u nullglob
+      return 1   # a workflow runs the suites unconditionally: FIXED
     fi
   done
+  shopt -u nullglob
   return 0   # no such job anywhere: WEAK
 }
 
@@ -496,12 +503,13 @@ probe_probe_suite_is_not_run_by_ci() {
 # the exact command. No YAML parser - this is still line-oriented - but equality instead of
 # substring match refuses any decoration (comment, prefix, substitution) without needing one.
 _probe_suite_wired_unconditionally_in() {
-  local wf="$1"
-  local want='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh'
-  grep -vE '^[[:space:]]*#' "$wf" | awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' -v want="$want" '
+  local wf="$1" want="$2"
+  # the wanted commands travel in the environment: awk -v refuses a newline on some awks
+  grep -vE '^[[:space:]]*#' "$wf" | WANTS="$want" awk -v RS='\n  [A-Za-z0-9_.-]+:[[:space:]]*\n' '
+      BEGIN { nw = split(ENVIRON["WANTS"], wants, "\n") }
       {
         n = split($0, lines, "\n")
-        matched = 0
+        delete seen
         guarded = 0
         for (i = 1; i <= n; i++) {
           line = lines[i]
@@ -509,15 +517,34 @@ _probe_suite_wired_unconditionally_in() {
             val = substr(line, RLENGTH + 1)
             gsub(/^[[:space:]]+/, "", val)
             gsub(/[[:space:]]+$/, "", val)
-            if (val == want) { matched = 1 }
+            for (k = 1; k <= nw; k++) if (val == wants[k]) { seen[k] = 1 }
           }
           if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
         }
+        matched = 1
+        for (k = 1; k <= nw; k++) if (!seen[k]) { matched = 0 }
         if (matched && !guarded) { found = 1 }
       }
       END { exit(found ? 0 : 1) }
     '
 }
+
+# B-DM3-F1: mutate the single `run:` step that holds exactly <cmd>, in a copy of ci.yml.
+# modes: delete (drop the line), comment (# run: ...), trailing (run: true # cmd),
+# ortrue (cmd || true), stepif (if: false before it), block (run: | true, then cmd).
+_mutate_ci_run_line() { # _mutate_ci_run_line <src> <dst> <mode> <cmd>
+  MODE="$3" CMD="$4" perl -pe '
+    if (/^(\s*)run: \Q$ENV{CMD}\E$/) {
+      my $i = $1; my $c = $ENV{CMD}; my $m = $ENV{MODE};
+      if    ($m eq "delete")   { $_ = "" }
+      elsif ($m eq "comment")  { $_ = "$i# run: $c\n" }
+      elsif ($m eq "trailing") { $_ = "${i}run: true # $c\n" }
+      elsif ($m eq "ortrue")   { $_ = "${i}run: $c || true\n" }
+      elsif ($m eq "stepif")   { $_ = "${i}if: false\n${i}run: $c\n" }
+      elsif ($m eq "block")    { $_ = "${i}run: |\n${i}  true\n${i}  $c\n" }
+    }' "$1" > "$2"
+}
+_F1_CMDS=('tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"' 'PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh')
 
 # ---------------------------------------------------------------------------
 # N13 - the N12 probe above split ci.yml into per-STEP blocks and only refused
@@ -563,6 +590,18 @@ probe_suite_probe_accepts_a_disabled_probes_job() {
     [ "$rc" -eq 0 ] || overall=1
   done
 
+  # B-DM3-F1: the same disabled forms on the actionlint install step and the auto-merge suite
+  # step: line deleted, commented out, step-level `if: false`.
+  local c m
+  for c in "${_F1_CMDS[@]}"; do
+    for m in delete comment stepif; do
+      d="$base/f1-$m-${#c}"; mkdir -p "$d/.github/workflows"
+      _mutate_ci_run_line "$base/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml" "$m" "$c"
+      ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); rc=$?
+      [ "$rc" -eq 0 ] || overall=1
+    done
+  done
+
   rm -rf "$base"
   [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
 }
@@ -599,6 +638,17 @@ probe_suite_probe_accepts_a_trailing_comment_disable() {
     # rc 1 ("FIXED") on a disabled-job mutation means probe_probe_suite_is_not_run_by_ci was
     # fooled into believing the suite still runs unconditionally: the N14 weakness is present.
     [ "$rc" -eq 0 ] || overall=1
+  done
+
+  # B-DM3-F1: trailing comment, `|| true` and the multi-line form on the two new steps.
+  local c m
+  for c in "${_F1_CMDS[@]}"; do
+    for m in trailing ortrue block; do
+      d="$base/f1-$m-${#c}"; mkdir -p "$d/.github/workflows"
+      _mutate_ci_run_line "$base/.github/workflows/ci.yml" "$d/.github/workflows/ci.yml" "$m" "$c"
+      ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); rc=$?
+      [ "$rc" -eq 0 ] || overall=1
+    done
   done
 
   rm -rf "$base"
@@ -1080,7 +1130,28 @@ probe_scanner_downloads_are_installed_without_verification() {
   "$script" osv-scanner "$work/bin" >/dev/null 2>&1
   rc=$?
   rm -rf "$work"
-  [ "$rc" -eq 0 ]   # a tampered payload installed: weak
+  [ "$rc" -eq 0 ] && return 0   # a tampered payload installed: weak
+  # B-DM3-F2: the same for grype, which ships as a tar.gz holding a file named `grype`.
+  work="$(mktemp -d)"; mkdir -p "$work/src"
+  printf 'not really grype\n' > "$work/src/grype"
+  tar -czf "$work/payload.tgz" -C "$work/src" grype
+  if command -v sha256sum >/dev/null 2>&1; then good_sha="$(sha256sum "$work/payload.tgz" | cut -d" " -f1)"
+  else good_sha="$(shasum -a 256 "$work/payload.tgz" | cut -d" " -f1)"; fi
+  script="$work/install-scanner.sh"
+  sed -e "s#url=\"https://github.com/anchore/grype/releases/download/[^\"]*\"#url=\"file://$work/payload.tgz\"#" \
+      -e 's#"\$dest/grype" version >/dev/null#true#' \
+      -e "s/^GRYPE_SHA256_\([a-z0-9_]*\)=.*/GRYPE_SHA256_\1=\"$good_sha\"/" \
+      tools/install-scanner.sh > "$script"
+  chmod +x "$script"
+  if ! "$script" grype "$work/bin" >/dev/null 2>&1 || [ ! -f "$work/bin/grype" ]; then
+    rm -rf "$work"; return 0
+  fi
+  printf 'tampered\n' > "$work/src/grype"
+  tar -czf "$work/payload.tgz" -C "$work/src" grype
+  "$script" grype "$work/bin2" >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 0 ] || [ -e "$work/bin2/grype" ]; rc=$?
+  rm -rf "$work"
+  return "$rc"   # 0 = a tampered grype payload installed: weak
 }
 
 probe probe_high_severity_dep_passes_pr_gate                 "S5 a HIGH-severity dependency passes the PR gate"    probe_a_high_severity_dependency_passes_the_pull_request_gate

@@ -655,6 +655,59 @@ probe_suite_probe_accepts_a_trailing_comment_disable() {
   [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
 }
 
+# ---------------------------------------------------------------------------
+# B-DM3-F6 - the not-disabled check refused `if:` and `continue-on-error:` but not the keys
+#       that stop a run script from running or that switch the suite's own probes off:
+#       `shell: true {0}` (GitHub runs `true <script>`, exit 0), `defaults: run: shell` on the
+#       job or the workflow, `env: BASH_ENV` (bash sources it first) on the job or the
+#       workflow, and `env: AM_PROBE_NESTED` (the auto-merge suite then skips its meta
+#       probes). Applies eight mutations to a scratch copy of ci.yml and asserts
+#       probe_probe_suite_is_not_run_by_ci reports WEAK (returns 0) for each. WEAK before the
+#       fix, FIXED after.
+# ---------------------------------------------------------------------------
+probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
+  local base d m ci overall=0
+  base="$(mktemp -d)"
+  for m in step-shell-release step-shell-install step-shell-dependabot job-defaults wf-defaults \
+           step-env-nested job-env-bashenv wf-env-bashenv; do
+    d="$base/$m"; mkdir -p "$d/.github/workflows"; ci="$d/.github/workflows/ci.yml"
+    cp .github/workflows/ci.yml "$ci"
+    case "$m" in
+      step-shell-release)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
+      step-shell-install)    perl -0pi -e 's/(      - name: Install the pinned actionlint\n)/$1        shell: true {0}\n/' "$ci" ;;
+      step-shell-dependabot) perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
+      job-defaults)          perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    defaults:\n      run:\n        shell: true {0}\n/' "$ci" ;;
+      wf-defaults)           perl -0pi -e 's/^(jobs:\n)/defaults:\n  run:\n    shell: true {0}\n$1/m' "$ci" ;;
+      step-env-nested)       perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        env:\n          AM_PROBE_NESTED: "1"\n/' "$ci" ;;
+      job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
+      wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
+    esac
+    # a mutation that did not apply proves nothing: count it as a miss
+    if cmp -s "$ci" .github/workflows/ci.yml; then echo "  mutation $m did not apply" >&2; overall=1; continue; fi
+    ( cd "$d" && probe_probe_suite_is_not_run_by_ci ); [ "$?" -eq 0 ] || { echo "  $m: the not-disabled check still reports FIXED" >&2; overall=1; }
+  done
+  rm -rf "$base"
+  [ "$overall" -ne 0 ]   # a mutation slipped past: weakness present (WEAK)
+}
+
+# ---------------------------------------------------------------------------
+# B-DM3-F8 - probe_no_licence_file_in_the_repository was `! git ls-files | grep -q ...` under
+#       `set -o pipefail`. grep -q exits at the first match (LICENSE sorts early), git
+#       ls-files gets SIGPIPE (141), pipefail fails the pipeline and `!` turned that into a
+#       false WEAK, at random. Weak while any of 300 runs of the shipped function reports
+#       WEAK on a tree that has LICENSE and NOTICE.
+# ---------------------------------------------------------------------------
+probe_licence_probe_flakes_under_pipefail() {
+  local fn i bad=0
+  fn="$(sed -n '/^probe_no_licence_file_in_the_repository()/,/^}/p' tools/cipher-probe-release-pipeline.sh)"
+  [ -n "$fn" ] || { echo "  shipped M7 probe not found" >&2; return 0; }
+  for i in $(seq 1 300); do
+    bash -c "set -uo pipefail; $fn"$'\n'"probe_no_licence_file_in_the_repository" && bad=$((bad + 1))
+  done
+  [ "$bad" -eq 0 ] || echo "  $bad false WEAK in 300 runs" >&2
+  [ "$bad" -gt 0 ]
+}
+
 
 # ===========================================================================
 # Final verification of 1da507e (F-ids). Everything below asserts a weakness
@@ -980,6 +1033,8 @@ probe probe_gpg_arguments_comment_credits_the_wrong_actor    "N11 I1 was never c
 probe probe_probe_suite_is_not_run_by_ci                      "N12 nothing in .github/ runs this suite"             probe_probe_suite_is_not_run_by_ci
 probe probe_suite_probe_accepts_a_disabled_probes_job          "N13 the N12 probe misses a disabled probes job"      probe_suite_probe_accepts_a_disabled_probes_job
 probe probe_suite_probe_accepts_a_trailing_comment_disable      "N14 a trailing comment still hides a disabled job"   probe_suite_probe_accepts_a_trailing_comment_disable
+probe probe_a_custom_shell_or_env_switch_disables_a_suite_step "B-DM3-F6 a shell or env switch disables a suite step" probe_a_custom_shell_or_env_switch_disables_a_suite_step
+probe probe_licence_probe_flakes_under_pipefail             "B-DM3-F8 M7 probe false WEAK under pipefail"         probe_licence_probe_flakes_under_pipefail
 echo
 probe probe_excluded_groups_also_excludes_lookalike_groups   "F1 com.housedevinci-evil is excluded too"            probe_excluded_groups_pattern_also_excludes_lookalike_groups
 probe probe_denial_pass_coordinate_forged_by_the_url         "F2 a URL with parens forges the coordinate"          probe_denial_pass_coordinate_can_be_forged_by_the_dependency_url

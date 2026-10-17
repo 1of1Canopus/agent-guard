@@ -500,6 +500,35 @@ probe_a_secret_is_interpolated_into_a_run_script() {
   return "$hit"
 }
 
+# ---------------------------------------------------------------------------
+# B-DM3-F7. probe_a_secret_is_interpolated_into_a_run_script grepped `secrets\.` only, and the
+# release-scan probe did the same. GitHub and actionlint also accept `secrets['X']`,
+# `toJSON(secrets)` and `SECRETS.X` (context names are not case-sensitive). Weak while any of
+# the three spellings in a run script leaves the secret probe FIXED, or while an upper-case
+# secret in the release scan step's env leaves the release-scan probe FIXED.
+# ---------------------------------------------------------------------------
+probe_a_secret_reaches_a_run_script_by_another_spelling() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local d s o weak=1 f
+  for s in "secrets['NVD_API_KEY']" 'toJSON(secrets)' 'SECRETS.NVD_API_KEY'; do
+    d="$(scratch_copy)"; f="$d/.github/workflows/security-scan.yml"
+    S="$s" perl -0pi -e 's/run: \.\/mvnw -B -Psecurity-scan -DskipTests verify/run: .\/mvnw -B -Psecurity-scan -DskipTests -Dnvd.api.key=\$\{\{ $ENV{S} \}\} verify/' "$f"
+    if ! grep -qF "$s" "$f"; then echo "  spelling $s did not apply" >&2; weak=0; rm -rf "$d"; continue; fi
+    o="$(nested_suite "$d")"
+    grep -qE '^FIXED +probe_a_secret_is_interpolated_into_a_run_script' <<<"$o" && { echo "  $s: not seen" >&2; weak=0; }
+    rm -rf "$d"
+  done
+  # second site, same gap: the release scan step's env
+  d="$(scratch_copy)"; f="$d/.github/workflows/release.yml"
+  perl -0pi -e 's/(      - name: Scan the artifacts this release is about to sign\n        id: vulnscan\n        env:\n)/$1          LEAK: \$\{\{ SECRETS.GPG_PASSPHRASE \}\}\n/' "$f"
+  if grep -qF 'SECRETS.GPG_PASSPHRASE' "$f"; then
+    o="$( cd "$d" && bash tools/cipher-probe-release-pipeline.sh 2>/dev/null )"
+    grep -qE '^FIXED +probe_release_signs_without_a_vulnerability_scan( |$)' <<<"$o" && { echo "  release scan step: SECRETS.GPG_PASSPHRASE not seen" >&2; weak=0; }
+  else echo "  release scan mutation did not apply" >&2; weak=0; fi
+  rm -rf "$d"
+  return "$weak"
+}
+
 probe probe_major_update_is_not_refused                    "1 a semver-major update passes the gate"          probe_major_update_is_not_refused
 probe probe_patch_update_is_wrongly_refused                 "1 a semver-patch update is wrongly refused"       probe_patch_update_is_wrongly_refused
 probe probe_a_run_block_holds_a_literal_expression_opener  "B-DM3-1 a run block or comment has a literal opener" probe_a_run_block_holds_a_literal_expression_opener
@@ -552,6 +581,7 @@ probe probe_a_branch_with_no_required_checks_passes           "7 a branch with n
 probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks.txt differs from PR workflows"  probe_required_checks_txt_drifted_from_ci_yml
 probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
 probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
+probe probe_a_secret_reaches_a_run_script_by_another_spelling "B-DM3-F7 bracket, toJSON, upper-case secrets unseen" probe_a_secret_reaches_a_run_script_by_another_spelling
 
 echo
 echo "still weak: $pass    fixed: $flipped"

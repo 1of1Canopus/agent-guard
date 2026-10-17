@@ -2361,6 +2361,35 @@ probe_reference_guard_self_test_misses_three_checks() {
   return 1
 }
 
+# B-NG-30: B-NG-23 escaped the bytes of a hit, but a tree hit line still began with the file
+# path. A tracked file named `::stop-commands::tok` (or ` ::warning::x`) with a hit printed a
+# line that starts with `::`, which the runner reads as a workflow command. WEAK while any
+# output line, split on CR and LF as the runner splits, starts with blanks then `::` and is
+# not the guard's own `::error::check-private-references: ` line.
+probe_reference_guard_hit_path_starts_a_command() {
+  [ -f "$RG" ] || return 0
+  local d o
+  d="$(mktemp -d)"; o="$(mktemp)"
+  ( cd "$d" && git init -q . && printf 'see %s\n' "QUESTION""S.md" > '::stop-commands::tok' \
+      && printf 'see %s\n' "QUESTION""S.md" > ' ::warning::spoofed' && git add -A )
+  CHECK_PRIVATE_REFERENCES_ROOT="$d" bash "$PWD/$RG" --tree > "$o" 2>&1
+  rm -rf "$d"
+  if tr '\r' '\n' < "$o" | grep -a -E '^[[:space:]]*::' | grep -aqv '^::error::check-private-references: '; then
+    rm -f "$o"; return 0
+  fi
+  rm -f "$o"
+  return 1
+}
+
+# B-NG-31: the file-count half of the one-to-one jar check had no self-test case; with it
+# removed the self-test stayed green. The half is deleted from a copy of the guard; WEAK
+# while the copy's self-test is green.
+probe_reference_guard_self_test_misses_the_file_count_half() {
+  [ -f "$RG" ] || return 0
+  _ng2_mutant_survives file-half 's/if \[ "\$have_files" != "\$want_files" \] \|\| \[/if [/' && return 0
+  return 1
+}
+
 probe_grype_negligible_is_listed_not_blocking() {
   # B-RC12-3. A Grype match of severity Negligible must be listed as LOW, not read as UNRATED.
   # Weak (return 0) while the gate blocks on it or does not list it.
@@ -2419,6 +2448,8 @@ probe probe_reference_guard_symlink_member_target      "B-NG-20 a symlink member
 probe probe_reference_guard_directory_entry_data       "B-NG-21 data in a directory entry is never scanned"   probe_reference_guard_directory_entry_data_passes
 probe probe_reference_guard_content_hit_replays        "B-NG-23 a content hit is printed raw"                 probe_reference_guard_content_hit_replays_a_command
 probe probe_reference_guard_self_test_misses_checks    "B-NG-24 three checks have no self-test case"          probe_reference_guard_self_test_misses_three_checks
+probe probe_reference_guard_hit_path_command       "B-NG-30 a hit line can start with a file path"        probe_reference_guard_hit_path_starts_a_command
+probe probe_reference_guard_file_count_half      "B-NG-31 the file-count half has no self-test case"    probe_reference_guard_self_test_misses_the_file_count_half
 probe probe_grype_negligible_is_listed_not_blocking       "a Grype Negligible match blocks the release as UNRATED"  probe_grype_negligible_is_listed_not_blocking
 
 echo

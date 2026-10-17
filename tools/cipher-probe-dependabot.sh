@@ -494,7 +494,7 @@ probe_a_secret_is_interpolated_into_a_run_script() {
   shopt -s nullglob
   for f in .github/workflows/*.yml .github/workflows/*.yaml; do
     runs="$(yq -r '.jobs[].steps[]? | .run // ""' "$f")" || { echo "  $f: yq failed" >&2; hit=0; continue; }
-    if grep -qE 'secrets\.' <<<"$runs"; then echo "  $f: a run script references secrets" >&2; hit=0; fi
+    if grep -qiE '\$\{\{([^}]*[^A-Za-z0-9_])?secrets([^A-Za-z0-9_]|$)' <<<"$runs"; then echo "  $f: a run script references secrets" >&2; hit=0; fi
   done
   shopt -u nullglob
   return "$hit"

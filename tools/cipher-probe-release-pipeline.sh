@@ -148,7 +148,10 @@ probe_release_does_not_verify_tag_signature() { ! grep -qE 'verify-tag|--verify-
 # M7 - Apache-2.0 is declared in the POM and there is no licence text anywhere.
 # ---------------------------------------------------------------------------
 probe_no_licence_file_in_the_repository() {
-  ! git ls-files | grep -qiE '^(LICENSE|LICENCE|NOTICE)(\..*)?$'
+  # B-DM3-F8: read the list first. `git ls-files | grep -q` under pipefail fails at random:
+  # grep -q exits at the first match and git gets SIGPIPE (141).
+  local f; f="$(git ls-files)"
+  ! grep -qiE '^(LICENSE|LICENCE|NOTICE)(\..*)?$' <<<"$f"
 }
 
 # ---------------------------------------------------------------------------
@@ -476,8 +479,13 @@ probe_probe_suite_is_not_run_by_ci() {
   wants='CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
 tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"
 PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh'
+  # B-DM3-F6: the suite's own probe-skipping switch must not be set anywhere under .github/
+  if grep -rqs 'AM_PROBE_NESTED' .github; then return 0; fi
   shopt -s nullglob
   for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+    # B-DM3-F6: a workflow-level `defaults:` or `env:` (shell override, BASH_ENV) falls before
+    # the first job, where the per-job split does not look. Refuse the file.
+    if grep -vE '^[[:space:]]*#' "$wf" | grep -qE '^(defaults|env):'; then continue; fi
     if _probe_suite_wired_unconditionally_in "$wf" "$wants"; then
       shopt -u nullglob
       return 1   # a workflow runs the suites unconditionally: FIXED
@@ -495,6 +503,9 @@ PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh'
 # is the fix only when it invokes the script in a `run:` line AND carries no `if:` and no
 # `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
 # value, since a skipped/soft-failed job is exactly as blind as a deleted one.
+#
+# B-DM3-F6: `shell:`, `env:` and `defaults:` count as guards too (a custom shell such as
+# `true {0}` runs nothing; BASH_ENV runs a file first; both leave the step green).
 #
 # N14: a substring/regex match on the `run:` line is still fooled by a trailing comment -
 # `run: true # CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh` runs `true` and
@@ -519,7 +530,7 @@ _probe_suite_wired_unconditionally_in() {
             gsub(/[[:space:]]+$/, "", val)
             for (k = 1; k <= nw; k++) if (val == wants[k]) { seen[k] = 1 }
           }
-          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error):/) { guarded = 1 }
+          if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error|shell|env|defaults):/) { guarded = 1 }
         }
         matched = 1
         for (k = 1; k <= nw; k++) if (!seen[k]) { matched = 0 }
@@ -661,7 +672,7 @@ probe_suite_probe_accepts_a_trailing_comment_disable() {
 #       `shell: true {0}` (GitHub runs `true <script>`, exit 0), `defaults: run: shell` on the
 #       job or the workflow, `env: BASH_ENV` (bash sources it first) on the job or the
 #       workflow, and `env: AM_PROBE_NESTED` (the auto-merge suite then skips its meta
-#       probes). Applies eight mutations to a scratch copy of ci.yml and asserts
+#       probes), also set from an extra step through GITHUB_ENV. Applies nine mutations to a scratch copy of ci.yml and asserts
 #       probe_probe_suite_is_not_run_by_ci reports WEAK (returns 0) for each. WEAK before the
 #       fix, FIXED after.
 # ---------------------------------------------------------------------------
@@ -669,7 +680,7 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
   local base d m ci overall=0
   base="$(mktemp -d)"
   for m in step-shell-release step-shell-install step-shell-dependabot job-defaults wf-defaults \
-           step-env-nested job-env-bashenv wf-env-bashenv; do
+           step-env-nested job-env-bashenv wf-env-bashenv step-github-env; do
     d="$base/$m"; mkdir -p "$d/.github/workflows"; ci="$d/.github/workflows/ci.yml"
     cp .github/workflows/ci.yml "$ci"
     case "$m" in
@@ -681,6 +692,7 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
       step-env-nested)       perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        env:\n          AM_PROBE_NESTED: "1"\n/' "$ci" ;;
       job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
       wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
+      step-github-env)       perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
     esac
     # a mutation that did not apply proves nothing: count it as a miss
     if cmp -s "$ci" .github/workflows/ci.yml; then echo "  mutation $m did not apply" >&2; overall=1; continue; fi
@@ -1312,6 +1324,9 @@ _uncommented() { grep -vE '^[[:space:]]*#' ; }
 #      probed by running the gate, below.
 #      Weak while any of that is missing.
 # ---------------------------------------------------------------------------
+# B-DM3-F7: the secrets context in any spelling (secrets.X, SECRETS.X, secrets['X'],
+# toJSON(secrets), fromJSON-wrapped), inside an expression.
+_SECRETS_CTX='\$\{\{([^}]*[^A-Za-z0-9_])?secrets([^A-Za-z0-9_]|$)'
 probe_release_signs_without_a_vulnerability_scan() {
   local install selftest scan sign repro setup
   install="$(_line_of_step "$INSTALL_STEP")"
@@ -1325,8 +1340,8 @@ probe_release_signs_without_a_vulnerability_scan() {
   [ "$repro" -lt "$selftest" ] && [ "$selftest" -lt "$scan" ] && [ "$scan" -lt "$sign" ] || return 0
   # the self-test is the step IMMEDIATELY before the scan (F-3: "immediately before the gate")
   [ "$(awk -v s="$scan" 'NR < s && /^      - name:/ { l=NR } END { print l }' "$WF")" = "$selftest" ] || return 0
-  _step_block "$SCAN_STEP" | grep -q 'secrets\.' && return 0     # checklist 8: no secret reaches the scan
-  _step_block "$INSTALL_STEP" | grep -q 'secrets\.' && return 0
+  _step_block "$SCAN_STEP" | grep -qiE "$_SECRETS_CTX" && return 0     # checklist 8: no secret reaches the scan
+  _step_block "$INSTALL_STEP" | grep -qiE "$_SECRETS_CTX" && return 0
   _step_block "$SCAN_STEP" | _uncommented | grep -q -- '--fail-on high' || return 0
   return 1
 }

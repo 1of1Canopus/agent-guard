@@ -20,7 +20,12 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   condition 7 refusal of an expression job name is in place (B-DM3-F4).
 - The weekly OWASP Dependency-Check step now passes the NVD key through an `env:` value and the plugin's
   `nvdApiKeyEnvironmentVariable`, not on the Maven command line (B-DM3-F5). A probe refuses any `secrets.` reference
-  inside a `run` script.
+  inside a `run` script, in any spelling of the secrets context: `secrets.X`, `SECRETS.X`, `secrets['X']`,
+  `toJSON(secrets)` (B-DM3-F7). The release scan probe uses the same match.
+- The probe-suite wiring check now also refuses a `shell:`, `env:` or `defaults:` key on the probes job or its
+  steps, a workflow-level `env:` or `defaults:`, and any mention of `AM_PROBE_NESTED` under `.github/`. A custom
+  shell such as `true {0}`, or a `BASH_ENV` file, could make every probe step pass without running (B-DM3-F6).
+- The licence-file probe no longer fails at random under `pipefail` (B-DM3-F8).
 
 ## [0.1.3] - 2026-10-16
 

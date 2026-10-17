@@ -25,6 +25,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - The probe-suite wiring check now also refuses a `shell:`, `env:` or `defaults:` key on the probes job or its
   steps, a workflow-level `env:` or `defaults:`, and any mention of `AM_PROBE_NESTED` under `.github/`. A custom
   shell such as `true {0}`, or a `BASH_ENV` file, could make every probe step pass without running (B-DM3-F6).
+- The same check refuses any step of the probes job that mentions `GITHUB_ENV` or `GITHUB_PATH`, and a `needs:` on
+  that job. A step that writes `BASH_ENV` or `PATH` there changes what every later step runs (B-DM3-F9).
 - The licence-file probe no longer fails at random under `pipefail` (B-DM3-F8).
 
 ## [0.1.3] - 2026-10-16

@@ -504,6 +504,9 @@ PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh'
 # `continue-on-error:` anywhere in that block - job-level or step-level, `true` or any other
 # value, since a skipped/soft-failed job is exactly as blind as a deleted one.
 #
+# B-DM3-F9: so do any mention of GITHUB_ENV or GITHUB_PATH and a `needs:` key. The probes job
+# has none today (the pinned install puts its directory on PATH in the suite line, not through
+# GITHUB_PATH), so there is no exception.
 # B-DM3-F6: `shell:`, `env:` and `defaults:` count as guards too (a custom shell such as
 # `true {0}` runs nothing; BASH_ENV runs a file first; both leave the step green).
 #
@@ -531,6 +534,9 @@ _probe_suite_wired_unconditionally_in() {
             for (k = 1; k <= nw; k++) if (val == wants[k]) { seen[k] = 1 }
           }
           if (line ~ /^[[:space:]]*(-[[:space:]]+)?(if|continue-on-error|shell|env|defaults):/) { guarded = 1 }
+          # B-DM3-F9: a step that writes GITHUB_ENV or GITHUB_PATH (any spelling, any redirect or
+          # tee) changes what every later step runs; `needs:` hides a second job from this check.
+          if (toupper(line) ~ /GITHUB_(ENV|PATH)/ || line ~ /^[[:space:]]*needs:/) { guarded = 1 }
         }
         matched = 1
         for (k = 1; k <= nw; k++) if (!seen[k]) { matched = 0 }
@@ -696,12 +702,12 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
       step-env-nested)       perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        env:\n          AM_PROBE_NESTED: "1"\n/' "$ci" ;;
       job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
       wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
-      step-github-env)       perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
-      step-bashenv-via-github-env) perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
-      step-path-via-github-path)   perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "\/tmp\/evil" >> "\$GITHUB_PATH"\n$1/' "$ci" ;;
-      step-path-via-github-env)    perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "PATH=\/tmp\/evil:\$PATH" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
-      step-github-env-braced)      perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$\{GITHUB_ENV\}"\n$1/' "$ci" ;;
-      step-github-env-tee)         perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" | tee -a "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-github-env)       perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-bashenv-via-github-env) perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-path-via-github-path)   perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "\/tmp\/evil" >> "\$GITHUB_PATH"\n$1/' "$ci" ;;
+      step-path-via-github-env)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "PATH=\/tmp\/evil:\$PATH" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-github-env-braced)      perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$\{GITHUB_ENV\}"\n$1/' "$ci" ;;
+      step-github-env-tee)         perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" | tee -a "\$GITHUB_ENV"\n$1/' "$ci" ;;
       job-needs)                   perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    needs: dco\n/' "$ci" ;;
     esac
     # a mutation that did not apply proves nothing: count it as a miss

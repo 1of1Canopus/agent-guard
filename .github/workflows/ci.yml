@@ -105,7 +105,7 @@ jobs:
       # ubuntu-latest ships Docker: Testcontainers starts PostgreSQL and Redis for the integration tests.
       - name: Build, test, format check, coverage gate, third-party notices
         run: ./mvnw -B clean verify
-      - name: Refuse a moved-private document reference, a machine-local path or an agent first name inside a built jar
+      - name: Refuse a moved-private document reference, a machine-local path or an agent first name in the content or file names of a built jar
         run: tools/check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter
       - name: Upload third-party notices
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -127,7 +127,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Self-test the guard (one planted mutation per class, each must go red)
         run: tools/check-private-references.sh --self-test
-      - name: Refuse a reference to a moved-private document, a machine-local path or an agent first name
+      - name: Refuse a reference to a moved-private document, a machine-local path or an agent first name in file content or file names
         run: tools/check-private-references.sh --tree
 
   # N12: tools/cipher-probe-release-pipeline.sh used to be run only by hand. That is the
@@ -152,8 +152,10 @@ jobs:
       # to the pinned Maven wrapper.
       - name: Run the security review probe suite
         run: CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh
+      - name: Install the pinned actionlint
+        run: tools/install-scanner.sh actionlint "${RUNNER_TEMP}/bin"
       - name: Run the Dependabot auto-merge probe suite
-        run: tools/cipher-probe-dependabot.sh
+        run: PATH="${RUNNER_TEMP}/bin:${PATH}" tools/cipher-probe-dependabot.sh
 
   # Keyless CVE gate, pull-request half. OSV-Scanner reads the real, transitively resolved
   # dependency graph of every pom in the tree (deps.dev's resolver, not a text match on the

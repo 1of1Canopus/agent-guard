@@ -104,7 +104,9 @@ jobs:
           fi
       - name: OWASP Dependency-Check (fails on CVSS >= 7)
         if: steps.key.outputs.available == 'true'
-        run: ./mvnw -B -Psecurity-scan -DskipTests -Dnvd.api.key=${{ secrets.NVD_API_KEY }} verify
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: ./mvnw -B -Psecurity-scan -DskipTests verify
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && steps.key.outputs.available == 'true'
         with:

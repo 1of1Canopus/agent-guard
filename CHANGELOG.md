@@ -8,6 +8,44 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - The reference guard now refuses the moved-private document names in any letter case (for
   example a lower-case copy of a private document), in content and in file names. The bare
   review and release words stay upper case only, because in lower case they are plain English.
+- The reference guard (`tools/check-private-references.sh`) now reads file names as well as file content, with the
+  same pattern: every tracked path in the tree, every member name and the file name of each built jar. One shape
+  is admitted by name only, a security review document at the root of `docs/`; its text is still scanned. The
+  tree listing is read NUL-separated, and a control byte in a path, a symlink and a submodule entry are refused.
+  In a jar, a member name holding a control byte, a `..` segment or a leading `/`, two members with one name
+  (also after case folding), an empty jar and a listing that does not match the jar's entry count are refused
+  before extraction. The guard runs in the C locale, so a byte that is not valid UTF-8 no longer hides a name, and
+  a refused name is printed with every non-printable byte escaped.
+- The jar side of the reference guard checks that extraction was one to one: no symlink in the extracted folder,
+  and the number of regular files and their total bytes equal what the jar's central directory lists. Before, a
+  member at `./a.txt` next to `a.txt`, the data of a directory entry, or a symlink member's stored target could
+  carry text the content scan never read. Member names with an empty or `.` segment are refused by name. Content
+  hits are printed with control bytes escaped, so a carriage return in a hit cannot start a workflow command.
+
+### Fixed
+- Dependabot auto-merge workflow rejected by GitHub (B-DM3-1, unreleased tooling, not in any published artifact):
+  a shell line held the literal two-character expression opener, which GitHub scans for in run scripts and
+  comments. Every push recorded a failed run with no jobs and the workflow never ran on a pull request. The
+  marker is now built at run time.
+- The security probe job now installs a pinned, checksum-verified actionlint (`tools/install-scanner.sh actionlint`)
+  and fails when any workflow file (`*.yml` or `*.yaml`) is invalid, or when a line holds an expression opener with
+  no closer on the same line. The required checks did not cover workflow validity before. The structural check does
+  not judge the grammar between the braces; actionlint does.
+- The probe suite now fails if the Dependabot auto-merge probe step or the actionlint install step is deleted,
+  commented out, made conditional or made soft in `ci.yml` (B-DM3-F1). The workflow probe also refuses an actionlint
+  that is not the pinned version.
+- Probes now prove that the installer refuses a tampered actionlint or grype download (B-DM3-F2), and that the
+  condition 7 refusal of an expression job name is in place (B-DM3-F4).
+- The weekly OWASP Dependency-Check step now passes the NVD key through an `env:` value and the plugin's
+  `nvdApiKeyEnvironmentVariable`, not on the Maven command line (B-DM3-F5). A probe refuses any `secrets.` reference
+  inside a `run` script, in any spelling of the secrets context: `secrets.X`, `SECRETS.X`, `secrets['X']`,
+  `toJSON(secrets)` (B-DM3-F7). The release scan probe uses the same match.
+- The probe-suite wiring check now also refuses a `shell:`, `env:` or `defaults:` key on the probes job or its
+  steps, a workflow-level `env:` or `defaults:`, and any mention of `AM_PROBE_NESTED` under `.github/`. A custom
+  shell such as `true {0}`, or a `BASH_ENV` file, could make every probe step pass without running (B-DM3-F6).
+- The same check refuses any step of the probes job that mentions `GITHUB_ENV` or `GITHUB_PATH`, and a `needs:` on
+  that job. A step that writes `BASH_ENV` or `PATH` there changes what every later step runs (B-DM3-F9).
+- The licence-file probe no longer fails at random under `pipefail` (B-DM3-F8).
 
 ## [0.1.3] - 2026-10-16
 

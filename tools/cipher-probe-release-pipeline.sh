@@ -672,7 +672,9 @@ probe_suite_probe_accepts_a_trailing_comment_disable() {
 #       `shell: true {0}` (GitHub runs `true <script>`, exit 0), `defaults: run: shell` on the
 #       job or the workflow, `env: BASH_ENV` (bash sources it first) on the job or the
 #       workflow, and `env: AM_PROBE_NESTED` (the auto-merge suite then skips its meta
-#       probes), also set from an extra step through GITHUB_ENV. Applies nine mutations to a scratch copy of ci.yml and asserts
+#       probes), also set from an extra step through GITHUB_ENV. B-DM3-F9: a step that writes
+#       BASH_ENV or PATH through GITHUB_ENV or GITHUB_PATH (plain, braced, tee), and a `needs:`
+#       on the probes job (the check cannot see the job it needs). Applies fourteen mutations to a scratch copy of ci.yml and asserts
 #       probe_probe_suite_is_not_run_by_ci reports WEAK (returns 0) for each. WEAK before the
 #       fix, FIXED after.
 # ---------------------------------------------------------------------------
@@ -680,7 +682,9 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
   local base d m ci overall=0
   base="$(mktemp -d)"
   for m in step-shell-release step-shell-install step-shell-dependabot job-defaults wf-defaults \
-           step-env-nested job-env-bashenv wf-env-bashenv step-github-env; do
+           step-env-nested job-env-bashenv wf-env-bashenv step-github-env \
+           step-bashenv-via-github-env step-path-via-github-path step-path-via-github-env \
+           step-github-env-braced step-github-env-tee job-needs; do
     d="$base/$m"; mkdir -p "$d/.github/workflows"; ci="$d/.github/workflows/ci.yml"
     cp .github/workflows/ci.yml "$ci"
     case "$m" in
@@ -693,6 +697,12 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
       job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
       wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
       step-github-env)       perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-bashenv-via-github-env) perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-path-via-github-path)   perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "\/tmp\/evil" >> "\$GITHUB_PATH"\n$1/' "$ci" ;;
+      step-path-via-github-env)    perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "PATH=\/tmp\/evil:\$PATH" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      step-github-env-braced)      perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$\{GITHUB_ENV\}"\n$1/' "$ci" ;;
+      step-github-env-tee)         perl -0pi -e 's/(      - name: Set up JDK 21\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" | tee -a "\$GITHUB_ENV"\n$1/' "$ci" ;;
+      job-needs)                   perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    needs: dco\n/' "$ci" ;;
     esac
     # a mutation that did not apply proves nothing: count it as a miss
     if cmp -s "$ci" .github/workflows/ci.yml; then echo "  mutation $m did not apply" >&2; overall=1; continue; fi

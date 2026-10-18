@@ -25,7 +25,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Cipher probes against the real PostgreSQL adapters: what the application's own database
+ * Security probes against the real PostgreSQL adapters: what the application's own database
  * credentials (the ones that ran the schema) can do to the "append-only" trail, and what the
  * verifier then reports.
  */

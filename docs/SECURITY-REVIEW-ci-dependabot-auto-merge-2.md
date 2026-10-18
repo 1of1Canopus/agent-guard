@@ -20,7 +20,7 @@ had: run provenance and the live head (DM2-01), fail-closed disarm (DM2-02), the
 
 | What | Result |
 |---|---|
-| CI on head `014cc54` (Build & test, DCO, Reference guard, Vulnerability scan, Cipher probes) | all 5 pass |
+| CI on head `014cc54` (Build & test, DCO, Reference guard, Vulnerability scan, Security probes) | all 5 pass |
 | Build & test, core module | 98 run, 0 failures, 0 errors, 1 skipped (`CipherProbeFinalSpringAiTest`, one method; not touched by this branch) |
 | Release-pipeline probe suite (CI) | 74 fixed, 0 weak |
 | Shipped Dependabot probe suite, re-run here unchanged | 20 fixed, 0 weak |

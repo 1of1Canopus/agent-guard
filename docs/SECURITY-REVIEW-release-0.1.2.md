@@ -132,7 +132,7 @@ The register row asks this pass whether the 0.1.2 tag may go out without it. Rul
 
 1. What the preflight would assert holds today, checked live on 2026-10-11 through the API: the
    `release` environment has a required reviewer (the maintainer) and a branch policy; the `main`
-   ruleset requires Build & test, DCO sign-off, Cipher probes, Vulnerability scan and Reference
+   ruleset requires Build & test, DCO sign-off, Security probes, Vulnerability scan and Reference
    guard. The missing control is the automation of that check, not the property.
 2. Replay refusal protects a version that already exists. `0.1.2` has no tag and no deployment yet,
    and Central refuses a second upload of a released version.

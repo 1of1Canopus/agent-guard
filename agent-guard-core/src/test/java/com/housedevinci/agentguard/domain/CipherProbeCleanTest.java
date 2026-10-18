@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 /**
- * Cipher probes for the clean-verdict pass on {@code 50ed8d3}: the surfaces the L5/I1 fixes
+ * Security probes for the clean-verdict pass on {@code 50ed8d3}: the surfaces the L5/I1 fixes
  * introduced (the hand-written JSON parser, the canonical arguments hash, the JSON-walking
  * redactor). Each probe asserts the behaviour as it is today; the fix flips it (rename without the
  * {@code probe_} prefix and invert the assertion), as with the earlier rounds.

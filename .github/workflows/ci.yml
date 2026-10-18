@@ -136,7 +136,7 @@ jobs:
   # unconditionally: no `continue-on-error`, no `if:` that can skip it. The script already
   # exits 1 when any probe is weak.
   cipher-probes:
-    name: Cipher probes
+    name: Security probes
     runs-on: ubuntu-latest
     permissions:
       contents: read

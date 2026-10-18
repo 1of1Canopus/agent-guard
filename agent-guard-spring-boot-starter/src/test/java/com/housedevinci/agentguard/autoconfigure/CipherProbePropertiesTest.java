@@ -14,7 +14,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 
-/** Cipher probes for property validation, flipped (L7). */
+/** Security probes for property validation, flipped (L7). */
 @ExtendWith(OutputCaptureExtension.class)
 class CipherProbePropertiesTest {
 

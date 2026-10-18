@@ -29,7 +29,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import reactor.core.publisher.Mono;
 
-/** Cipher probes for the MCP integration seam, flipped: H2, M3 and M6 are fixed. */
+/** Security probes for the MCP integration seam, flipped: H2, M3 and M6 are fixed. */
 class CipherProbeMcpTest {
 
   static final AtomicInteger DIRECT = new AtomicInteger();

@@ -18,8 +18,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 /**
- * Security probes for the clean-verdict pass on {@code 50ed8d3}, application layer: the ordering the
- * canonical-hash fix introduced, the four-eyes comparison, and the keyed audit chain on a trail
+ * Security probes for the clean-verdict pass on {@code 50ed8d3}, application layer: the ordering
+ * the canonical-hash fix introduced, the four-eyes comparison, and the keyed audit chain on a trail
  * that predates the key. Each probe asserts today's behaviour; the fix flips it.
  */
 class CipherProbeCleanGuardTest {

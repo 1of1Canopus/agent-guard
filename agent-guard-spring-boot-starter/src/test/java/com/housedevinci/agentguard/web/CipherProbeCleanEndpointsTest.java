@@ -24,8 +24,8 @@ import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
 
 /**
- * Security probes for the clean-verdict pass on {@code 50ed8d3}: what tenant scoping (I4) does at its
- * edges. Each probe asserts today's behaviour; the fix flips it.
+ * Security probes for the clean-verdict pass on {@code 50ed8d3}: what tenant scoping (I4) does at
+ * its edges. Each probe asserts today's behaviour; the fix flips it.
  */
 @SpringBootTest(
     properties = {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Cipher probes for the Dependabot auto-merge mechanism (branch ci/dependabot-auto-merge-2).
+# Security probes for the Dependabot auto-merge mechanism (branch ci/dependabot-auto-merge-2).
 # The seven conditions of the maintainer-approved Dependabot auto-merge rule, one probe each.
 #
 # Every probe below asserts a WEAKNESS. Each one PASSES (prints WEAK) while its condition is

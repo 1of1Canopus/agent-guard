@@ -15,9 +15,9 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.UnifiedJedis;
 
 /**
- * Cipher probes for the clean-verdict pass on {@code 50ed8d3}: the bounded platform-thread executor
- * the R6 fix introduced. No Redis is contacted — the pool thread is held by a foreign task, so the
- * store's own task never runs. Each probe asserts today's behaviour; the fix flips it.
+ * Security probes for the clean-verdict pass on {@code 50ed8d3}: the bounded platform-thread
+ * executor the R6 fix introduced. No Redis is contacted — the pool thread is held by a foreign
+ * task, so the store's own task never runs. Each probe asserts today's behaviour; the fix flips it.
  */
 class CipherProbeCleanRedisTest {
 

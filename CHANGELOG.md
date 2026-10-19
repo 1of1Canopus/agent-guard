@@ -277,7 +277,7 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   and a `run: |` multi-line block hiding the command after another command; both WEAK before,
   FIXED after. Suite: `still weak: 0    fixed: 40`, exit 0 (2026-09-10).
 - **N13 (LOW)**: `probe_probe_suite_is_not_run_by_ci` reported FIXED for four ways of
-  disabling the `Cipher probes` job while nothing ran: a job-level `if: false`, a job-level
+  disabling the `Security probes` job while nothing ran: a job-level `if: false`, a job-level
   `continue-on-error: true`, a step-level `if: false`, and the `run:` line commented out. The
   probe now strips full-line comments first (same standard as `release.yml`'s own static
   check, `grep -vE '^\s*#'`), splits `ci.yml` into per-job blocks instead of per-step, and
@@ -288,11 +288,11 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - **N12 (LOW)**: `tools/cipher-probe-release-pipeline.sh` was only ever invoked by hand -
   `grep -rl 'cipher-probe' .github/` returned zero files - which is the mechanical reason
   N6 reached a tagged release: the suite that would have caught it was never executed by CI
-  on the branch that broke it. `.github/workflows/ci.yml` gained a `Cipher probes` job
+  on the branch that broke it. `.github/workflows/ci.yml` gained a `Security probes` job
   (`cipher-probes`) that runs `CIPHER_PROBE_MAVEN=1 tools/cipher-probe-release-pipeline.sh`
   on every push and pull request, with no `continue-on-error` and no skippable `if:`,
   `permissions: contents: read`, actions pinned by SHA like the rest of the workflow. The
-  new job name (`Cipher probes`) was added to the required status checks of the `main`
+  new job name (`Security probes`) was added to the required status checks of the `main`
   branch protection ruleset. The script gained
   `probe_probe_suite_is_not_run_by_ci`, which greps every workflow under
   `.github/workflows/` for a step whose `run:` line names the script without

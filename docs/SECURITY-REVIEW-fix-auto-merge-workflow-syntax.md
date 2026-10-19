@@ -40,7 +40,7 @@ check, and the probe step itself is in the not-disabled check.
 | actionlint 1.7.12 (local), branch, `-shellcheck=` | exit 0 on all 4 workflow files |
 | actionlint 1.7.12, main's `dependabot-auto-merge.yml` | exit 1, the expression lexing error above |
 | GitHub run list, auto-merge workflow | PR 48: two `pull_request` runs, `skipped` (actor is not Dependabot). Main and earlier branches: `push`, `failure` |
-| PR 48 required checks | Build & test, Cipher probes, DCO sign-off, Reference guard, Vulnerability scan: all pass |
+| PR 48 required checks | Build & test, Security probes, DCO sign-off, Reference guard, Vulnerability scan: all pass |
 | Dependabot probe suite, branch | 45 FIXED, 0 WEAK |
 | Same suite, branch probes on main's workflow files | 2 WEAK (both new B-DM3-1 probes), 43 FIXED |
 | Release-pipeline suite, local, no Maven | 74 FIXED, 9 WEAK: all 9 are the Maven-dependent probes, which skip as WEAK by design without `CIPHER_PROBE_MAVEN=1`. Not run with Maven: two other builds were running on this machine. CI ran the full suite with Maven on `ef2a161`: green |
@@ -225,7 +225,7 @@ Maven probes on this head.
 | Pass-1 review probes (`cipher-probe-auto-merge-workflow-syntax-pr48.sh`, internal) | 7 FIXED, 0 WEAK (7 WEAK on `ef2a161`) |
 | Auto-merge suite, local | 50 FIXED, 0 WEAK |
 | Release suite, local, no Maven | 75 FIXED, 8 WEAK. All 8 return early on the Maven switch (3 on `CIPHER_PROBE_MAVEN`, 5 on `_needs_maven`). Read in the source, not assumed |
-| CI on `42851bb`, Cipher probes job | release suite with Maven 83 FIXED, 0 WEAK; actionlint 1.7.12 "verified and installed"; auto-merge suite 50 FIXED, 0 WEAK. All five required checks pass |
+| CI on `42851bb`, Security probes job | release suite with Maven 83 FIXED, 0 WEAK; actionlint 1.7.12 "verified and installed"; auto-merge suite 50 FIXED, 0 WEAK. All five required checks pass |
 | Mutations of the fix pass, repeated here | 11 of 11 turn the named probe WEAK (table below) |
 | New probes on main's tree (`b1a090b`) | secret-in-run probe WEAK. Expression-job-name probe FIXED, which is correct (see F4 below) |
 | Re-verification probes (`cipher-probe-auto-merge-workflow-syntax-pr48-pass2.sh`, internal) | 3 WEAK on `42851bb` |
@@ -372,7 +372,7 @@ pipeline fail, and `!` turns that into WEAK.
 
 Example. Run the function 300 times on this tree, which has LICENSE and NOTICE. It reported
 WEAK 16 to 18 times (7 in 200 in a first count). This happened twice during this pass, in
-two of the mutation runs. The required Cipher probes check can go red with no cause. It
+two of the mutation runs. The required Security probes check can go red with no cause. It
 fails closed, so it is INFO. It existed before this PR, but it can redden this PR's required
 check, and the fix pass already edits this file.
 

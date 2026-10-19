@@ -37,7 +37,7 @@ import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 
-/** Cipher probes for the Spring AI integration seam, flipped: H1, H2 and M6 are fixed. */
+/** Security probes for the Spring AI integration seam, flipped: H1, H2 and M6 are fixed. */
 class CipherProbeSpringAiTest {
 
   static final AtomicInteger REFUNDS = new AtomicInteger();

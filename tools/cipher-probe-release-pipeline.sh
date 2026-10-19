@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Cipher probes for the Maven Central release pipeline (branch feat/release-pipeline).
+# Security probes for the Maven Central release pipeline (branch feat/release-pipeline).
 #
 # Every probe below asserts a WEAKNESS. Each one PASSES while its finding is open and must
 # FLIP TO FAILING once the matching finding from the security review is fixed. A probe
@@ -697,10 +697,10 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
       step-shell-release)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
       step-shell-install)    perl -0pi -e 's/(      - name: Install the pinned actionlint\n)/$1        shell: true {0}\n/' "$ci" ;;
       step-shell-dependabot) perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        shell: true {0}\n/' "$ci" ;;
-      job-defaults)          perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    defaults:\n      run:\n        shell: true {0}\n/' "$ci" ;;
+      job-defaults)          perl -0pi -e 's/(  cipher-probes:\n    name: Security probes\n)/$1    defaults:\n      run:\n        shell: true {0}\n/' "$ci" ;;
       wf-defaults)           perl -0pi -e 's/^(jobs:\n)/defaults:\n  run:\n    shell: true {0}\n$1/m' "$ci" ;;
       step-env-nested)       perl -0pi -e 's/(      - name: Run the Dependabot auto-merge probe suite\n)/$1        env:\n          AM_PROBE_NESTED: "1"\n/' "$ci" ;;
-      job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
+      job-env-bashenv)       perl -0pi -e 's/(  cipher-probes:\n    name: Security probes\n)/$1    env:\n      BASH_ENV: tools\/skip.sh\n/' "$ci" ;;
       wf-env-bashenv)        perl -0pi -e 's/^(jobs:\n)/env:\n  BASH_ENV: tools\/skip.sh\n$1/m' "$ci" ;;
       step-github-env)       perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo AM_PROBE_NESTED=1 >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
       step-bashenv-via-github-env) perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
@@ -708,7 +708,7 @@ probe_a_custom_shell_or_env_switch_disables_a_suite_step() {
       step-path-via-github-env)    perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "PATH=\/tmp\/evil:\$PATH" >> "\$GITHUB_ENV"\n$1/' "$ci" ;;
       step-github-env-braced)      perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" >> "\$\{GITHUB_ENV\}"\n$1/' "$ci" ;;
       step-github-env-tee)         perl -0pi -e 's/(      - name: Run the security review probe suite\n)/      - name: Prepare\n        run: echo "BASH_ENV=\/tmp\/x" | tee -a "\$GITHUB_ENV"\n$1/' "$ci" ;;
-      job-needs)                   perl -0pi -e 's/(  cipher-probes:\n    name: Cipher probes\n)/$1    needs: dco\n/' "$ci" ;;
+      job-needs)                   perl -0pi -e 's/(  cipher-probes:\n    name: Security probes\n)/$1    needs: dco\n/' "$ci" ;;
     esac
     # a mutation that did not apply proves nothing: count it as a miss
     if cmp -s "$ci" .github/workflows/ci.yml; then echo "  mutation $m did not apply" >&2; overall=1; continue; fi
@@ -2007,9 +2007,11 @@ probe_reference_guard_misses_an_agent_first_name() {
            "Dol""lar" "Br""ain" "Br""ainus" "Lo""ki"; do
     printf 'reviewed by %s.\n' "$n" | grep -qE "$pat" || return 0
   done
-  for n in "a cipher suite" "Ci""pher probes" "javax.crypto.Ci""pher" "Maximum" "Th""orough"; do
+  for n in "a cipher suite" "javax.crypto.Ci""pher" "Maximum" "Th""orough"; do
     printf '%s\n' "$n" | grep -qE "$pat" && return 0
   done
+  # the former check name is a name like any other now: no carve-out is left
+  printf 'the %s probes job\n' "Ci""pher" | grep -qE "$pat" || return 0
   return 1
 }
 
@@ -2050,17 +2052,19 @@ probe_reference_guard_name_after_dot_or_slash_passes() {
   return 1
 }
 
-# B-NG-3: the check-name carve-out admitted anything that starts with "<name> probe".
+# B-NG-3: the check-name carve-out admitted anything that starts with "<name> probe". The
+# carve-out is gone (the check is "Security probes"): even " probes" must be refused now.
 probe_reference_guard_carve_out_admits_other_phrases() {
   [ -f "$RG" ] || return 0
   local c="Ci""pher"
   _ng_tree_red singular "the $c probe found it" && _ng_tree_red probed "$c probed the branch" \
     && _ng_tree_red verified "$c probe-verified, no findings" || return 0
-  _ng_tree_red check "the $c probes job is required" && return 0
+  _ng_tree_red check "the $c probes job is required" || return 0
   return 1
 }
 
-# B-NG-3: widening the carve-out to any " p..." left the self-test green (mutation survivor).
+# B-NG-3: putting the " probes" carve-out back must turn the self-test red (the case
+# `former-check-name` expects a refusal). Before the rename this widened the carve-out.
 probe_reference_guard_self_test_misses_a_widened_carve_out() {
   [ -f "$RG" ] || return 0
   local m rc
@@ -2068,8 +2072,10 @@ probe_reference_guard_self_test_misses_a_widened_carve_out() {
   python3 -I - "$m/tools/check-private-references.sh" <<'PYM'
 import re, sys
 p = sys.argv[1]; s = open(p).read()
-# the carve-out tail runs from "| p$| p[^r]" to the first ")" (it holds no parenthesis)
-s2 = re.sub(r"\| p\$\| p\[\^r\][^)]*\)", ")", s, count=1)
+# reinstate the old carve-out: the name may be followed by the exact words " probes"
+old = "[C]ipher($|[^[:alnum:]_])"
+new = "[C]ipher($|[^[:alnum:]_ ]| $| [^p]| p$| p[^r]| pr$| pr[^o]| pro$| pro[^b]| prob$| prob[^e]| probe$| probe[^s]| probes[[:alnum:]_])"
+s2 = s.replace(old, new, 1)
 open(p, "w").write(s2); sys.exit(0 if s2 != s else 3)
 PYM
   rc=$?

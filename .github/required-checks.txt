@@ -5,6 +5,6 @@
 # Add a CI job: add it here AND to the main ruleset in the same change.
 Build & test
 DCO sign-off
-Cipher probes
+Security probes
 Vulnerability scan
 Reference guard

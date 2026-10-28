@@ -1,0 +1,30 @@
+# Profile "stdio": the same MCP server, spoken over stdin/stdout instead of HTTP, with no
+# database. It exists for the container image at the repository root, which directories
+# such as Glama start with `docker run -i` to list the tools. Activate it with
+# SPRING_PROFILES_ACTIVE=stdio (the image does).
+#
+# What changes, and why it stays fail-closed:
+# - No HTTP server, so no HTTP Basic login and no approval endpoints. A stdio caller has no
+#   authenticated principal, so every tool call is refused by @ToolPolicy(roles = "AGENT").
+#   tools/list still answers: listing a tool does not run it.
+# - Decisions, audit and budgets live in memory (agentguard.store=MEMORY), which warns at
+#   every start. Nothing survives a restart. Use the default profile and PostgreSQL for the
+#   approval round trip.
+# - stdout carries JSON-RPC only: no banner, and every log line goes to stderr
+#   (logback-spring.xml).
+spring:
+  main:
+    web-application-type: none
+    banner-mode: off
+  ai:
+    mcp:
+      server:
+        stdio: true
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+
+agentguard:
+  store: MEMORY
+  endpoints:
+    enabled: false

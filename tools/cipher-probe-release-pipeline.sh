@@ -2508,6 +2508,61 @@ probe probe_reference_guard_upper_case_not_in_self_test "B-NG-26 the self-test p
 probe probe_reference_guard_lower_case_private_name     "B-NG-27 a lower-case private file name passes"        probe_lower_case_private_file_name_passes
 probe probe_reference_guard_slug_rescan_unkilled        "B-NG-27 the slug re-scan has no killing self-test case"  probe_slug_rescan_has_no_killing_case
 
+
+# ---------------------------------------------------------------------------
+# B-PR56-1: the "Sample container" job (build the root Dockerfile, run it with no network,
+# check initialize, tools/list and refused tool calls over stdio) could be switched off - a
+# job-level `if: false`, a decorated `run:` line, `|| true`, `continue-on-error:` - with every
+# probe of both suites unchanged. Same standard as the reference guard (B-NG-4): applies each
+# edit to a scratch copy of ci.yml and asserts the wiring probe goes WEAK on every one.
+# ---------------------------------------------------------------------------
+SC_BUILD='docker build --progress=plain -t agent-guard-sample:ci .'
+SC_CHECK='CHECK_DEADLINE_SECONDS=30 tools/check-sample-container.sh agent-guard-sample:ci'
+
+probe_sample_container_wiring_accepts_a_disabled_job() {
+  local base d rc overall=0 i
+  base="$(mktemp -d)"
+  local -a muts=(
+    's/^  sample-container:$/  sample-container:\n    if: false/'
+    's/^  sample-container:$/  sample-container:\n    continue-on-error: true/'
+    's/^        run: CHECK_DEADLINE_SECONDS=30 \(.*\)$/        run: true # CHECK_DEADLINE_SECONDS=30 \1/'
+    's/^        run: CHECK_DEADLINE_SECONDS=30 \(.*\)$/        run: CHECK_DEADLINE_SECONDS=30 \1 || true/'
+    's/^        run: CHECK_DEADLINE_SECONDS=30 \(.*\)$/        continue-on-error: true\n&/'
+    's/^        run: docker build --progress=plain -t agent-guard-sample:ci \.$/        if: false\n&/'
+    's/^    name: Sample container$/    name: Sample container (off)/'
+  )
+  for i in "${!muts[@]}"; do
+    d="$base/$i"; mkdir -p "$d"
+    sed "${muts[$i]}" "$CI" > "$d/ci.yml"
+    if cmp -s "$CI" "$d/ci.yml"; then overall=1; continue; fi
+    ( CI="$d/ci.yml"; probe_sample_container_is_not_wired_unconditionally ) >/dev/null 2>&1
+    rc=$?
+    # rc 0 = the wiring probe says WEAK on the disabled job, as it must. Anything else
+    # (FIXED, or no wiring probe at all) means a disabled job goes unseen.
+    [ "$rc" -eq 0 ] || overall=1
+  done
+  rm -r "$base"
+  [ "$overall" -ne 0 ]
+}
+
+# B-PR56-1 fix: the job exists under its required-check name, carries no job-level guard, and
+# both steps run string-equal commands with no step guard; the check script starts the
+# container with no network, in an uncommented line.
+probe_sample_container_is_not_wired_unconditionally() {
+  local job
+  grep -q '^  sample-container:$' "$CI" || return 0
+  job="$(awk 'f && /^  [a-z][a-z-]*:$/ {exit} /^  sample-container:$/ {f=1} f' "$CI")"
+  grep -qx '    name: Sample container' <<<"$job" || return 0
+  _guard_step_wired_unconditionally "$CI" sample-container "$SC_BUILD" || return 0
+  _guard_step_wired_unconditionally "$CI" sample-container "$SC_CHECK" || return 0
+  grep -vE '^[[:space:]]*#' tools/check-sample-container.sh \
+    | grep -qF 'docker run -i --rm --name "$name" --network none "$image"' || return 0
+  return 1
+}
+
+probe probe_sample_container_not_wired_unconditionally   "B-PR56-1 the Sample container job is missing or guarded"  probe_sample_container_is_not_wired_unconditionally
+probe probe_sample_container_can_be_switched_off         "B-PR56-1 the Sample container job can be switched off"  probe_sample_container_wiring_accepts_a_disabled_job
+
 echo
 echo "still weak: $pass    fixed: $flipped"
 [ "$pass" -eq 0 ]

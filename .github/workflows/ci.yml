@@ -113,6 +113,27 @@ jobs:
           name: third-party-notices
           path: "**/target/THIRD-PARTY-NOTICES.txt"
 
+  # The sample MCP server as a container, checked the way an MCP directory (Glama) checks it
+  # before listing and scoring it: build the root Dockerfile from this checkout, start the
+  # image with `docker run -i` and no network, and expect initialize, tools/list with both
+  # sample tools, and a refused tools/call of each tool, all over stdio within 30 seconds.
+  # The script is the check, so it runs the same on a laptop:
+  # tools/check-sample-container.sh <image>.
+  sample-container:
+    name: Sample container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the sample image from the root Dockerfile
+        run: docker build --progress=plain -t agent-guard-sample:ci .
+      - name: Start the container and introspect it over stdio
+        run: CHECK_DEADLINE_SECONDS=30 tools/check-sample-container.sh agent-guard-sample:ci
+
   # The reference guard is its own job, not a step inside "Build & test", because the release
   # hygiene checklist requires it as a required status check in its own right. The pattern
   # lives in exactly one place, tools/check-private-references.sh; this job runs its tree half

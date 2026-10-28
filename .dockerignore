@@ -1,0 +1,14 @@
+# Allowlist: the image is built from exactly the files the sample build needs.
+# Everything else (git history, CI, docs, local build output, IDE files) stays out.
+*
+!pom.xml
+!mvnw
+!.mvn/
+!LICENSE
+!NOTICE
+!agent-guard-core/
+!agent-guard-spring-boot-starter/
+!agent-guard-sample/
+**/target/
+**/.DS_Store
+**/*.iml

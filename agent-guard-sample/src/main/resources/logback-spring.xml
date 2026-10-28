@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Default profile: Spring Boot's usual console logging.
+  Profile "stdio": stdout is the MCP transport, so a single log line there would corrupt the
+  JSON-RPC stream. Every log line goes to stderr instead; nothing is dropped, the startup
+  warnings included.
+-->
+<configuration>
+  <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+  <springProfile name="stdio">
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+      <target>System.err</target>
+      <encoder>
+        <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="STDERR"/>
+    </root>
+  </springProfile>
+  <springProfile name="!stdio">
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+    <root level="INFO">
+      <appender-ref ref="CONSOLE"/>
+    </root>
+  </springProfile>
+</configuration>

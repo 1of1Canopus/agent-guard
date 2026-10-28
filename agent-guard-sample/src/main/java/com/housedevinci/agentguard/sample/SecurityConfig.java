@@ -1,6 +1,7 @@
 package com.housedevinci.agentguard.sample;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -30,8 +31,12 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
  * pattern only onto an endpoint that requires an equivalent unguessable, unreadable-cross-origin
  * parameter on every state-changing call - without one, exempting CSRF here would be a real hole,
  * not a narrowed one.
+ *
+ * <p>Servlet only: under the {@code stdio} profile there is no HTTP server, hence no login to
+ * configure, and a stdio caller has no principal, so every guarded tool call is refused.
  */
 @Configuration
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 class SecurityConfig {
 
   private static final RequestMatcher AGENTGUARD =

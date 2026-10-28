@@ -108,7 +108,7 @@ jobs:
       - name: Refuse a moved-private document reference, a machine-local path or an agent first name in the content or file names of a built jar
         run: tools/check-private-references.sh --jars agent-guard-core agent-guard-spring-boot-starter
       - name: Upload third-party notices
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: third-party-notices
           path: "**/target/THIRD-PARTY-NOTICES.txt"
@@ -241,7 +241,7 @@ jobs:
             --format osv --report "${RUNNER_TEMP}/osv.json" --fail-on high
       - name: Upload the vulnerability report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: osv-report
           path: ${{ runner.temp }}/osv.json

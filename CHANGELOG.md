@@ -5,6 +5,16 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 ## [Unreleased]
 
 ### Build
+- A `Dockerfile` at the repository root builds the sample MCP server from source and runs it over
+  stdio, so MCP directories can start it and list its tools. Two stages (JDK build, JRE runtime),
+  both base images pinned by digest, a non-root user, no port, no secret. The sample gains a
+  `stdio` profile: no HTTP server, no database, logs on stderr, and every tool call refused
+  because a stdio caller has no identity. A new CI job, "Sample container", builds the image and
+  checks `initialize`, `tools/list` and a refused `tools/call` over stdio within 30 seconds
+  (`tools/check-sample-container.sh`).
+- The sample's `get_order` tool now advertises itself as read only and not destructive in its
+  MCP tool hints; before, it carried the defaults, which tell a client every tool may destroy
+  data. Both sample tools gained a title and a longer description.
 - The reference guard now refuses the moved-private document names in any letter case (for
   example a lower-case copy of a private document), in content and in file names. The bare
   review and release words stay upper case only, because in lower case they are plain English.

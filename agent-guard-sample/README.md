@@ -34,3 +34,29 @@ token, and a missing or invalid one now returns a 403 naming the reason instead 
 
 `SampleEndToEndTest` drives all of that through a real MCP streamable-HTTP client and MockMvc
 against a Testcontainers PostgreSQL.
+
+## Run it as a container (stdio)
+
+The `Dockerfile` at the repository root builds this sample from source and starts it as an MCP
+server over stdio. MCP directories start it this way to list its tools. It needs no database,
+no network and no secret.
+
+```bash
+docker build -t agent-guard-sample .      # from the repository root
+docker run -i --rm agent-guard-sample     # MCP over stdin/stdout
+../tools/check-sample-container.sh agent-guard-sample   # the CI check: initialize, tools/list, a refused call
+```
+
+The image runs the `stdio` profile (`src/main/resources/application-stdio.yml`):
+
+| | Default profile | `stdio` profile (container) |
+|---|---|---|
+| Transport | streamable HTTP on `:8080/mcp` | stdin/stdout, JSON-RPC only; logs go to stderr |
+| Caller identity | HTTP Basic (`agent`, `alice`) | none |
+| `tools/list` | both tools | both tools |
+| `tools/call` | runs, parks or denies by policy | always `DENIED` (`AG-POLICY-001`): no caller has the `AGENT` role |
+| Store | PostgreSQL (`agentguard.store=JDBC`) | memory, lost on exit; warns at every start |
+
+So the container shows what the server offers but never runs a tool. For the approval round trip,
+use the default profile with PostgreSQL, as above. The image runs as a non-root user, has no
+port and so no `HEALTHCHECK`, and its two base images are pinned by digest.

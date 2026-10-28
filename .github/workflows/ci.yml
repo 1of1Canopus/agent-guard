@@ -116,8 +116,9 @@ jobs:
   # The sample MCP server as a container, checked the way an MCP directory (Glama) checks it
   # before listing and scoring it: build the root Dockerfile from this checkout, start the
   # image with `docker run -i` and no network, and expect initialize, tools/list with both
-  # sample tools, and a refused tools/call, all over stdio within 30 seconds. The script is
-  # the check, so it runs the same on a laptop: tools/check-sample-container.sh <image>.
+  # sample tools, and a refused tools/call of each tool, all over stdio within 30 seconds.
+  # The script is the check, so it runs the same on a laptop:
+  # tools/check-sample-container.sh <image>.
   sample-container:
     name: Sample container
     runs-on: ubuntu-latest

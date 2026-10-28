@@ -10,8 +10,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   both base images pinned by digest, a non-root user, no port, no secret. The sample gains a
   `stdio` profile: no HTTP server, no database, logs on stderr, and every tool call refused
   because a stdio caller has no identity. A new CI job, "Sample container", builds the image and
-  checks `initialize`, `tools/list` and a refused `tools/call` over stdio within 30 seconds
-  (`tools/check-sample-container.sh`).
+  checks `initialize`, `tools/list` and a refused `tools/call` of each tool over stdio within 30
+  seconds (`tools/check-sample-container.sh`).
 - The sample's `get_order` tool now advertises itself as read only and not destructive in its
   MCP tool hints; before, it carried the defaults, which tell a client every tool may destroy
   data. Both sample tools gained a title and a longer description.

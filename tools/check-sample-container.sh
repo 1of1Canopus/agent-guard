@@ -7,9 +7,10 @@
 #   tools/check-sample-container.sh <image>
 #
 # Exit 0: the container answered `initialize` with the sample's server name, `tools/list` with
-# both sample tools, and refused a `tools/call` of the write tool (no principal on stdio, so
-# the tool policy denies it), inside the deadline. Exit 1 otherwise: no answer, a wrong answer, a
-# non-JSON line on stdout (a log line there would corrupt the transport), or a missing argument.
+# both sample tools, and refused a `tools/call` of each tool, the read-only one included (no
+# principal on stdio, so the tool policy denies both), inside the deadline. Exit 1 otherwise:
+# no answer, a wrong answer, a non-JSON line on stdout (a log line there would corrupt the
+# transport), or a missing argument.
 # Fail closed: a check that could not run is not a check that passed.
 #
 # The deadline (CHECK_DEADLINE_SECONDS, default 30) covers the whole exchange, JVM start
@@ -81,13 +82,18 @@ await_id 2
 # Fail closed: a stdio caller has no principal, so a write tool must be refused, never run.
 printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"refund_order","arguments":{"orderId":"42"}}}' >&3
 await_id 3
+# The read-only tool too: a stdio caller has no principal, so reading is refused as well.
+printf '%s\n' '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_order","arguments":{"orderId":"42"}}}' >&3
+await_id 4
 
 initialize_answer="$(grep '"id":1[,}]' "$out" | head -1)"
 tools_answer="$(grep '"id":2[,}]' "$out" | head -1)"
 call_answer="$(grep '"id":3[,}]' "$out" | head -1)"
+read_answer="$(grep '"id":4[,}]' "$out" | head -1)"
 echo "initialize -> $initialize_answer"
 echo "tools/list -> $tools_answer"
 echo "tools/call refund_order -> $call_answer"
+echo "tools/call get_order -> $read_answer"
 
 failed=0
 # Every stdout line must be a JSON-RPC message: anything else breaks a real client.
@@ -113,7 +119,14 @@ case "$call_answer" in
     esac ;;
   *) echo "FAIL: tools/call refund_order was not refused over stdio" >&2; failed=1 ;;
 esac
+case "$read_answer" in
+  *'"isError":true'*) case "$read_answer" in
+      *AG-POLICY-001*) ;;
+      *) echo "FAIL: tools/call get_order was refused, but not by the tool policy (AG-POLICY-001)" >&2; failed=1 ;;
+    esac ;;
+  *) echo "FAIL: tools/call get_order (read only) was not refused over stdio" >&2; failed=1 ;;
+esac
 if [ "$failed" -ne 0 ]; then
   exit 1
 fi
-echo "OK: the sample container answered initialize and tools/list over stdio and refused the tool call"
+echo "OK: the sample container answered initialize and tools/list over stdio and refused both tool calls"

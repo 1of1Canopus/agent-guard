@@ -2544,6 +2544,23 @@ probe_sample_container_wiring_accepts_a_disabled_job() {
   rm -r "$base"
   [ "$overall" -ne 0 ]
 }
+
+# B-PR56-1 fix: the job exists under its required-check name, carries no job-level guard, and
+# both steps run string-equal commands with no step guard; the check script starts the
+# container with no network, in an uncommented line.
+probe_sample_container_is_not_wired_unconditionally() {
+  local job
+  grep -q '^  sample-container:$' "$CI" || return 0
+  job="$(awk 'f && /^  [a-z][a-z-]*:$/ {exit} /^  sample-container:$/ {f=1} f' "$CI")"
+  grep -qx '    name: Sample container' <<<"$job" || return 0
+  _guard_step_wired_unconditionally "$CI" sample-container "$SC_BUILD" || return 0
+  _guard_step_wired_unconditionally "$CI" sample-container "$SC_CHECK" || return 0
+  grep -vE '^[[:space:]]*#' tools/check-sample-container.sh \
+    | grep -qF 'docker run -i --rm --name "$name" --network none "$image"' || return 0
+  return 1
+}
+
+probe probe_sample_container_not_wired_unconditionally   "B-PR56-1 the Sample container job is missing or guarded"  probe_sample_container_is_not_wired_unconditionally
 probe probe_sample_container_can_be_switched_off         "B-PR56-1 the Sample container job can be switched off"  probe_sample_container_wiring_accepts_a_disabled_job
 
 echo

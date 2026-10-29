@@ -16,7 +16,7 @@
     "CONTRIBUTING.md"
   ],
   "rules": [
-    "Maven coordinate: com.housedevinci:agent-guard-spring-boot-starter, current version 0.1.2.",
+    "Maven coordinate: com.housedevinci:agent-guard-spring-boot-starter, current version 0.1.3.",
     "Upgrading from 0.1.x: follow docs/upgrading-0.1.2.md in order; step 3 re-applies the schema once as the table owner.",
     "The audit-trail trigger check runs at startup only; a trigger switched off later is not seen until the next start.",
     "Run the application as a separate database role from the table owner; the owner can still switch the triggers off."

@@ -63,7 +63,7 @@ Comparisons are as of the read date. If we got something wrong, please open an i
 <dependency>
   <groupId>com.housedevinci</groupId>
   <artifactId>agent-guard-spring-boot-starter</artifactId>
-  <version>0.1.2</version>
+  <version>0.1.3</version>
 </dependency>
 ```
 
@@ -137,7 +137,7 @@ approver's). A second approval returns the same stored result and runs nothing. 
 ## Requirements
 
 - Java 21
-- Spring Boot 4.0.x (Spring Framework 7)
+- Spring Boot 4.1.x (Spring Framework 7)
 - Spring AI 2.0.x, where Spring AI tool calling or MCP is used
 - PostgreSQL for the `JDBC` store, or `MEMORY` for trying it out (not for production — see `docs/index.md`)
 

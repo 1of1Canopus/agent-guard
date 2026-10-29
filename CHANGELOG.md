@@ -4,6 +4,10 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### Docs
+- README, `docs/index.md` and `context7.json` now show version 0.1.3; README and `docs/index.md` show the
+  Spring Boot 4.1.x line; `docs/index.md` lists `agentguard.endpoints.require-tenant` (B-DOC-1).
+
 ### Build
 - A `Dockerfile` at the repository root builds the sample MCP server from source and runs it over
   stdio, so MCP directories can start it and list its tools. Two stages (JDK build, JRE runtime),

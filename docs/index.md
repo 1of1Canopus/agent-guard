@@ -4,7 +4,7 @@ Your MCP server has authentication. It has no authorization, no "ask a human bef
 auditor can read, and no budget that stops an agent at 3 a.m. Agent Guard adds the four, as one Spring Boot starter,
 with the same policy engine for Spring AI tool calling (`@Tool` / `ToolCallback`) and MCP servers (`@McpTool`).
 
-Spring Boot 4.0.x, Spring Framework 7, Spring AI 2.0.x, Java 21. Core is fair source
+Spring Boot 4.1.x, Spring Framework 7, Spring AI 2.0.x, Java 21. Core is fair source
 (FSL-1.1-ALv2): free to use, not as a base for a competing product, becomes Apache-2.0 two years
 after each release. A paid edition, if released, would be under a separate commercial licence.
 
@@ -14,7 +14,7 @@ after each release. A paid edition, if released, would be under a separate comme
 <dependency>
   <groupId>com.housedevinci</groupId>
   <artifactId>agent-guard-spring-boot-starter</artifactId>
-  <version>0.1.2</version>
+  <version>0.1.3</version>
 </dependency>
 ```
 
@@ -104,6 +104,7 @@ tool call ──▶ principal (Spring Security) ──▶ policy rule (@ToolPoli
 | `agentguard.audit.unverified-sinks` | – (empty) | Bean names of audit sinks whose keyed mode the starter cannot read (your own sink class, or a scoped proxy). Such a sink is refused with `AG-AUDIT-003` unless listed here; a listed sink starts and WARNs at every startup. Listing a `JdbcAuditSink` or `InMemoryAuditSink` does not weaken its check. |
 | `agentguard.errors.include-tool-message` | `false` | Forward the tool's exception message to the model (default: class + correlation id). |
 | `agentguard.endpoints.tenant-scoped` | `true` | Approvers only see and decide their own tenant's decisions. |
+| `agentguard.endpoints.require-tenant` | `true` | With `tenant-scoped`, an approver whose tenant cannot be resolved (missing claim, service account, misconfigured resolver) is refused with 403 instead of seeing and deciding every tenant's work. Set `false` only for a deliberate cross-tenant approver role. |
 | `agentguard.redis.pool.platform-threads` | `true` | JDK 21-23: Redis calls on a bounded platform-thread pool. |
 | `agentguard.approval.notifier.log-enabled` | `true` | WARN log per parked call (logger `agentguard.approval`). |
 | `agentguard.approval.notifier.webhook-url` | – | POST a JSON payload per parked call; `webhook-secret` goes in `X-AgentGuard-Token`. |

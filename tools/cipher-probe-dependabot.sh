@@ -437,13 +437,18 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
   [ -n "$arts" ] && [ -n "$props" ] || { echo "  no release lists in the step" >&2; return 0; }
   poms="$(git ls-files '*pom.xml' 2>/dev/null)" || { echo "  cannot list the poms (not a git checkout)" >&2; return 0; }
   [ -n "$poms" ] || { echo "  no pom found" >&2; return 0; }
+  # The Spring Boot parent manages these three. With no pin of our own, a parent bump changes
+  # them with no listed name in the diff, so each needs a pin by a listed property in a tree pom.
+  local parent_managed="maven-source-plugin maven-javadoc-plugin maven-deploy-plugin" seen="" pinned=""
   while IFS= read -r f; do
     for a in $arts; do
       while IFS= read -r v; do
         [ -n "$v" ] || continue
+        seen+=" $a "
         case "$v" in
-          inline) ;;
-          '${'*'}') case " $props " in *" ${v:2:${#v}-3} "*) ;; *) echo "  $f: $a version $v is not a listed property" >&2; weak=0 ;; esac ;;
+          none) ;;   # inherits from a pluginManagement entry: a pinned entry is required below
+          inline) pinned+=" $a:inline " ;;
+          '${'*'}') case " $props " in *" ${v:2:${#v}-3} "*) pinned+=" $a " ;; *) echo "  $f: $a version $v is not a listed property" >&2; weak=0 ;; esac ;;
           *) echo "  $f: $a version is $v" >&2; weak=0 ;;
         esac
       done < <(awk -v a="<artifactId>$a</artifactId>" '
@@ -451,9 +456,17 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
         n && NR == n + 1 && /<version>/ { v = $0; sub(/.*<version>/, "", v); sub(/<\/version>.*/, "", v)
                                           print (v ~ /^\$\{/ ? v : "inline"); n = 0; next }
         n && /<version>/ { print "far"; n = 0; next }
-        n && /<\/plugin>|<\/dependency>/ { n = 0 }' "$f")
+        n && /<\/plugin>|<\/dependency>/ { print "none"; n = 0 }' "$f")
     done
   done <<<"$poms"
+  for a in $arts; do
+    case "$seen" in *" $a "*) ;; *) continue ;; esac
+    case "$pinned" in *" $a "*|*" $a:inline "*) ;; *) echo "  $a is declared but its version is never pinned in the tree" >&2; weak=0 ;; esac
+  done
+  for a in $parent_managed; do
+    case " $arts " in *" $a "*) ;; *) echo "  $a is not in the release list" >&2; weak=0; continue ;; esac
+    case "$pinned" in *" $a "*) ;; *) echo "  $a is not pinned by a listed property (the parent decides its version)" >&2; weak=0 ;; esac
+  done
   return "$weak"; }
 
 # Condition 7 on a private repository on the free plan: the rules API answers 403. That must

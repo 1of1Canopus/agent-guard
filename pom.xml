@@ -124,6 +124,7 @@
     <maven-source.version>3.4.0</maven-source.version>
     <maven-javadoc.version>3.12.0</maven-javadoc.version>
     <maven-deploy.version>3.1.4</maven-deploy.version>
+    <maven-jar.version>3.5.1</maven-jar.version>
     <jacoco.minimum.line>0.80</jacoco.minimum.line>
   </properties>
 
@@ -166,6 +167,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-deploy-plugin</artifactId>
           <version>${maven-deploy.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>${maven-jar.version}</version>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>

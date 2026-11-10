@@ -12,8 +12,8 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   publishing plugin bump could merge on its own, and the next release upload would have been its
   first test. New probes cover each refusal, a 403 from the branch rules API, the wrapper files,
   the commit-sha pin of the metadata action, and drift between the plugin list and the poms.
-- `maven-source-plugin`, `maven-javadoc-plugin` and `maven-deploy-plugin` are now pinned in the root pom
-  (3.4.0, 3.12.0, 3.1.4: the values the Spring Boot parent gave), so a bump of one of them shows by
+- `maven-source-plugin`, `maven-javadoc-plugin`, `maven-deploy-plugin` and `maven-jar-plugin` are now pinned in the root pom
+  (3.4.0, 3.12.0, 3.1.4, 3.5.1: the values the Spring Boot parent gave), so a bump of one of them shows by
   name and waits for a maintainer, instead of changing silently with a parent bump.
 
 ### Docs

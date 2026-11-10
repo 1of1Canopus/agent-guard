@@ -437,9 +437,9 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
   [ -n "$arts" ] && [ -n "$props" ] || { echo "  no release lists in the step" >&2; return 0; }
   poms="$(git ls-files '*pom.xml' 2>/dev/null)" || { echo "  cannot list the poms (not a git checkout)" >&2; return 0; }
   [ -n "$poms" ] || { echo "  no pom found" >&2; return 0; }
-  # The Spring Boot parent manages these three. With no pin of our own, a parent bump changes
+  # The Spring Boot parent manages these four. With no pin of our own, a parent bump changes
   # them with no listed name in the diff, so each needs a pin by a listed property in a tree pom.
-  local parent_managed="maven-source-plugin maven-javadoc-plugin maven-deploy-plugin" seen="" pinned=""
+  local parent_managed="maven-source-plugin maven-javadoc-plugin maven-deploy-plugin maven-jar-plugin" seen="" pinned=""
   while IFS= read -r f; do
     for a in $arts; do
       while IFS= read -r v; do
@@ -468,6 +468,34 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
     case "$pinned" in *" $a "*) ;; *) echo "  $a is not pinned by a listed property (the parent decides its version)" >&2; weak=0 ;; esac
   done
   return "$weak"; }
+
+
+# ---- Review probes, PR 59 (AG-AM-2, AG-AM-3, AG-AM-4) ---------------------------------------------
+ROOT="$(pwd)"
+list_of() { release_list "$1"; }
+# patch_of <pom> <line number> <new line> : the files-API patch (hunks only, -U3) of that edit
+patch_of() { local d; d="$(mktemp -d)"; cp "$ROOT/$1" "$d/a"
+  awk -v n="$2" -v s="$3" 'NR == n { print s; next } { print }' "$d/a" > "$d/b"
+  git diff --no-index -U3 "$d/a" "$d/b" | sed -n '/^@@/,$p'; rm -r "$d"; }
+# files_of <pom path> <patch> : one modified pom with that patch
+files_of() { jq -cn --arg f "$1" --arg p "$2" '[{filename: $f, status: "modified", patch: $p}]'; }
+
+# AG-AM-2 (LOW). maven-jar-plugin writes the main jar the bundle uploads. Its version came from
+# the Spring Boot parent, so a parent bump named neither the plugin nor any hunk line and armed.
+# Weak while the plugin is not in the step's lists, or no tree pom pins it by a listed property.
+probe_a_parent_bump_moves_the_main_jar_plugin_unseen() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local arts props n p f
+  arts=" $(list_of release_artifacts) "; props=" $(list_of release_properties) "
+  n="$(grep -n '<artifactId>spring-boot-starter-parent</artifactId>' "$ROOT/pom.xml" | head -1 | cut -d: -f1)"
+  p="$(patch_of pom.xml $((n + 1)) '    <version>4.9.9</version>')"
+  echo "  repro: a Boot parent bump through the real step gives: $(relpath "$(deps_json org.springframework.boot:spring-boot-starter-parent)" "$(files_of pom.xml "$p")")" >&2
+  case "$arts" in *" maven-jar-plugin "*) ;; *) return 0 ;; esac
+  case "$props" in *" maven-jar.version "*) ;; *) return 0 ;; esac
+  while IFS= read -r f; do
+    awk '/<artifactId>maven-jar-plugin<\/artifactId>/ { getline; if ($0 ~ /<version>\$\{maven-jar\.version\}<\/version>/) ok = 1 } END { exit !ok }' "$ROOT/$f" && return 1
+  done < <(git ls-files '*pom.xml')
+  return 0; }
 
 # Condition 7 on a private repository on the free plan: the rules API answers 403. That must
 # refuse, never pass, and the 403 must not be mistaken for "no rules".
@@ -715,6 +743,7 @@ probe probe_an_ordinary_plugin_bump_is_wrongly_refused        "R good case refus
 probe probe_an_ordinary_property_bump_is_wrongly_refused      "R good case refused (property version)"           probe_an_ordinary_property_bump_is_wrongly_refused
 probe probe_a_wrapper_file_passes_the_manifest_gate           "4 a wrapper file passes the manifest gate"        probe_a_wrapper_file_passes_the_manifest_gate
 probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugin version sits outside the lists" probe_a_release_plugin_version_escapes_the_hunk_scan
+probe probe_a_parent_bump_moves_the_main_jar_plugin_unseen    "AG-AM-2 a Boot parent bump moves maven-jar-plugin unseen" probe_a_parent_bump_moves_the_main_jar_plugin_unseen
 probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm
 probe probe_fetch_metadata_is_not_pinned_by_sha               "1 fetch-metadata is not pinned by a commit sha"   probe_fetch_metadata_is_not_pinned_by_sha
 probe probe_a_non_dependabot_actor_can_arm                "6 a run by another actor can arm"                 probe_a_non_dependabot_actor_can_arm

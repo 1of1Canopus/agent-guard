@@ -153,8 +153,8 @@ jobs:
         run: |
           set -uo pipefail
           refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
-          release_artifacts="apache-maven maven-wrapper maven-wrapper-plugin central-publishing-maven-plugin maven-gpg-plugin maven-deploy-plugin maven-source-plugin maven-javadoc-plugin"
-          release_properties="central-publishing.version maven-gpg.version maven-source.version maven-javadoc.version maven-deploy.version"
+          release_artifacts="apache-maven maven-wrapper maven-wrapper-plugin central-publishing-maven-plugin maven-gpg-plugin maven-deploy-plugin maven-source-plugin maven-javadoc-plugin maven-jar-plugin"
+          release_properties="central-publishing.version maven-gpg.version maven-source.version maven-javadoc.version maven-deploy.version maven-jar.version"
           names="$(jq -er 'if type == "array" and length > 0 then .[] | .dependencyName | if type == "string" and length > 0 then . else error("a dependency has no name") end else error("not a non-empty list") end' <<<"$UPDATED_DEPS")" || refuse "could not read the dependency list from the update metadata"
           while IFS= read -r dep; do
             for a in $release_artifacts; do

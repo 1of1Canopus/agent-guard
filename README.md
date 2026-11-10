@@ -183,7 +183,13 @@ full agreement and the commit convention.
 
 Dependency updates come from Dependabot, 7 days after the upstream release. A patch or minor
 bump that only changes `pom.xml` files merges itself once every required check is green.
-Major bumps and GitHub Actions bumps wait for a maintainer.
+Major bumps and GitHub Actions bumps wait for a maintainer. So does any bump on the release path:
+the Maven wrapper, and the plugins that sign, publish or build the uploaded bundle
+(`central-publishing-maven-plugin`, `maven-gpg-plugin`, `maven-deploy-plugin`, `maven-source-plugin`,
+`maven-javadoc-plugin`, `maven-wrapper-plugin`), because the release dry run cannot see what the
+publishing portal refuses on upload. Auto-merge also needs every CI job to be a required check on
+`main`, read live from the branch rules API; where that API is not available (a private repository
+on the free plan answers 403), nothing merges on its own.
 
 ## Security
 

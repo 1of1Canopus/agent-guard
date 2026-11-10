@@ -4,6 +4,15 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 
 ## [Unreleased]
 
+### CI
+- Dependabot auto-merge now refuses a bump on the release path: the Maven wrapper and the plugins
+  that sign, publish or build the uploaded bundle. The workflow reads both the dependency list in
+  the update metadata and every changed pom hunk, and refuses when either names a listed plugin or
+  version property; missing metadata, missing patch text or an API error also refuse. Before, a
+  publishing plugin bump could merge on its own, and the next release upload would have been its
+  first test. New probes cover each refusal, a 403 from the branch rules API, the wrapper files,
+  the commit-sha pin of the metadata action, and drift between the plugin list and the poms.
+
 ### Docs
 - README, `docs/index.md` and `context7.json` now show version 0.1.3; README and `docs/index.md` show the
   Spring Boot 4.1.x line; `docs/index.md` lists `agentguard.endpoints.require-tenant` (B-DOC-1).

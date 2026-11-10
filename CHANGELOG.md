@@ -15,6 +15,10 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
 - `maven-source-plugin`, `maven-javadoc-plugin`, `maven-deploy-plugin` and `maven-jar-plugin` are now pinned in the root pom
   (3.4.0, 3.12.0, 3.1.4, 3.5.1: the values the Spring Boot parent gave), so a bump of one of them shows by
   name and waits for a maintainer, instead of changing silently with a parent bump.
+- The release-path refusal now matches a version property only on the lines a bump changes, not on the
+  three context lines next to them, so a bump of `license-maven-plugin`, `exec-maven-plugin` or
+  `dependency-check-maven` merges on its own again. A probe now also requires the value of a listed
+  property to be a literal version, so a property set from another property cannot hide a bump.
 
 ### Docs
 - README, `docs/index.md` and `context7.json` now show version 0.1.3; README and `docs/index.md` show the

@@ -463,6 +463,15 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
     case "$seen" in *" $a "*) ;; *) continue ;; esac
     case "$pinned" in *" $a "*|*" $a:inline "*) ;; *) echo "  $a is declared but its version is never pinned in the tree" >&2; weak=0 ;; esac
   done
+  # The property match looks at changed lines only, so a listed property must hold a literal
+  # version: with <maven-gpg.version>${gpg.base}</maven-gpg.version> a bump lands on the
+  # <gpg.base> line, which names nothing listed.
+  local pr
+  while IFS= read -r f; do
+    for pr in $props; do
+      if grep -qE "<${pr//./\\.}>[^<]*\\$\\{" "$f"; then echo "  $f: $pr is not a literal version" >&2; weak=0; fi
+    done
+  done <<<"$poms"
   for a in $parent_managed; do
     case " $arts " in *" $a "*) ;; *) echo "  $a is not in the release list" >&2; weak=0; continue ;; esac
     case "$pinned" in *" $a "*) ;; *) echo "  $a is not pinned by a listed property (the parent decides its version)" >&2; weak=0 ;; esac
@@ -496,6 +505,51 @@ probe_a_parent_bump_moves_the_main_jar_plugin_unseen() {
     awk '/<artifactId>maven-jar-plugin<\/artifactId>/ { getline; if ($0 ~ /<version>\$\{maven-jar\.version\}<\/version>/) ok = 1 } END { exit !ok }' "$ROOT/$f" && return 1
   done < <(git ls-files '*pom.xml')
   return 0; }
+
+# AG-AM-3 (INFO), first half. The hunk scan counted a listed property name in the three CONTEXT
+# lines too, so an ordinary bump next to a listed property never armed. For every version line of
+# every tree pom that is not on the release path, a realistic -U3 patch of a bump goes through the
+# real step and must arm. Weak while any of them is refused.
+probe_an_ordinary_bump_next_to_a_release_property_is_refused() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local arts props f n line prev prop p bad=1
+  arts=" $(list_of release_artifacts) "; props=" $(list_of release_properties) "
+  while IFS= read -r f; do
+    while IFS=$'\t' read -r n line prev; do
+      prop="$(sed -n 's/^ *<\([A-Za-z0-9_.-]*\)>[^<$]*<\/\1>.*/\1/p' <<<"$line")"
+      case "$prop" in
+        *.version) ;;
+        version) case "$arts" in *" $(sed -n 's/.*<artifactId>\(.*\)<\/artifactId>.*/\1/p' <<<"$prev") "*) continue ;; esac ;;
+        *) continue ;;
+      esac
+      case "$props" in *" $prop "*) continue ;; esac
+      p="$(patch_of "$f" "$n" "${line/<\/$prop>/.1<\/$prop>}")"
+      if [ "$(relpath "$(deps_json org.example:ordinary)" "$(files_of "$f" "$p")")" = stop ]; then
+        echo "  $f:$n refused: $(sed 's/^ *//' <<<"$line")" >&2; bad=0; fi
+    done < <(awk '{ if ($0 ~ /<[A-Za-z0-9_.-]*version>[^<$]+<\//) printf "%d\t%s\t%s\n", NR, $0, prev; prev = $0 }' "$ROOT/$f")
+  done < <(git ls-files '*pom.xml')
+  return "$bad"; }
+
+# AG-AM-3, second half. Property names match on changed lines only, so a listed property whose
+# value is another property would hide a bump on the other property's line. The drift probe must
+# refuse it. Runs the drift probe on a copy of the tree with that indirection; weak while the
+# drift probe stays FIXED on it.
+copy_worktree() { local d; d="$(mktemp -d)"
+  git ls-files -z | xargs -0 tar -cf - | tar -x -C "$d"
+  ( cd "$d" && git init -q && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  printf '%s' "$d"; }
+probe_harness() { sed -e '/^cd "\$(dirname "\$0")\/\.\."/d' -e '/^echo "the Dependabot auto-merge probes/,$d' "$1"; }
+probe_a_release_property_pointing_at_another_property_passes_the_drift_probe() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d harness rc
+  d="$(copy_worktree)"
+  awk '/<maven-gpg\.version>[^<$]*<\/maven-gpg\.version>/ { sub(/<maven-gpg\.version>[^<]*</, "<maven-gpg.version>${gpg.base}<"); print; print "    <gpg.base>3.2.8</gpg.base>"; next } { print }' \
+    "$d/pom.xml" > "$d/pom.new" && mv "$d/pom.new" "$d/pom.xml"
+  grep -q '<gpg.base>' "$d/pom.xml" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  harness="$(probe_harness "$d/tools/cipher-probe-dependabot.sh")"
+  ( cd "$d" && bash -c "$harness"$'\n'"probe_a_release_plugin_version_escapes_the_hunk_scan" ) >/dev/null 2>&1; rc=$?
+  rm -r "$d"
+  [ "$rc" -ne 0 ]; }
 
 # Condition 7 on a private repository on the free plan: the rules API answers 403. That must
 # refuse, never pass, and the 403 must not be mistaken for "no rules".
@@ -744,6 +798,8 @@ probe probe_an_ordinary_property_bump_is_wrongly_refused      "R good case refus
 probe probe_a_wrapper_file_passes_the_manifest_gate           "4 a wrapper file passes the manifest gate"        probe_a_wrapper_file_passes_the_manifest_gate
 probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugin version sits outside the lists" probe_a_release_plugin_version_escapes_the_hunk_scan
 probe probe_a_parent_bump_moves_the_main_jar_plugin_unseen    "AG-AM-2 a Boot parent bump moves maven-jar-plugin unseen" probe_a_parent_bump_moves_the_main_jar_plugin_unseen
+probe probe_an_ordinary_bump_next_to_a_release_property_is_refused "AG-AM-3 an ordinary bump next to a listed property is refused" probe_an_ordinary_bump_next_to_a_release_property_is_refused
+probe probe_a_release_property_pointing_at_another_property_passes_the_drift_probe "AG-AM-3 a listed property set from another property passes" probe_a_release_property_pointing_at_another_property_passes_the_drift_probe
 probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm
 probe probe_fetch_metadata_is_not_pinned_by_sha               "1 fetch-metadata is not pinned by a commit sha"   probe_fetch_metadata_is_not_pinned_by_sha
 probe probe_a_non_dependabot_actor_can_arm                "6 a run by another actor can arm"                 probe_a_non_dependabot_actor_can_arm

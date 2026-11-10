@@ -137,11 +137,15 @@ jobs:
       # the pom-only rule above; this step covers the same artifacts when they arrive as a pom
       # change. Two sources, both must be clean:
       #   1. the dependency list Dependabot wrote into its (verified) commit message;
-      #   2. every changed hunk of every pom: a hunk that names a listed artifactId or version
-      #      property anywhere (its three context lines included) refuses.
+      #   2. every changed hunk of every pom: a hunk that changes a line and names a listed
+      #      artifactId anywhere (its three context lines included), or a listed version
+      #      property on a changed line (+ or -), refuses. A property bump always changes the
+      #      line that carries its name; an inline version bump needs the artifactId from the
+      #      context. Matching a property in the context only refused ordinary bumps.
       # The lists are artifactIds (any groupId) and version property names. A probe checks
       # that every listed plugin in the tree poms takes its version from a listed property or
-      # on the line right after its artifactId, so a hunk always shows the name. Fail closed:
+      # on the line right after its artifactId, so a hunk always shows the name, and that the
+      # value of a listed property is a literal version, never another property. Fail closed:
       # no metadata, no patch text, or an API error refuses.
       - name: Refuse a bump on the release path
         if: env.STOP != '1'
@@ -163,14 +167,17 @@ jobs:
           done <<<"$names"
           hunks="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | if (.patch | type) == "string" and (.patch | length) > 0 then .patch else error("no patch text for " + .filename) end')" || refuse "could not read the patch of every changed file"
           [ -n "$hunks" ] || refuse "the changed files carry no patch text"
-          hits="$(printf '%s\n' "$hunks" | awk -v names="$release_artifacts $release_properties" '
-            BEGIN { n = split(names, list, " ") }
+          hits="$(printf '%s\n' "$hunks" | awk -v arts="$release_artifacts" -v props="$release_properties" '
+            BEGIN { na = split(arts, A, " "); np = split(props, P, " ") }
             function flush(   i) {
-              if (changed) { for (i = 1; i <= n; i++) if (index(text, list[i]) > 0) print list[i] }
-              text = ""; changed = 0
+              if (changed) {
+                for (i = 1; i <= na; i++) if (index(text, A[i]) > 0) print A[i]
+                for (i = 1; i <= np; i++) if (index(chg, P[i]) > 0) print P[i]
+              }
+              text = ""; chg = ""; changed = 0
             }
             /^@@/ { flush(); next }
-            { text = text "\n" $0; if ($0 ~ /^[+-]/) changed = 1 }
+            { text = text "\n" $0; if ($0 ~ /^[+-]/) { changed = 1; chg = chg "\n" $0 } }
             END { flush() }')" || refuse "could not scan the patch text"
           [ -z "$hits" ] || refuse "a changed hunk is on the release path: $(printf '%s\n' "$hits" | sort -u | tr '\n' ' ')"
 

@@ -176,6 +176,8 @@ cat > "$FAKE_DIR/gh" <<'FAKE'
 #!/usr/bin/env bash
 # Fixtures: FK_FILES FK_PULL FK_COMMIT FK_RULES FK_LISTED FK_CI_BASE FK_CI_HEAD FK_REPO
 # FK_API_FAIL=1 fails every api call; FK_ARMED=1|0 auto-merge state; FK_MERGE_FAIL=1.
+# FK_RULES_HTTP=<code> fails the branch rules call only, with the body GitHub sends for
+# that code (403 is what a private repository on the free plan gets).
 log="${FK_LOG:-/dev/null}"; echo "gh $*" >> "$log"
 jqx=""; ep=""; args=("$@")
 for ((i=0;i<${#args[@]};i++)); do case "${args[$i]}" in
@@ -184,6 +186,7 @@ out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\
 if [ "$1" = api ]; then
   [ -z "${FK_API_FAIL:-}" ] || { echo "HTTP 502" >&2; exit 1; }
   for a in "$@"; do case "$a" in repos/*) ep="$a";; esac; done
+  case "$ep" in */rules/branches/*) [ -z "${FK_RULES_HTTP:-}" ] || { echo "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP ${FK_RULES_HTTP})" >&2; exit 1; } ;; esac
   case "$ep" in
     */pulls/*/files*) out "${FK_FILES:-[]}" ;;
     */pulls/*)        out "${FK_PULL:-{\}}" ;;
@@ -194,7 +197,7 @@ if [ "$1" = api ]; then
     */contents/.github/workflows/ci.yml*) printf '%s\n' "${FK_CI_HEAD-}" ;;
     repos/*/*) out "${FK_REPO:-{\}}" ;;
     *) echo '{}' ;;
-  esac; exit 0
+  esac; exit $?   # a --jq error fails the call, as it does in gh
 fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
   [ -z "${FK_API_FAIL:-}" ] || exit 1
@@ -368,6 +371,109 @@ probe_a_foreign_push_does_not_disarm() {
   [ "$(job_if $FJ)" != "github.actor != 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/')" ] && return 0
   local l; l="$(mktemp)"; FK_ARMED=1 FK_LOG="$l" run_step $FJ "$FDISARM" >/dev/null
   ! grep -q -- '--disable-auto' "$l"; local r=$?; rm -f "$l"; return $r; }
+
+# ---------------------------------------------------------------------------
+# Release path. A bump of the Maven wrapper or of a plugin that signs, publishes or shapes the
+# uploaded bundle never arms: the release dry run cannot see what the Central Portal refuses
+# (a publishing plugin bump merged on its own once, and the next upload would have been the
+# first test). The step reads two sources and both must be clean: the dependency list from
+# the update metadata, and the changed hunks of every pom (a change next to a listed plugin,
+# or on a listed version property). Runs the real step body with the fake gh.
+# ---------------------------------------------------------------------------
+RELPATH='Refuse a bump on the release path'
+hunk() { # hunk <context line> <old line> <new line> : a files-API patch of one hunk
+  printf '@@ -1,3 +1,3 @@\n %s\n-%s\n+%s' "$1" "$2" "$3"; }
+files_json() { # files_json <patch> : one pom.xml with that patch, as the files API returns it
+  jq -cn --arg p "$1" '[{"filename":"pom.xml","status":"modified","patch":$p}]'; }
+deps_json() { # deps_json <groupId:artifactId>... : the updated-dependencies-json output
+  jq -cn '[$ARGS.positional[] | {dependencyName: ., dependencyType: "direct:production", updateType: "version-update:semver-minor"}]' --args "$@"; }
+P_JACOCO="$(hunk '<artifactId>jacoco-maven-plugin</artifactId>' '<version>0.8.15</version>' '<version>0.8.16</version>')"
+P_JACOCO_PROP="$(hunk '<spotless.version>3.10.4</spotless.version>' '<jacoco.version>0.8.15</jacoco.version>' '<jacoco.version>0.8.16</jacoco.version>')"
+relpath() { # relpath <updated deps json> <files json> : stop | go | nostep
+  UPDATED_DEPS="$1" FK_FILES="$2" run_step $J "$RELPATH"; }
+probe_a_publishing_plugin_bump_can_arm() {
+  [ "$(relpath "$(deps_json org.sonatype.central:central-publishing-maven-plugin)" \
+       "$(files_json "$(hunk '<maven-gpg.version>3.2.8</maven-gpg.version>' '<central-publishing.version>0.11.0</central-publishing.version>' '<central-publishing.version>0.12.0</central-publishing.version>')")")" != stop ]; }
+probe_a_signing_plugin_in_a_group_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin org.apache.maven.plugins:maven-gpg-plugin)" "$(files_json "$P_JACOCO_PROP")")" != stop ]; }
+probe_a_wrapper_bump_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.apache.maven:apache-maven)" "$(files_json "$P_JACOCO_PROP")")" != stop ]; }
+probe_a_release_property_change_unlisted_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" \
+       "$(files_json "$(hunk '<jacoco.version>0.8.16</jacoco.version>' '<maven-gpg.version>3.2.7</maven-gpg.version>' '<maven-gpg.version>3.2.8</maven-gpg.version>')")")" != stop ]; }
+probe_an_inline_release_version_unlisted_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" \
+       "$(files_json "$(hunk '<artifactId>maven-javadoc-plugin</artifactId>' '<version>3.11.2</version>' '<version>3.12.0</version>')")")" != stop ]; }
+probe_empty_update_metadata_can_arm() {
+  [ "$(relpath '' "$(files_json "$P_JACOCO")")" != stop ]; }
+probe_unparseable_update_metadata_can_arm() {
+  [ "$(relpath '{"dependencyName":"x"}' "$(files_json "$P_JACOCO")")" != stop ]; }
+# two poms, one with no patch text: a filter that skips it would still see the other
+probe_a_pom_without_a_patch_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(jq -c '. + [{"filename":"agent-guard-core/pom.xml","status":"modified"}]' <<<"$(files_json "$P_JACOCO")")")" != stop ]; }
+probe_a_files_api_error_on_the_release_path_can_arm() {
+  [ "$(FK_API_FAIL=1 relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO")")" != stop ]; }
+probe_an_ordinary_plugin_bump_is_wrongly_refused() {   # good case
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO")")" != go ]; }
+probe_an_ordinary_property_bump_is_wrongly_refused() {   # good case
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO_PROP")")" != go ]; }
+
+# The wrapper files themselves are refused by the pom-only path gate (condition 4).
+probe_a_wrapper_file_passes_the_manifest_gate() {
+  local f
+  for f in mvnw mvnw.cmd .mvn/wrapper/maven-wrapper.properties .mvn/jvm.config; do
+    [ "$(FK_FILES="${PODS/X/$f}" FK_PULL='{"changed_files":2}' run_step $J "$PATHS")" = stop ] || { echo "  $f passed" >&2; return 0; }
+  done
+  return 1; }
+
+# Drift: every pom in the tree that declares a listed plugin must give its version either as a
+# listed property or inline on the line right after the artifactId (inside the three context
+# lines of a hunk). A version further away would change with no listed name in its hunk.
+release_list() { # release_list <shell variable name> : its value, read from the step body
+  step $J "$RELPATH" | sed -n "s/^ *$1=\"\\(.*\\)\"\$/\\1/p"; }
+probe_a_release_plugin_version_escapes_the_hunk_scan() {
+  local arts props f a weak=1 v poms
+  arts="$(release_list release_artifacts)"; props="$(release_list release_properties)"
+  [ -n "$arts" ] && [ -n "$props" ] || { echo "  no release lists in the step" >&2; return 0; }
+  poms="$(git ls-files '*pom.xml' 2>/dev/null)" || { echo "  cannot list the poms (not a git checkout)" >&2; return 0; }
+  [ -n "$poms" ] || { echo "  no pom found" >&2; return 0; }
+  while IFS= read -r f; do
+    for a in $arts; do
+      while IFS= read -r v; do
+        [ -n "$v" ] || continue
+        case "$v" in
+          inline) ;;
+          '${'*'}') case " $props " in *" ${v:2:${#v}-3} "*) ;; *) echo "  $f: $a version $v is not a listed property" >&2; weak=0 ;; esac ;;
+          *) echo "  $f: $a version is $v" >&2; weak=0 ;;
+        esac
+      done < <(awk -v a="<artifactId>$a</artifactId>" '
+        index($0, a) { n = NR; next }
+        n && NR == n + 1 && /<version>/ { v = $0; sub(/.*<version>/, "", v); sub(/<\/version>.*/, "", v)
+                                          print (v ~ /^\$\{/ ? v : "inline"); n = 0; next }
+        n && /<version>/ { print "far"; n = 0; next }
+        n && /<\/plugin>|<\/dependency>/ { n = 0 }' "$f")
+    done
+  done <<<"$poms"
+  return "$weak"; }
+
+# Condition 7 on a private repository on the free plan: the rules API answers 403. That must
+# refuse, never pass, and the 403 must not be mistaken for "no rules".
+probe_a_403_from_the_rules_api_can_arm() {
+  [ "$(FK_RULES_HTTP=403 FK_LISTED="$L_OK" FK_CI_BASE="$CI_OK" FK_CI_HEAD="$CI_OK" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
+
+# Condition 6: only a run Dependabot started can arm. The job condition is exactly the actor
+# test, and the guard step refuses another actor on its own as well.
+probe_a_non_dependabot_actor_can_arm() {
+  [ "$(job_if $J)" = "github.actor == 'dependabot[bot]'" ] || { echo "  job condition is: $(job_if $J)" >&2; return 0; }
+  [ "$(good_guard_env env ACTOR=a-person bash -c "$(declare -f run_step step); FAKE_DIR=$FAKE_DIR WF=$WF; run_step $J '$GUARD'")" != stop ]; }
+
+# Condition 1: the metadata action is pinned by a full commit sha, not a tag.
+probe_fetch_metadata_is_not_pinned_by_sha() {
+  command -v yq >/dev/null 2>&1 || { echo "  yq is not on PATH" >&2; return 0; }
+  local u; u="$(yq -r '.jobs[].steps[]? | .uses // ""' "$WF" | grep '^dependabot/fetch-metadata@')"
+  [ -n "$u" ] || return 0
+  ! grep -qvE '^dependabot/fetch-metadata@[0-9a-f]{40}$' <<<"$u" || return 0
+  return 1; }
 
 echo "the Dependabot auto-merge probes  (WEAK = condition not yet enforced)"
 echo
@@ -582,6 +688,23 @@ probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks
 probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
 probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
 probe probe_a_secret_reaches_a_run_script_by_another_spelling "B-DM3-F7 bracket, toJSON, upper-case secrets unseen" probe_a_secret_reaches_a_run_script_by_another_spelling
+
+probe probe_a_publishing_plugin_bump_can_arm                  "R a publishing plugin bump arms"                  probe_a_publishing_plugin_bump_can_arm
+probe probe_a_signing_plugin_in_a_group_can_arm               "R a signing plugin inside a group arms"           probe_a_signing_plugin_in_a_group_can_arm
+probe probe_a_wrapper_bump_in_the_metadata_can_arm            "R a Maven wrapper bump in the metadata arms"      probe_a_wrapper_bump_in_the_metadata_can_arm
+probe probe_a_release_property_change_unlisted_in_the_metadata_can_arm "R a release property change not in metadata arms" probe_a_release_property_change_unlisted_in_the_metadata_can_arm
+probe probe_an_inline_release_version_unlisted_in_the_metadata_can_arm "R an inline release version not in metadata arms" probe_an_inline_release_version_unlisted_in_the_metadata_can_arm
+probe probe_empty_update_metadata_can_arm                     "R empty update metadata arms"                     probe_empty_update_metadata_can_arm
+probe probe_unparseable_update_metadata_can_arm               "R metadata that is not a list arms"               probe_unparseable_update_metadata_can_arm
+probe probe_a_pom_without_a_patch_can_arm                     "R a pom with no patch text arms"                  probe_a_pom_without_a_patch_can_arm
+probe probe_a_files_api_error_on_the_release_path_can_arm     "R an API error on the release path arms"          probe_a_files_api_error_on_the_release_path_can_arm
+probe probe_an_ordinary_plugin_bump_is_wrongly_refused        "R good case refused (inline version)"             probe_an_ordinary_plugin_bump_is_wrongly_refused
+probe probe_an_ordinary_property_bump_is_wrongly_refused      "R good case refused (property version)"           probe_an_ordinary_property_bump_is_wrongly_refused
+probe probe_a_wrapper_file_passes_the_manifest_gate           "4 a wrapper file passes the manifest gate"        probe_a_wrapper_file_passes_the_manifest_gate
+probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugin version sits outside the lists" probe_a_release_plugin_version_escapes_the_hunk_scan
+probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm
+probe probe_fetch_metadata_is_not_pinned_by_sha               "1 fetch-metadata is not pinned by a commit sha"   probe_fetch_metadata_is_not_pinned_by_sha
+probe probe_a_non_dependabot_actor_can_arm                "6 a run by another actor can arm"                 probe_a_non_dependabot_actor_can_arm
 
 echo
 echo "still weak: $pass    fixed: $flipped"

@@ -551,6 +551,46 @@ probe_a_release_property_pointing_at_another_property_passes_the_drift_probe() {
   rm -r "$d"
   [ "$rc" -ne 0 ]; }
 
+# AG-AM-4 (LOW). Holds the expected lists and sends every name through the real step alone: an
+# artifact by the update metadata with a neutral hunk, a property by its changed line with
+# neutral metadata. Each must be refused, so a name dropped from the step turns this probe WEAK.
+EXPECTED_RELEASE_ARTIFACTS="apache-maven maven-wrapper maven-wrapper-plugin central-publishing-maven-plugin maven-gpg-plugin maven-deploy-plugin maven-source-plugin maven-javadoc-plugin maven-jar-plugin"
+EXPECTED_RELEASE_PROPERTIES="central-publishing.version maven-gpg.version maven-source.version maven-javadoc.version maven-deploy.version maven-jar.version"
+probe_a_release_list_name_was_dropped() {
+  local name weak=1 p
+  for name in $EXPECTED_RELEASE_ARTIFACTS; do
+    [ "$(relpath "$(deps_json "org.example:$name")" "$(files_json "$P_JACOCO")")" = stop ] \
+      || { echo "  artifact $name is not refused through the update metadata" >&2; weak=0; }
+  done
+  for name in $EXPECTED_RELEASE_PROPERTIES; do
+    p="$(hunk '<jacoco.version>0.8.16</jacoco.version>' "<$name>1.0.0</$name>" "<$name>1.0.1</$name>")"
+    [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$p")")" = stop ] \
+      || { echo "  property $name is not refused on its changed line" >&2; weak=0; }
+  done
+  return "$weak"; }
+
+# Meta-probe: drops each expected name from a copy of the step in turn; the shipped probe above
+# must go WEAK every time. Weak while any single drop leaves it FIXED.
+probe_a_release_name_can_be_dropped_with_the_suite_green() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local suite="$PWD/tools/cipher-probe-dependabot.sh" d harness name var rc weak=1 arts props wfn
+  grep -q '^probe_a_release_list_name_was_dropped()' "$suite" || { echo "  shipped probe probe_a_release_list_name_was_dropped is missing" >&2; return 0; }
+  arts="$(printf '%s\n' $EXPECTED_RELEASE_ARTIFACTS $(list_of release_artifacts) | sort -u | tr '\n' ' ')"
+  props="$(printf '%s\n' $EXPECTED_RELEASE_PROPERTIES $(list_of release_properties) | sort -u | tr '\n' ' ')"
+  wfn="$(basename "$WF")"
+  for name in $arts $props; do
+    case " $arts " in *" $name "*) var=release_artifacts ;; *) var=release_properties ;; esac
+    d="$(mktemp -d)"; mkdir -p "$d/.github/workflows" "$d/tools"; cp "$suite" "$d/tools/"
+    awk -v v="$var" -v n="$name" 'index($0, v "=\"") { sub(" " n "\"", "\""); sub("\"" n " ", "\""); sub(" " n " ", " ") } { print }' \
+      "$WF" > "$d/.github/workflows/$wfn"
+    if cmp -s "$WF" "$d/.github/workflows/$wfn"; then echo "  mutation drop $name did not apply" >&2; weak=0; rm -r "$d"; continue; fi
+    harness="$(probe_harness "$suite")"
+    ( cd "$d" && bash -c "$harness"$'\n'"probe_a_release_list_name_was_dropped" ) >/dev/null 2>&1; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  dropping $name from $var leaves the shipped probe FIXED" >&2; weak=0; }
+    rm -r "$d"
+  done
+  return "$weak"; }
+
 # Condition 7 on a private repository on the free plan: the rules API answers 403. That must
 # refuse, never pass, and the 403 must not be mistaken for "no rules".
 probe_a_403_from_the_rules_api_can_arm() {
@@ -800,6 +840,8 @@ probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugi
 probe probe_a_parent_bump_moves_the_main_jar_plugin_unseen    "AG-AM-2 a Boot parent bump moves maven-jar-plugin unseen" probe_a_parent_bump_moves_the_main_jar_plugin_unseen
 probe probe_an_ordinary_bump_next_to_a_release_property_is_refused "AG-AM-3 an ordinary bump next to a listed property is refused" probe_an_ordinary_bump_next_to_a_release_property_is_refused
 probe probe_a_release_property_pointing_at_another_property_passes_the_drift_probe "AG-AM-3 a listed property set from another property passes" probe_a_release_property_pointing_at_another_property_passes_the_drift_probe
+probe probe_a_release_list_name_was_dropped                   "AG-AM-4 a name was dropped from a release list"   probe_a_release_list_name_was_dropped
+probe probe_a_release_name_can_be_dropped_with_the_suite_green "AG-AM-4 a release name can be dropped, suite green" probe_a_release_name_can_be_dropped_with_the_suite_green
 probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm
 probe probe_fetch_metadata_is_not_pinned_by_sha               "1 fetch-metadata is not pinned by a commit sha"   probe_fetch_metadata_is_not_pinned_by_sha
 probe probe_a_non_dependabot_actor_can_arm                "6 a run by another actor can arm"                 probe_a_non_dependabot_actor_can_arm

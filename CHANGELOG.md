@@ -19,6 +19,9 @@ All notable changes to Agent Guard. Format: Keep a Changelog; versions: SemVer. 
   three context lines next to them, so a bump of `license-maven-plugin`, `exec-maven-plugin` or
   `dependency-check-maven` merges on its own again. A probe now also requires the value of a listed
   property to be a literal version, so a property set from another property cannot hide a bump.
+- A new probe holds the expected release-path lists (nine plugin names, six version properties) and sends
+  each name through the real refusal step alone. Removing a name from the step now turns a probe red;
+  before, three of the eight names could be dropped with every probe green.
 
 ### Docs
 - README, `docs/index.md` and `context7.json` now show version 0.1.3; README and `docs/index.md` show the

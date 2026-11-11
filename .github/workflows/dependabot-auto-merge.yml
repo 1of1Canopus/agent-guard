@@ -139,12 +139,16 @@ jobs:
       #   1. the dependency list Dependabot wrote into its (verified) commit message;
       #   2. every changed hunk of every pom: a hunk that changes a line and names a listed
       #      artifactId anywhere (its three context lines included), or a listed version
-      #      property on a changed line (+ or -), refuses. A property bump always changes the
-      #      line that carries its name; an inline version bump needs the artifactId from the
-      #      context. Matching a property in the context only refused ordinary bumps.
+      #      property on a changed line (+ or -), refuses. A property bump changes the line
+      #      that carries its name because the drift probe requires each listed property on
+      #      ONE line (open tag, literal value, close tag); a three-line value would change a
+      #      line with no name. An inline version bump needs the artifactId from the context.
+      #      Matching a property in the context only refused ordinary bumps.
       # The lists are artifactIds (any groupId) and version property names. A probe checks
       # that every listed plugin in the tree poms takes its version from a listed property or
-      # on the line right after its artifactId, so a hunk always shows the name, and that the
+      # on the line right after its artifactId (the probe reads each plugin element as XML, so
+      # a version above the artifactId or far below it counts as far), so a hunk always shows
+      # the name, and that the
       # value of a listed property is a literal version, never another property. Fail closed:
       # no metadata, no patch text, or an API error refuses.
       - name: Refuse a bump on the release path

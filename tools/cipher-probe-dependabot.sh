@@ -451,12 +451,37 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
           '${'*'}') case " $props " in *" ${v:2:${#v}-3} "*) pinned+=" $a " ;; *) echo "  $f: $a version $v is not a listed property" >&2; weak=0 ;; esac ;;
           *) echo "  $f: $a version is $v" >&2; weak=0 ;;
         esac
-      done < <(awk -v a="<artifactId>$a</artifactId>" '
-        index($0, a) { n = NR; next }
-        n && NR == n + 1 && /<version>/ { v = $0; sub(/.*<version>/, "", v); sub(/<\/version>.*/, "", v)
-                                          print (v ~ /^\$\{/ ? v : "inline"); n = 0; next }
-        n && /<version>/ { print "far"; n = 0; next }
-        n && /<\/plugin>|<\/dependency>/ { print "none"; n = 0 }' "$f")
+      done < <(awk -v a="$a" '
+        # Reads each plugin or dependency element as XML, in any child order. Prints one word per
+        # element whose artifactId is a: none (no version), ${...}, inline (a one-line literal on the
+        # line right after the artifactId) or far (anything else: above it, further down, split
+        # over lines). A version inside a nested element is not the own version
+        # of the outer one. An artifactId split over lines is unreadable: far, for every name.
+        BEGIN { top = 0 }
+        { s = $0
+          if (inc) { if (index(s, "-->") == 0) next; sub(/^.*-->/, "", s); inc = 0 }
+          while ((i = index(s, "<!--")) > 0) { rest = substr(s, i + 4)
+            if ((j = index(rest, "-->")) > 0) s = substr(s, 1, i - 1) substr(rest, j + 3)
+            else { s = substr(s, 1, i - 1); inc = 1 } }
+          while (match(s, /<[^>]*>/)) {
+            tok = substr(s, RSTART, RLENGTH); rest = substr(s, RSTART + RLENGTH)
+            txt = rest; sub(/<.*/, "", txt); one = (rest ~ /^[^<]*<\//); s = rest
+            if (tok ~ /^<[!?]/ || tok ~ /\/>$/) continue
+            if (tok ~ /^<\//) {
+              if (top > 0 && (nm[top] == "plugin" || nm[top] == "dependency") && (art[top] == a || art[top] == "?")) {
+                if (art[top] == "?") print "far"
+                else if (!hv[top]) print "none"
+                else if (vt[top] ~ /^\$\{/) print vt[top]
+                else if (vone[top] && vl[top] == al[top] + 1) print "inline"
+                else print "far" }
+              if (top > 0) top--
+              continue }
+            name = tok; sub(/^</, "", name); sub(/[ \t>].*/, "", name)
+            p = top
+            if (p > 0 && (nm[p] == "plugin" || nm[p] == "dependency")) {
+              if (name == "artifactId") { art[p] = (one ? txt : "?"); al[p] = NR }
+              if (name == "version") { hv[p] = 1; vt[p] = txt; vone[p] = one; vl[p] = NR } }
+            top++; nm[top] = name; art[top] = ""; hv[top] = 0; vt[top] = ""; vone[top] = 0; al[top] = 0; vl[top] = 0 } }' "$f")
     done
   done <<<"$poms"
   for a in $arts; do
@@ -464,12 +489,14 @@ probe_a_release_plugin_version_escapes_the_hunk_scan() {
     case "$pinned" in *" $a "*|*" $a:inline "*) ;; *) echo "  $a is declared but its version is never pinned in the tree" >&2; weak=0 ;; esac
   done
   # The property match looks at changed lines only, so a listed property must hold a literal
-  # version: with <maven-gpg.version>${gpg.base}</maven-gpg.version> a bump lands on the
+  # version, with its open tag, value and close tag on ONE line (a bump of a three-line value
+  # changes a line that names nothing). With <maven-gpg.version>${gpg.base}</maven-gpg.version> a bump lands on the
   # <gpg.base> line, which names nothing listed.
   local pr
   while IFS= read -r f; do
     for pr in $props; do
-      if grep -qE "<${pr//./\\.}>[^<]*\\$\\{" "$f"; then echo "  $f: $pr is not a literal version" >&2; weak=0; fi
+      if grep -E "<${pr//./\\.}>" "$f" | grep -qvE "^[[:space:]]*<${pr//./\\.}>[^<\$]+</${pr//./\\.}>[[:space:]]*\$"; then
+        echo "  $f: $pr is not a literal version on one line" >&2; weak=0; fi
     done
   done <<<"$poms"
   for a in $parent_managed; do

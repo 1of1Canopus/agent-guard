@@ -551,6 +551,50 @@ probe_a_release_property_pointing_at_another_property_passes_the_drift_probe() {
   rm -r "$d"
   [ "$rc" -ne 0 ]; }
 
+# AG-AM-5 and AG-AM-6 (LOW), pass 2. Two valid Maven layouts the drift probe let through.
+# patch_ab <old file> <new file> : the files-API patch (hunks only, -U3) of the change
+patch_ab() { git diff --no-index -U3 "$1" "$2" | sed -n '/^@@/,$p'; }
+# drift_green <tree> : 0 when the shipped drift probe is FIXED on that tree
+drift_green() { local harness
+  harness="$(probe_harness "$1/tools/cipher-probe-dependabot.sh")"
+  ( cd "$1" && bash -c "$harness"$'\n'"probe_a_release_plugin_version_escapes_the_hunk_scan" ) >/dev/null 2>&1
+  [ $? -ne 0 ]; }
+# AG-AM-5. A listed property written on three lines: a bump changes only the middle line, which
+# names nothing listed. Weak while that bump, with neutral metadata, arms AND the drift probe is FIXED.
+probe_a_multiline_release_property_bump_arms() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d r
+  d="$(copy_worktree)"
+  awk '/^ *<maven-gpg\.version>[^<]*<\/maven-gpg\.version>/ { v = $0; sub(/.*<maven-gpg\.version>/, "", v); sub(/<.*/, "", v)
+         print "    <maven-gpg.version>"; print "      " v; print "    </maven-gpg.version>"; next } { print }' \
+    "$d/pom.xml" > "$d/pom.a" && mv "$d/pom.a" "$d/pom.xml"
+  grep -q '^    <maven-gpg.version>$' "$d/pom.xml" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  ( cd "$d" && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  awk 'p == 1 { sub(/[0-9]+$/, "9") } { print; p = ($0 ~ /^ *<maven-gpg\.version>$/) }' "$d/pom.xml" > "$d/pom.b"
+  r="$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_of pom.xml "$(patch_ab "$d/pom.xml" "$d/pom.b")")")"
+  echo "  repro: multi-line maven-gpg.version bump, neutral metadata, real step: $r" >&2
+  if [ "$r" = go ] && drift_green "$d"; then rm -r "$d"; return 0; fi
+  rm -r "$d"; return 1; }
+
+# AG-AM-6. A listed plugin with an inline version above its artifactId, in a child pom. Weak while
+# a bump of that line with neutral metadata arms AND the drift probe is FIXED.
+probe_a_release_version_before_its_artifactid_escapes_the_drift_probe() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d r f=agent-guard-core/pom.xml
+  d="$(copy_worktree)"
+  awk '!done && /^    <plugins>$/ { print; print "      <plugin>"; print "        <version>3.2.8</version>"
+         print "        <groupId>org.apache.maven.plugins</groupId>"; print "        <configuration>"
+         print "          <skip>false</skip>"; print "        </configuration>"
+         print "        <artifactId>maven-gpg-plugin</artifactId>"; print "      </plugin>"; done = 1; next } { print }' \
+    "$d/$f" > "$d/pom.a" && mv "$d/pom.a" "$d/$f"
+  grep -q '<version>3.2.8</version>' "$d/$f" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  ( cd "$d" && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  sed 's|<version>3.2.8</version>|<version>3.2.9</version>|' "$d/$f" > "$d/pom.b"
+  r="$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_of "$f" "$(patch_ab "$d/$f" "$d/pom.b")")")"
+  echo "  repro: inline gpg version above its artifactId, neutral metadata, real step: $r" >&2
+  if [ "$r" = go ] && drift_green "$d"; then rm -r "$d"; return 0; fi
+  rm -r "$d"; return 1; }
+
 # AG-AM-4 (LOW). Holds the expected lists and sends every name through the real step alone: an
 # artifact by the update metadata with a neutral hunk, a property by its changed line with
 # neutral metadata. Each must be refused, so a name dropped from the step turns this probe WEAK.
@@ -840,6 +884,8 @@ probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugi
 probe probe_a_parent_bump_moves_the_main_jar_plugin_unseen    "AG-AM-2 a Boot parent bump moves maven-jar-plugin unseen" probe_a_parent_bump_moves_the_main_jar_plugin_unseen
 probe probe_an_ordinary_bump_next_to_a_release_property_is_refused "AG-AM-3 an ordinary bump next to a listed property is refused" probe_an_ordinary_bump_next_to_a_release_property_is_refused
 probe probe_a_release_property_pointing_at_another_property_passes_the_drift_probe "AG-AM-3 a listed property set from another property passes" probe_a_release_property_pointing_at_another_property_passes_the_drift_probe
+probe probe_a_multiline_release_property_bump_arms           "AG-AM-5 a multi-line listed property bump arms"   probe_a_multiline_release_property_bump_arms
+probe probe_a_release_version_before_its_artifactid_escapes_the_drift_probe "AG-AM-6 a version above its artifactId escapes" probe_a_release_version_before_its_artifactid_escapes_the_drift_probe
 probe probe_a_release_list_name_was_dropped                   "AG-AM-4 a name was dropped from a release list"   probe_a_release_list_name_was_dropped
 probe probe_a_release_name_can_be_dropped_with_the_suite_green "AG-AM-4 a release name can be dropped, suite green" probe_a_release_name_can_be_dropped_with_the_suite_green
 probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm

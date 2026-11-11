@@ -194,3 +194,156 @@ other one is the Grype step, inside `set +e`).
 - Why `probe_sources_jar_differs_from_a_test_run` went WEAK once under load. It sends the
   build output to `/dev/null`, so a failed build and a real byte difference look the same.
   This probe is older than both PRs; a later pass may want it to keep the last lines.
+
+## 2026-11-11, pass 2
+
+Summary. The three pass 1 findings are closed: each probe was WEAK before the fix pass and is
+FIXED after it. But the AG-AM-3 fix opened one small gap, and the drift probe has one older
+gap. Both are LOW. They go to a fix list; there is no pass 3.
+
+**PR 59** (`ci/dependabot-release-path-refusal`, head `66298ab`): **Verdict: MERGE WITH FIXES.**
+No HIGH, no MEDIUM. Two new LOW findings (AG-AM-5, AG-AM-6). Both are fixed before merge.
+
+Reviewed: the three fix commits `f7254a6`, `1a8d1b7`, `66298ab` on top of the pass 1 head.
+No production code in the diff. The branch is behind main (PR 60 merged); GitHub reports it
+mergeable.
+
+### Numbers
+
+| Check | Result |
+|---|---|
+| CI on `66298ab` | Build & test, DCO sign-off, Reference guard, Sample container, Vulnerability scan, Security probes: all pass |
+| `tools/cipher-probe-dependabot.sh` on `66298ab`, unchanged | 72 fixed, 0 weak (67 before, plus the 5 copied review probes) |
+| Pass 1 review probes on `5032e49` (before the fix pass) | 4 weak, 0 fixed |
+| Pass 1 review probes on `66298ab` | 0 weak, 4 fixed |
+| Effective pom of `agent-guard-core`, before and after | `maven-jar-plugin` 3.5.1 both times: the pin does not change the built jar |
+| Real step body of "Refuse a bump on the release path" on `66298ab`, real `gh`, real API (read only) | PR 55, neutral metadata: refused on `central-publishing.version` (hunk only). PR 55, real name: refused. PR 58 (group of six), neutral metadata: arms |
+| Mutations of the fixes, shipped suite run on each | 6 run, 5 killed: artifacts matched on changed lines only (1 weak), property loop off (2), property matched in context again (1), literal-value check off (1), jar pin removed from the root pom (2). 1 survives: the changed-line buffer never reset between hunks. That mutant is equivalent: the buffer only grows inside a hunk that has a change, and that hunk already reported the name, so the refuse or arm result cannot change |
+| Pass 2 review probes on `66298ab` | 2 weak (AG-AM-5, AG-AM-6) |
+| Pass 2 review probes on `5032e49` | AG-AM-5 fixed (the context match still refused it), AG-AM-6 weak (older than the fix pass) |
+| Real Maven, both new layouts on a copy, `help:effective-pom -Prelease` | accepted; the three-line property resolves to its trimmed value; the version placed above the artifactId is the one the core module uses |
+| Harness check of the drift probe in a copy | unchanged copy: FIXED; a version two lines below the artifactId: WEAK. So "drift probe green" in the new probes is a real result |
+
+### Pass 1 findings
+
+| Id | Severity | How verified | Status |
+|---|---|---|---|
+| AG-AM-2 | LOW | `probe_a_parent_bump_moves_the_main_jar_plugin_unseen` WEAK on `5032e49`, FIXED on `66298ab`. The effective pom keeps 3.5.1. The plugin is in the step's list, its property is in the property list, and the drift probe now names it as parent-managed. Mutation: removing the pinned version line from the root pom turns the shipped copy of the probe WEAK (row above) | closed |
+| AG-AM-3 | INFO | `probe_an_ordinary_bump_next_to_a_release_property_is_refused` and `probe_a_release_property_pointing_at_another_property_passes_the_drift_probe` WEAK on `5032e49`, FIXED on `66298ab`. The real step on PR 55 still refuses on the hunk alone | closed; its fix opened AG-AM-5 |
+| AG-AM-4 | LOW | `probe_a_release_name_can_be_dropped_with_the_suite_green` WEAK on `5032e49`, FIXED on `66298ab`: each of the 15 single-name drops turns the shipped `probe_a_release_list_name_was_dropped` WEAK | closed |
+
+### New findings
+
+| Id | Severity | Class | Probe (review probe file, pass 2) | Status |
+|---|---|---|---|---|
+| AG-AM-5 | LOW | release path, gate precision (fails open) | `probe_a_multiline_release_property_bump_arms` | open, fix below |
+| AG-AM-6 | LOW | release path, drift probe layout gap | `probe_a_release_version_before_its_artifactid_escapes_the_drift_probe` | open, fix below |
+
+The pass 2 probes are kept with the internal review notes, beside the pass 1 file. The fix
+pass copies both into `tools/cipher-probe-dependabot.sh` first, shows them WEAK, then fixes.
+
+#### AG-AM-5 (LOW): a listed property written on three lines changes with no listed name
+
+The AG-AM-3 fix matches a listed property only on changed lines. The workflow comment gives
+the reason: "A property bump always changes the line that carries its name." That is not
+always true. Maven accepts this layout and trims the value:
+
+```xml
+    <maven-gpg.version>
+      3.2.8
+    </maven-gpg.version>
+```
+
+A bump changes only the middle line. That line names nothing listed, so the hunk scan finds
+nothing. Before the fix, the name in the context line refused the bump. The drift probe was
+extended to protect this narrowing, but its literal-value check reads one line, so it stays
+green.
+
+Failure scenario: a maintainer or a pom formatter writes a listed property on three lines.
+Later a bump arrives whose metadata does not name the plugin (the case the hunk scan exists
+for). The bump of the signing or publishing plugin arms with every check green.
+
+Repro: on a copy of the tree, rewrite `maven-gpg.version` on three lines and commit. Build
+the real `-U3` patch of a bump of the middle line. Run the real step with neutral metadata
+(`org.jacoco:jacoco-maven-plugin`): `go`. Run the shipped drift probe on that copy: FIXED.
+The same probe on `5032e49` gives `stop`.
+
+Fix (probe and comment only):
+1. `tools/cipher-probe-dependabot.sh`, `probe_a_release_plugin_version_escapes_the_hunk_scan`:
+   replace the `${` check with a stricter one. In every tree pom, every line that holds the
+   opening tag `<name>` of a listed property must match `^\s*<name>[^<$]+</name>\s*$` (open
+   tag, literal value and close tag on one line). Any other line with that opening tag is WEAK.
+   This also keeps the AG-AM-3 case (`${...}` as value) WEAK.
+2. `.github/workflows/dependabot-auto-merge.yml`, comment above the step: say that the drift
+   probe requires each listed property on one line, which is why a changed-line match is
+   enough.
+3. Add `probe_a_multiline_release_property_bump_arms` to the shipped suite.
+
+Checked on a scratch copy with fix 1 applied: the drift probe stays FIXED on the real tree and
+goes WEAK on the three-line layout and on the `${gpg.base}` layout.
+
+Rejected alternative: match a property name in the context again when the changed line holds
+no tag. It adds a second rule to the step for a layout the tree does not use; the probe
+keeps the layout out instead.
+
+#### AG-AM-6 (LOW): a version above its artifactId escapes the drift probe
+
+The drift probe looks for a listed plugin's `<version>` only on the lines after its
+`<artifactId>`. Maven reads the children of `<plugin>` in any order. This child-pom entry is
+valid:
+
+```xml
+      <plugin>
+        <version>3.2.8</version>
+        <groupId>org.apache.maven.plugins</groupId>
+        <configuration>
+          <skip>false</skip>
+        </configuration>
+        <artifactId>maven-gpg-plugin</artifactId>
+      </plugin>
+```
+
+The probe reads it as "inherits from `pluginManagement`", and the root pin satisfies it. A
+bump of the version line has neither the artifactId nor a listed property in its hunk.
+
+Failure scenario: same as AG-AM-5, with a child pom of a published module (the core module
+in the repro). The version shown is the one the core module builds with.
+
+Repro: on a copy, insert the entry above into `agent-guard-core/pom.xml` and commit. Build the
+real `-U3` patch of `3.2.8` to `3.2.9`. Run the real step with neutral metadata: `go`. Run the
+drift probe on the copy: FIXED. Same result on `5032e49`, so this gap is as old as the step.
+
+Fix (probe only): in `probe_a_release_plugin_version_escapes_the_hunk_scan`, read each
+innermost `<plugin>` or `<dependency>` element from its open tag to its close tag. If it holds
+a listed artifactId, its own `<version>` (any line inside that element, not inside a nested
+element) must be either a listed property `${name}` or an inline literal on the line right
+after the artifactId. Anything else is "far" and WEAK. A version inside a nested
+`<dependencies>` block of the plugin is not the plugin's version. Then add
+`probe_a_release_version_before_its_artifactid_escapes_the_drift_probe` to the shipped suite.
+This fix was not tried on a scratch copy; the verifier's run must show the new probe FIXED and
+the drift probe still FIXED on the real tree.
+
+### Attacks tried, no finding
+
+| Attack | Result |
+|---|---|
+| Property bump on a changed line, in the root pom and in a child pom | refused |
+| Property renamed (old name on the `-` line) | refused: removed lines count as changed |
+| `${...}` as value of a listed property | drift probe WEAK (AG-AM-3 fix works) |
+| A listed plugin's version moved two or more lines below its artifactId | drift probe WEAK |
+| Listed property overridden in a child pom or a profile | refused: the name is on the changed line |
+| Group PR touching the root and a child pom (two patches) | each patch starts with `@@`, so the scan resets per hunk; a listed name in either refuses |
+| Boot parent bump (the AG-AM-2 route) | arms, and correctly so: the four parent-managed plugins that write uploaded files now come from our own properties |
+| A name removed from a list | the shipped per-name probe goes WEAK, for each of the 15 names |
+| Two poms in one PR, only an ordinary bump in each | arms (no false refusal across files) |
+
+### Not tried
+
+- Version ranges or `LATEST`/`RELEASE` as the value of a listed property. The literal check
+  only refuses `${`; whether Maven 3.9 resolves a range for a build plugin was not tested.
+- mawk locally (not installed here). CI runs the shipped suite under the runner's awk and is
+  green.
+- A live Dependabot run, and the real `fetch-metadata` action, as in pass 1.
+- Plugins that change the main jar's bytes without writing a separate upload (compiler,
+  resources): out of the rule's scope as pass 1 set it.
+- The whole-module release-candidate pass: separate, before the next tag.

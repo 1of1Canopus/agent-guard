@@ -130,6 +130,61 @@ jobs:
           done <<<"$files"
           [ "$count" -eq "$changed" ] || refuse "file list has $count entries but the PR has $changed changed files"
 
+      # Release path: a bump of the Maven wrapper, or of a plugin that signs, publishes or
+      # shapes the uploaded bundle, never arms. The release dry run cannot catch such a bump:
+      # the Central Portal checks the bundle only on upload, so the first real test would be
+      # the next release. The wrapper files themselves (mvnw*, .mvn/**) are already refused by
+      # the pom-only rule above; this step covers the same artifacts when they arrive as a pom
+      # change. Two sources, both must be clean:
+      #   1. the dependency list Dependabot wrote into its (verified) commit message;
+      #   2. every changed hunk of every pom: a hunk that changes a line and names a listed
+      #      artifactId anywhere (its three context lines included), or a listed version
+      #      property on a changed line (+ or -), refuses. A property bump changes the line
+      #      that carries its name because the drift probe requires each listed property on
+      #      ONE line (open tag, literal value, close tag); a three-line value would change a
+      #      line with no name. An inline version bump needs the artifactId from the context.
+      #      Matching a property in the context only refused ordinary bumps.
+      # The lists are artifactIds (any groupId) and version property names. A probe checks
+      # that every listed plugin in the tree poms takes its version from a listed property or
+      # on the line right after its artifactId (the probe reads each plugin element as XML, so
+      # a version above the artifactId or far below it counts as far), so a hunk always shows
+      # the name, and that the
+      # value of a listed property is a literal version, never another property. Fail closed:
+      # no metadata, no patch text, or an API error refuses.
+      - name: Refuse a bump on the release path
+        if: env.STOP != '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          UPDATED_DEPS: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        run: |
+          set -uo pipefail
+          refuse() { echo "::notice::refusing auto-merge: $1"; echo "STOP=1" >> "$GITHUB_ENV"; exit 0; }
+          release_artifacts="apache-maven maven-wrapper maven-wrapper-plugin central-publishing-maven-plugin maven-gpg-plugin maven-deploy-plugin maven-source-plugin maven-javadoc-plugin maven-jar-plugin"
+          release_properties="central-publishing.version maven-gpg.version maven-source.version maven-javadoc.version maven-deploy.version maven-jar.version"
+          names="$(jq -er 'if type == "array" and length > 0 then .[] | .dependencyName | if type == "string" and length > 0 then . else error("a dependency has no name") end else error("not a non-empty list") end' <<<"$UPDATED_DEPS")" || refuse "could not read the dependency list from the update metadata"
+          while IFS= read -r dep; do
+            for a in $release_artifacts; do
+              [ "${dep##*:}" != "$a" ] || refuse "$dep is on the release path (wrapper, signing or publishing): a maintainer merges it"
+            done
+          done <<<"$names"
+          hunks="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[] | if (.patch | type) == "string" and (.patch | length) > 0 then .patch else error("no patch text for " + .filename) end')" || refuse "could not read the patch of every changed file"
+          [ -n "$hunks" ] || refuse "the changed files carry no patch text"
+          hits="$(printf '%s\n' "$hunks" | awk -v arts="$release_artifacts" -v props="$release_properties" '
+            BEGIN { na = split(arts, A, " "); np = split(props, P, " ") }
+            function flush(   i) {
+              if (changed) {
+                for (i = 1; i <= na; i++) if (index(text, A[i]) > 0) print A[i]
+                for (i = 1; i <= np; i++) if (index(chg, P[i]) > 0) print P[i]
+              }
+              text = ""; chg = ""; changed = 0
+            }
+            /^@@/ { flush(); next }
+            { text = text "\n" $0; if ($0 ~ /^[+-]/) { changed = 1; chg = chg "\n" $0 } }
+            END { flush() }')" || refuse "could not scan the patch text"
+          [ -z "$hits" ] || refuse "a changed hunk is on the release path: $(printf '%s\n' "$hits" | sort -u | tr '\n' ' ')"
+
       # Condition 5: the head commit is authored by dependabot[bot] with a verified
       # signature. A human pushing onto a Dependabot branch (to slip in an unrelated
       # change under cover of a dependency bump) disables auto-merge.

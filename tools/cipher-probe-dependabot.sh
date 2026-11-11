@@ -176,6 +176,8 @@ cat > "$FAKE_DIR/gh" <<'FAKE'
 #!/usr/bin/env bash
 # Fixtures: FK_FILES FK_PULL FK_COMMIT FK_RULES FK_LISTED FK_CI_BASE FK_CI_HEAD FK_REPO
 # FK_API_FAIL=1 fails every api call; FK_ARMED=1|0 auto-merge state; FK_MERGE_FAIL=1.
+# FK_RULES_HTTP=<code> fails the branch rules call only, with the body GitHub sends for
+# that code (403 is what a private repository on the free plan gets).
 log="${FK_LOG:-/dev/null}"; echo "gh $*" >> "$log"
 jqx=""; ep=""; args=("$@")
 for ((i=0;i<${#args[@]};i++)); do case "${args[$i]}" in
@@ -184,6 +186,7 @@ out() { if [ -n "$jqx" ]; then printf '%s' "$1" | jq -r "$jqx"; else printf '%s\
 if [ "$1" = api ]; then
   [ -z "${FK_API_FAIL:-}" ] || { echo "HTTP 502" >&2; exit 1; }
   for a in "$@"; do case "$a" in repos/*) ep="$a";; esac; done
+  case "$ep" in */rules/branches/*) [ -z "${FK_RULES_HTTP:-}" ] || { echo "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP ${FK_RULES_HTTP})" >&2; exit 1; } ;; esac
   case "$ep" in
     */pulls/*/files*) out "${FK_FILES:-[]}" ;;
     */pulls/*)        out "${FK_PULL:-{\}}" ;;
@@ -194,7 +197,7 @@ if [ "$1" = api ]; then
     */contents/.github/workflows/ci.yml*) printf '%s\n' "${FK_CI_HEAD-}" ;;
     repos/*/*) out "${FK_REPO:-{\}}" ;;
     *) echo '{}' ;;
-  esac; exit 0
+  esac; exit $?   # a --jq error fails the call, as it does in gh
 fi
 if [ "$1" = pr ] && [ "$2" = view ]; then
   [ -z "${FK_API_FAIL:-}" ] || exit 1
@@ -368,6 +371,315 @@ probe_a_foreign_push_does_not_disarm() {
   [ "$(job_if $FJ)" != "github.actor != 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/')" ] && return 0
   local l; l="$(mktemp)"; FK_ARMED=1 FK_LOG="$l" run_step $FJ "$FDISARM" >/dev/null
   ! grep -q -- '--disable-auto' "$l"; local r=$?; rm -f "$l"; return $r; }
+
+# ---------------------------------------------------------------------------
+# Release path. A bump of the Maven wrapper or of a plugin that signs, publishes or shapes the
+# uploaded bundle never arms: the release dry run cannot see what the Central Portal refuses
+# (a publishing plugin bump merged on its own once, and the next upload would have been the
+# first test). The step reads two sources and both must be clean: the dependency list from
+# the update metadata, and the changed hunks of every pom (a change next to a listed plugin,
+# or on a listed version property). Runs the real step body with the fake gh.
+# ---------------------------------------------------------------------------
+RELPATH='Refuse a bump on the release path'
+hunk() { # hunk <context line> <old line> <new line> : a files-API patch of one hunk
+  printf '@@ -1,3 +1,3 @@\n %s\n-%s\n+%s' "$1" "$2" "$3"; }
+files_json() { # files_json <patch> : one pom.xml with that patch, as the files API returns it
+  jq -cn --arg p "$1" '[{"filename":"pom.xml","status":"modified","patch":$p}]'; }
+deps_json() { # deps_json <groupId:artifactId>... : the updated-dependencies-json output
+  jq -cn '[$ARGS.positional[] | {dependencyName: ., dependencyType: "direct:production", updateType: "version-update:semver-minor"}]' --args "$@"; }
+P_JACOCO="$(hunk '<artifactId>jacoco-maven-plugin</artifactId>' '<version>0.8.15</version>' '<version>0.8.16</version>')"
+P_JACOCO_PROP="$(hunk '<spotless.version>3.10.4</spotless.version>' '<jacoco.version>0.8.15</jacoco.version>' '<jacoco.version>0.8.16</jacoco.version>')"
+relpath() { # relpath <updated deps json> <files json> : stop | go | nostep
+  UPDATED_DEPS="$1" FK_FILES="$2" run_step $J "$RELPATH"; }
+probe_a_publishing_plugin_bump_can_arm() {
+  [ "$(relpath "$(deps_json org.sonatype.central:central-publishing-maven-plugin)" \
+       "$(files_json "$(hunk '<maven-gpg.version>3.2.8</maven-gpg.version>' '<central-publishing.version>0.11.0</central-publishing.version>' '<central-publishing.version>0.12.0</central-publishing.version>')")")" != stop ]; }
+probe_a_signing_plugin_in_a_group_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin org.apache.maven.plugins:maven-gpg-plugin)" "$(files_json "$P_JACOCO_PROP")")" != stop ]; }
+probe_a_wrapper_bump_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.apache.maven:apache-maven)" "$(files_json "$P_JACOCO_PROP")")" != stop ]; }
+probe_a_release_property_change_unlisted_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" \
+       "$(files_json "$(hunk '<jacoco.version>0.8.16</jacoco.version>' '<maven-gpg.version>3.2.7</maven-gpg.version>' '<maven-gpg.version>3.2.8</maven-gpg.version>')")")" != stop ]; }
+probe_an_inline_release_version_unlisted_in_the_metadata_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" \
+       "$(files_json "$(hunk '<artifactId>maven-javadoc-plugin</artifactId>' '<version>3.11.2</version>' '<version>3.12.0</version>')")")" != stop ]; }
+probe_empty_update_metadata_can_arm() {
+  [ "$(relpath '' "$(files_json "$P_JACOCO")")" != stop ]; }
+probe_unparseable_update_metadata_can_arm() {
+  [ "$(relpath '{"dependencyName":"x"}' "$(files_json "$P_JACOCO")")" != stop ]; }
+# two poms, one with no patch text: a filter that skips it would still see the other
+probe_a_pom_without_a_patch_can_arm() {
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(jq -c '. + [{"filename":"agent-guard-core/pom.xml","status":"modified"}]' <<<"$(files_json "$P_JACOCO")")")" != stop ]; }
+probe_a_files_api_error_on_the_release_path_can_arm() {
+  [ "$(FK_API_FAIL=1 relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO")")" != stop ]; }
+probe_an_ordinary_plugin_bump_is_wrongly_refused() {   # good case
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO")")" != go ]; }
+probe_an_ordinary_property_bump_is_wrongly_refused() {   # good case
+  [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$P_JACOCO_PROP")")" != go ]; }
+
+# The wrapper files themselves are refused by the pom-only path gate (condition 4).
+probe_a_wrapper_file_passes_the_manifest_gate() {
+  local f
+  for f in mvnw mvnw.cmd .mvn/wrapper/maven-wrapper.properties .mvn/jvm.config; do
+    [ "$(FK_FILES="${PODS/X/$f}" FK_PULL='{"changed_files":2}' run_step $J "$PATHS")" = stop ] || { echo "  $f passed" >&2; return 0; }
+  done
+  return 1; }
+
+# Drift: every pom in the tree that declares a listed plugin must give its version either as a
+# listed property or inline on the line right after the artifactId (inside the three context
+# lines of a hunk). A version further away would change with no listed name in its hunk.
+release_list() { # release_list <shell variable name> : its value, read from the step body
+  step $J "$RELPATH" | sed -n "s/^ *$1=\"\\(.*\\)\"\$/\\1/p"; }
+probe_a_release_plugin_version_escapes_the_hunk_scan() {
+  local arts props f a weak=1 v poms
+  arts="$(release_list release_artifacts)"; props="$(release_list release_properties)"
+  [ -n "$arts" ] && [ -n "$props" ] || { echo "  no release lists in the step" >&2; return 0; }
+  poms="$(git ls-files '*pom.xml' 2>/dev/null)" || { echo "  cannot list the poms (not a git checkout)" >&2; return 0; }
+  [ -n "$poms" ] || { echo "  no pom found" >&2; return 0; }
+  # The Spring Boot parent manages these four. With no pin of our own, a parent bump changes
+  # them with no listed name in the diff, so each needs a pin by a listed property in a tree pom.
+  local parent_managed="maven-source-plugin maven-javadoc-plugin maven-deploy-plugin maven-jar-plugin" seen="" pinned=""
+  while IFS= read -r f; do
+    for a in $arts; do
+      while IFS= read -r v; do
+        [ -n "$v" ] || continue
+        seen+=" $a "
+        case "$v" in
+          none) ;;   # inherits from a pluginManagement entry: a pinned entry is required below
+          inline) pinned+=" $a:inline " ;;
+          '${'*'}') case " $props " in *" ${v:2:${#v}-3} "*) pinned+=" $a " ;; *) echo "  $f: $a version $v is not a listed property" >&2; weak=0 ;; esac ;;
+          *) echo "  $f: $a version is $v" >&2; weak=0 ;;
+        esac
+      done < <(awk -v a="$a" '
+        # Reads each plugin or dependency element as XML, in any child order. Prints one word per
+        # element whose artifactId is a: none (no version), ${...}, inline (a one-line literal on the
+        # line right after the artifactId) or far (anything else: above it, further down, split
+        # over lines). A version inside a nested element is not the own version
+        # of the outer one. An artifactId split over lines is unreadable: far, for every name.
+        BEGIN { top = 0 }
+        { s = $0
+          if (inc) { if (index(s, "-->") == 0) next; sub(/^.*-->/, "", s); inc = 0 }
+          while ((i = index(s, "<!--")) > 0) { rest = substr(s, i + 4)
+            if ((j = index(rest, "-->")) > 0) s = substr(s, 1, i - 1) substr(rest, j + 3)
+            else { s = substr(s, 1, i - 1); inc = 1 } }
+          while (match(s, /<[^>]*>/)) {
+            tok = substr(s, RSTART, RLENGTH); rest = substr(s, RSTART + RLENGTH)
+            txt = rest; sub(/<.*/, "", txt); one = (rest ~ /^[^<]*<\//); s = rest
+            if (tok ~ /^<[!?]/ || tok ~ /\/>$/) continue
+            if (tok ~ /^<\//) {
+              if (top > 0 && (nm[top] == "plugin" || nm[top] == "dependency") && (art[top] == a || art[top] == "?")) {
+                if (art[top] == "?") print "far"
+                else if (!hv[top]) print "none"
+                else if (vt[top] ~ /^\$\{/) print vt[top]
+                else if (vone[top] && vl[top] == al[top] + 1) print "inline"
+                else print "far" }
+              if (top > 0) top--
+              continue }
+            name = tok; sub(/^</, "", name); sub(/[ \t>].*/, "", name)
+            p = top
+            if (p > 0 && (nm[p] == "plugin" || nm[p] == "dependency")) {
+              if (name == "artifactId") { art[p] = (one ? txt : "?"); al[p] = NR }
+              if (name == "version") { hv[p] = 1; vt[p] = txt; vone[p] = one; vl[p] = NR } }
+            top++; nm[top] = name; art[top] = ""; hv[top] = 0; vt[top] = ""; vone[top] = 0; al[top] = 0; vl[top] = 0 } }' "$f")
+    done
+  done <<<"$poms"
+  for a in $arts; do
+    case "$seen" in *" $a "*) ;; *) continue ;; esac
+    case "$pinned" in *" $a "*|*" $a:inline "*) ;; *) echo "  $a is declared but its version is never pinned in the tree" >&2; weak=0 ;; esac
+  done
+  # The property match looks at changed lines only, so a listed property must hold a literal
+  # version, with its open tag, value and close tag on ONE line (a bump of a three-line value
+  # changes a line that names nothing). With <maven-gpg.version>${gpg.base}</maven-gpg.version> a bump lands on the
+  # <gpg.base> line, which names nothing listed.
+  local pr
+  while IFS= read -r f; do
+    for pr in $props; do
+      if grep -E "<${pr//./\\.}>" "$f" | grep -qvE "^[[:space:]]*<${pr//./\\.}>[^<\$]+</${pr//./\\.}>[[:space:]]*\$"; then
+        echo "  $f: $pr is not a literal version on one line" >&2; weak=0; fi
+    done
+  done <<<"$poms"
+  for a in $parent_managed; do
+    case " $arts " in *" $a "*) ;; *) echo "  $a is not in the release list" >&2; weak=0; continue ;; esac
+    case "$pinned" in *" $a "*) ;; *) echo "  $a is not pinned by a listed property (the parent decides its version)" >&2; weak=0 ;; esac
+  done
+  return "$weak"; }
+
+
+# ---- Review probes, PR 59 (AG-AM-2, AG-AM-3, AG-AM-4) ---------------------------------------------
+ROOT="$(pwd)"
+list_of() { release_list "$1"; }
+# patch_of <pom> <line number> <new line> : the files-API patch (hunks only, -U3) of that edit
+patch_of() { local d; d="$(mktemp -d)"; cp "$ROOT/$1" "$d/a"
+  awk -v n="$2" -v s="$3" 'NR == n { print s; next } { print }' "$d/a" > "$d/b"
+  git diff --no-index -U3 "$d/a" "$d/b" | sed -n '/^@@/,$p'; rm -r "$d"; }
+# files_of <pom path> <patch> : one modified pom with that patch
+files_of() { jq -cn --arg f "$1" --arg p "$2" '[{filename: $f, status: "modified", patch: $p}]'; }
+
+# AG-AM-2 (LOW). maven-jar-plugin writes the main jar the bundle uploads. Its version came from
+# the Spring Boot parent, so a parent bump named neither the plugin nor any hunk line and armed.
+# Weak while the plugin is not in the step's lists, or no tree pom pins it by a listed property.
+probe_a_parent_bump_moves_the_main_jar_plugin_unseen() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local arts props n p f
+  arts=" $(list_of release_artifacts) "; props=" $(list_of release_properties) "
+  n="$(grep -n '<artifactId>spring-boot-starter-parent</artifactId>' "$ROOT/pom.xml" | head -1 | cut -d: -f1)"
+  p="$(patch_of pom.xml $((n + 1)) '    <version>4.9.9</version>')"
+  echo "  repro: a Boot parent bump through the real step gives: $(relpath "$(deps_json org.springframework.boot:spring-boot-starter-parent)" "$(files_of pom.xml "$p")")" >&2
+  case "$arts" in *" maven-jar-plugin "*) ;; *) return 0 ;; esac
+  case "$props" in *" maven-jar.version "*) ;; *) return 0 ;; esac
+  while IFS= read -r f; do
+    awk '/<artifactId>maven-jar-plugin<\/artifactId>/ { getline; if ($0 ~ /<version>\$\{maven-jar\.version\}<\/version>/) ok = 1 } END { exit !ok }' "$ROOT/$f" && return 1
+  done < <(git ls-files '*pom.xml')
+  return 0; }
+
+# AG-AM-3 (INFO), first half. The hunk scan counted a listed property name in the three CONTEXT
+# lines too, so an ordinary bump next to a listed property never armed. For every version line of
+# every tree pom that is not on the release path, a realistic -U3 patch of a bump goes through the
+# real step and must arm. Weak while any of them is refused.
+probe_an_ordinary_bump_next_to_a_release_property_is_refused() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local arts props f n line prev prop p bad=1
+  arts=" $(list_of release_artifacts) "; props=" $(list_of release_properties) "
+  while IFS= read -r f; do
+    while IFS=$'\t' read -r n line prev; do
+      prop="$(sed -n 's/^ *<\([A-Za-z0-9_.-]*\)>[^<$]*<\/\1>.*/\1/p' <<<"$line")"
+      case "$prop" in
+        *.version) ;;
+        version) case "$arts" in *" $(sed -n 's/.*<artifactId>\(.*\)<\/artifactId>.*/\1/p' <<<"$prev") "*) continue ;; esac ;;
+        *) continue ;;
+      esac
+      case "$props" in *" $prop "*) continue ;; esac
+      p="$(patch_of "$f" "$n" "${line/<\/$prop>/.1<\/$prop>}")"
+      if [ "$(relpath "$(deps_json org.example:ordinary)" "$(files_of "$f" "$p")")" = stop ]; then
+        echo "  $f:$n refused: $(sed 's/^ *//' <<<"$line")" >&2; bad=0; fi
+    done < <(awk '{ if ($0 ~ /<[A-Za-z0-9_.-]*version>[^<$]+<\//) printf "%d\t%s\t%s\n", NR, $0, prev; prev = $0 }' "$ROOT/$f")
+  done < <(git ls-files '*pom.xml')
+  return "$bad"; }
+
+# AG-AM-3, second half. Property names match on changed lines only, so a listed property whose
+# value is another property would hide a bump on the other property's line. The drift probe must
+# refuse it. Runs the drift probe on a copy of the tree with that indirection; weak while the
+# drift probe stays FIXED on it.
+copy_worktree() { local d; d="$(mktemp -d)"
+  git ls-files -z | xargs -0 tar -cf - | tar -x -C "$d"
+  ( cd "$d" && git init -q && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  printf '%s' "$d"; }
+probe_harness() { sed -e '/^cd "\$(dirname "\$0")\/\.\."/d' -e '/^echo "the Dependabot auto-merge probes/,$d' "$1"; }
+probe_a_release_property_pointing_at_another_property_passes_the_drift_probe() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d harness rc
+  d="$(copy_worktree)"
+  awk '/<maven-gpg\.version>[^<$]*<\/maven-gpg\.version>/ { sub(/<maven-gpg\.version>[^<]*</, "<maven-gpg.version>${gpg.base}<"); print; print "    <gpg.base>3.2.8</gpg.base>"; next } { print }' \
+    "$d/pom.xml" > "$d/pom.new" && mv "$d/pom.new" "$d/pom.xml"
+  grep -q '<gpg.base>' "$d/pom.xml" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  harness="$(probe_harness "$d/tools/cipher-probe-dependabot.sh")"
+  ( cd "$d" && bash -c "$harness"$'\n'"probe_a_release_plugin_version_escapes_the_hunk_scan" ) >/dev/null 2>&1; rc=$?
+  rm -r "$d"
+  [ "$rc" -ne 0 ]; }
+
+# AG-AM-5 and AG-AM-6 (LOW), pass 2. Two valid Maven layouts the drift probe let through.
+# patch_ab <old file> <new file> : the files-API patch (hunks only, -U3) of the change
+patch_ab() { git diff --no-index -U3 "$1" "$2" | sed -n '/^@@/,$p'; }
+# drift_green <tree> : 0 when the shipped drift probe is FIXED on that tree
+drift_green() { local harness
+  harness="$(probe_harness "$1/tools/cipher-probe-dependabot.sh")"
+  ( cd "$1" && bash -c "$harness"$'\n'"probe_a_release_plugin_version_escapes_the_hunk_scan" ) >/dev/null 2>&1
+  [ $? -ne 0 ]; }
+# AG-AM-5. A listed property written on three lines: a bump changes only the middle line, which
+# names nothing listed. Weak while that bump, with neutral metadata, arms AND the drift probe is FIXED.
+probe_a_multiline_release_property_bump_arms() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d r
+  d="$(copy_worktree)"
+  awk '/^ *<maven-gpg\.version>[^<]*<\/maven-gpg\.version>/ { v = $0; sub(/.*<maven-gpg\.version>/, "", v); sub(/<.*/, "", v)
+         print "    <maven-gpg.version>"; print "      " v; print "    </maven-gpg.version>"; next } { print }' \
+    "$d/pom.xml" > "$d/pom.a" && mv "$d/pom.a" "$d/pom.xml"
+  grep -q '^    <maven-gpg.version>$' "$d/pom.xml" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  ( cd "$d" && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  awk 'p == 1 { sub(/[0-9]+$/, "9") } { print; p = ($0 ~ /^ *<maven-gpg\.version>$/) }' "$d/pom.xml" > "$d/pom.b"
+  r="$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_of pom.xml "$(patch_ab "$d/pom.xml" "$d/pom.b")")")"
+  echo "  repro: multi-line maven-gpg.version bump, neutral metadata, real step: $r" >&2
+  if [ "$r" = go ] && drift_green "$d"; then rm -r "$d"; return 0; fi
+  rm -r "$d"; return 1; }
+
+# AG-AM-6. A listed plugin with an inline version above its artifactId, in a child pom. Weak while
+# a bump of that line with neutral metadata arms AND the drift probe is FIXED.
+probe_a_release_version_before_its_artifactid_escapes_the_drift_probe() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1   # the nested mutation runs copy no poms
+  local d r f=agent-guard-core/pom.xml
+  d="$(copy_worktree)"
+  awk '!done && /^    <plugins>$/ { print; print "      <plugin>"; print "        <version>3.2.8</version>"
+         print "        <groupId>org.apache.maven.plugins</groupId>"; print "        <configuration>"
+         print "          <skip>false</skip>"; print "        </configuration>"
+         print "        <artifactId>maven-gpg-plugin</artifactId>"; print "      </plugin>"; done = 1; next } { print }' \
+    "$d/$f" > "$d/pom.a" && mv "$d/pom.a" "$d/$f"
+  grep -q '<version>3.2.8</version>' "$d/$f" || { echo "  mutation did not apply" >&2; rm -r "$d"; return 0; }
+  ( cd "$d" && git add -A && git -c user.name=p -c user.email=p@p commit -qm p --no-verify ) >/dev/null 2>&1
+  sed 's|<version>3.2.8</version>|<version>3.2.9</version>|' "$d/$f" > "$d/pom.b"
+  r="$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_of "$f" "$(patch_ab "$d/$f" "$d/pom.b")")")"
+  echo "  repro: inline gpg version above its artifactId, neutral metadata, real step: $r" >&2
+  if [ "$r" = go ] && drift_green "$d"; then rm -r "$d"; return 0; fi
+  rm -r "$d"; return 1; }
+
+# AG-AM-4 (LOW). Holds the expected lists and sends every name through the real step alone: an
+# artifact by the update metadata with a neutral hunk, a property by its changed line with
+# neutral metadata. Each must be refused, so a name dropped from the step turns this probe WEAK.
+EXPECTED_RELEASE_ARTIFACTS="apache-maven maven-wrapper maven-wrapper-plugin central-publishing-maven-plugin maven-gpg-plugin maven-deploy-plugin maven-source-plugin maven-javadoc-plugin maven-jar-plugin"
+EXPECTED_RELEASE_PROPERTIES="central-publishing.version maven-gpg.version maven-source.version maven-javadoc.version maven-deploy.version maven-jar.version"
+probe_a_release_list_name_was_dropped() {
+  local name weak=1 p
+  for name in $EXPECTED_RELEASE_ARTIFACTS; do
+    [ "$(relpath "$(deps_json "org.example:$name")" "$(files_json "$P_JACOCO")")" = stop ] \
+      || { echo "  artifact $name is not refused through the update metadata" >&2; weak=0; }
+  done
+  for name in $EXPECTED_RELEASE_PROPERTIES; do
+    p="$(hunk '<jacoco.version>0.8.16</jacoco.version>' "<$name>1.0.0</$name>" "<$name>1.0.1</$name>")"
+    [ "$(relpath "$(deps_json org.jacoco:jacoco-maven-plugin)" "$(files_json "$p")")" = stop ] \
+      || { echo "  property $name is not refused on its changed line" >&2; weak=0; }
+  done
+  return "$weak"; }
+
+# Meta-probe: drops each expected name from a copy of the step in turn; the shipped probe above
+# must go WEAK every time. Weak while any single drop leaves it FIXED.
+probe_a_release_name_can_be_dropped_with_the_suite_green() {
+  [ -z "${AM_PROBE_NESTED:-}" ] || return 1
+  local suite="$PWD/tools/cipher-probe-dependabot.sh" d harness name var rc weak=1 arts props wfn
+  grep -q '^probe_a_release_list_name_was_dropped()' "$suite" || { echo "  shipped probe probe_a_release_list_name_was_dropped is missing" >&2; return 0; }
+  arts="$(printf '%s\n' $EXPECTED_RELEASE_ARTIFACTS $(list_of release_artifacts) | sort -u | tr '\n' ' ')"
+  props="$(printf '%s\n' $EXPECTED_RELEASE_PROPERTIES $(list_of release_properties) | sort -u | tr '\n' ' ')"
+  wfn="$(basename "$WF")"
+  for name in $arts $props; do
+    case " $arts " in *" $name "*) var=release_artifacts ;; *) var=release_properties ;; esac
+    d="$(mktemp -d)"; mkdir -p "$d/.github/workflows" "$d/tools"; cp "$suite" "$d/tools/"
+    awk -v v="$var" -v n="$name" 'index($0, v "=\"") { sub(" " n "\"", "\""); sub("\"" n " ", "\""); sub(" " n " ", " ") } { print }' \
+      "$WF" > "$d/.github/workflows/$wfn"
+    if cmp -s "$WF" "$d/.github/workflows/$wfn"; then echo "  mutation drop $name did not apply" >&2; weak=0; rm -r "$d"; continue; fi
+    harness="$(probe_harness "$suite")"
+    ( cd "$d" && bash -c "$harness"$'\n'"probe_a_release_list_name_was_dropped" ) >/dev/null 2>&1; rc=$?
+    [ "$rc" -eq 0 ] || { echo "  dropping $name from $var leaves the shipped probe FIXED" >&2; weak=0; }
+    rm -r "$d"
+  done
+  return "$weak"; }
+
+# Condition 7 on a private repository on the free plan: the rules API answers 403. That must
+# refuse, never pass, and the 403 must not be mistaken for "no rules".
+probe_a_403_from_the_rules_api_can_arm() {
+  [ "$(FK_RULES_HTTP=403 FK_LISTED="$L_OK" FK_CI_BASE="$CI_OK" FK_CI_HEAD="$CI_OK" FK_RULES="$R_PIN" run_step $J "$GATES")" != stop ]; }
+
+# Condition 6: only a run Dependabot started can arm. The job condition is exactly the actor
+# test, and the guard step refuses another actor on its own as well.
+probe_a_non_dependabot_actor_can_arm() {
+  [ "$(job_if $J)" = "github.actor == 'dependabot[bot]'" ] || { echo "  job condition is: $(job_if $J)" >&2; return 0; }
+  [ "$(good_guard_env env ACTOR=a-person bash -c "$(declare -f run_step step); FAKE_DIR=$FAKE_DIR WF=$WF; run_step $J '$GUARD'")" != stop ]; }
+
+# Condition 1: the metadata action is pinned by a full commit sha, not a tag.
+probe_fetch_metadata_is_not_pinned_by_sha() {
+  command -v yq >/dev/null 2>&1 || { echo "  yq is not on PATH" >&2; return 0; }
+  local u; u="$(yq -r '.jobs[].steps[]? | .uses // ""' "$WF" | grep '^dependabot/fetch-metadata@')"
+  [ -n "$u" ] || return 0
+  ! grep -qvE '^dependabot/fetch-metadata@[0-9a-f]{40}$' <<<"$u" || return 0
+  return 1; }
 
 echo "the Dependabot auto-merge probes  (WEAK = condition not yet enforced)"
 echo
@@ -582,6 +894,30 @@ probe probe_required_checks_txt_drifted_from_ci_yml           "7 required-checks
 probe probe_a_refusal_does_not_disarm                         "7 a refusal leaves auto-merge armed"              probe_a_refusal_does_not_disarm
 probe probe_a_foreign_push_does_not_disarm                    "5 a non-Dependabot push leaves it armed"          probe_a_foreign_push_does_not_disarm
 probe probe_a_secret_reaches_a_run_script_by_another_spelling "B-DM3-F7 bracket, toJSON, upper-case secrets unseen" probe_a_secret_reaches_a_run_script_by_another_spelling
+
+probe probe_a_publishing_plugin_bump_can_arm                  "R a publishing plugin bump arms"                  probe_a_publishing_plugin_bump_can_arm
+probe probe_a_signing_plugin_in_a_group_can_arm               "R a signing plugin inside a group arms"           probe_a_signing_plugin_in_a_group_can_arm
+probe probe_a_wrapper_bump_in_the_metadata_can_arm            "R a Maven wrapper bump in the metadata arms"      probe_a_wrapper_bump_in_the_metadata_can_arm
+probe probe_a_release_property_change_unlisted_in_the_metadata_can_arm "R a release property change not in metadata arms" probe_a_release_property_change_unlisted_in_the_metadata_can_arm
+probe probe_an_inline_release_version_unlisted_in_the_metadata_can_arm "R an inline release version not in metadata arms" probe_an_inline_release_version_unlisted_in_the_metadata_can_arm
+probe probe_empty_update_metadata_can_arm                     "R empty update metadata arms"                     probe_empty_update_metadata_can_arm
+probe probe_unparseable_update_metadata_can_arm               "R metadata that is not a list arms"               probe_unparseable_update_metadata_can_arm
+probe probe_a_pom_without_a_patch_can_arm                     "R a pom with no patch text arms"                  probe_a_pom_without_a_patch_can_arm
+probe probe_a_files_api_error_on_the_release_path_can_arm     "R an API error on the release path arms"          probe_a_files_api_error_on_the_release_path_can_arm
+probe probe_an_ordinary_plugin_bump_is_wrongly_refused        "R good case refused (inline version)"             probe_an_ordinary_plugin_bump_is_wrongly_refused
+probe probe_an_ordinary_property_bump_is_wrongly_refused      "R good case refused (property version)"           probe_an_ordinary_property_bump_is_wrongly_refused
+probe probe_a_wrapper_file_passes_the_manifest_gate           "4 a wrapper file passes the manifest gate"        probe_a_wrapper_file_passes_the_manifest_gate
+probe probe_a_release_plugin_version_escapes_the_hunk_scan    "R a release plugin version sits outside the lists" probe_a_release_plugin_version_escapes_the_hunk_scan
+probe probe_a_parent_bump_moves_the_main_jar_plugin_unseen    "AG-AM-2 a Boot parent bump moves maven-jar-plugin unseen" probe_a_parent_bump_moves_the_main_jar_plugin_unseen
+probe probe_an_ordinary_bump_next_to_a_release_property_is_refused "AG-AM-3 an ordinary bump next to a listed property is refused" probe_an_ordinary_bump_next_to_a_release_property_is_refused
+probe probe_a_release_property_pointing_at_another_property_passes_the_drift_probe "AG-AM-3 a listed property set from another property passes" probe_a_release_property_pointing_at_another_property_passes_the_drift_probe
+probe probe_a_multiline_release_property_bump_arms           "AG-AM-5 a multi-line listed property bump arms"   probe_a_multiline_release_property_bump_arms
+probe probe_a_release_version_before_its_artifactid_escapes_the_drift_probe "AG-AM-6 a version above its artifactId escapes" probe_a_release_version_before_its_artifactid_escapes_the_drift_probe
+probe probe_a_release_list_name_was_dropped                   "AG-AM-4 a name was dropped from a release list"   probe_a_release_list_name_was_dropped
+probe probe_a_release_name_can_be_dropped_with_the_suite_green "AG-AM-4 a release name can be dropped, suite green" probe_a_release_name_can_be_dropped_with_the_suite_green
+probe probe_a_403_from_the_rules_api_can_arm                  "7 a 403 from the rules API arms"                  probe_a_403_from_the_rules_api_can_arm
+probe probe_fetch_metadata_is_not_pinned_by_sha               "1 fetch-metadata is not pinned by a commit sha"   probe_fetch_metadata_is_not_pinned_by_sha
+probe probe_a_non_dependabot_actor_can_arm                "6 a run by another actor can arm"                 probe_a_non_dependabot_actor_can_arm
 
 echo
 echo "still weak: $pass    fixed: $flipped"
